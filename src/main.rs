@@ -28,7 +28,7 @@ struct NetInput {
 
 #[derive(Debug, Deserialize)]
 struct ConnectionInput {
-    component_name: String,
+    component_id: String,
     pin_name: String,
 }
 

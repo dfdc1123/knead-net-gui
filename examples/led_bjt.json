@@ -49,12 +49,12 @@
 
       "connections":[
         {
-          "component_name":"R1",
+          "component_id":"R1",
           "pin_name":"2"
         },
 
         {
-          "component_name":"LED1",
+          "component_id":"LED1",
           "pin_name":"A"
         }
       ]
@@ -65,12 +65,12 @@
 
       "connections":[
         {
-          "component_name":"LED1",
+          "component_id":"LED1",
           "pin_name":"K"
         },
 
         {
-          "component_name":"Q1",
+          "component_id":"Q1",
           "pin_name":"C"
         }
       ]
