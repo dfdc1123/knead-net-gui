@@ -7,14 +7,38 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ComponentId(pub(crate) usize);
 
+impl ComponentId {
+    pub fn raw(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PinId(pub(crate) usize);
+
+impl PinId {
+    pub fn raw(self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NetId(pub(crate) usize);
 
+impl NetId {
+    pub fn raw(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FootprintId(pub(crate) usize);
+
+impl FootprintId {
+    pub fn raw(self) -> usize {
+        self.0
+    }
+}
 
 /// 物理位置 (x, y), 整数坐标
 ///
@@ -96,5 +120,61 @@ impl Circuit {
     /// 得到 Circuit, 然后调用本方法把 footprint 注册表灌进去。
     pub fn set_footprints(&mut self, footprints: impl IntoIterator<Item = Footprint>) {
         self.footprints = footprints.into_iter().collect();
+    }
+
+    pub fn components(&self) -> &[Component] {
+        &self.components
+    }
+
+    pub fn pins(&self) -> &[Pin] {
+        &self.pins
+    }
+
+    pub fn footprints(&self) -> &[Footprint] {
+        &self.footprints
+    }
+}
+
+impl Component {
+    pub fn id(&self) -> ComponentId {
+        self.id
+    }
+
+    /// KiCad ref, 例如 "R1", "Q1", "D1"
+    pub fn ref_(&self) -> &str {
+        &self.ref_
+    }
+
+    /// libsource 里的 part, 例如 "R", "NPN", "LED"
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    pub fn footprint(&self) -> Option<FootprintId> {
+        self.footprint
+    }
+
+    pub fn pins(&self) -> &[PinId] {
+        &self.pins
+    }
+}
+
+impl Pin {
+    pub fn id(&self) -> PinId {
+        self.id
+    }
+
+    pub fn component(&self) -> ComponentId {
+        self.component
+    }
+
+    /// KiCad netlist 里的 (pin (num "X")) — 元件库里的引脚编号
+    pub fn num(&self) -> &str {
+        &self.num
+    }
+
+    /// KiCad netlist 里的 (pinfunction "K"/"A"/"C"/"B"/"E"/...) — 语义名
+    pub fn pinfunction(&self) -> Option<&str> {
+        self.pinfunction.as_deref()
     }
 }

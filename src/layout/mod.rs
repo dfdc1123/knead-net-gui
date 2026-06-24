@@ -17,7 +17,7 @@ pub use occupancy::{Occupancy, Occupant};
 pub use placement::{PinHole, PlacedFootprint, Placement, Rotation};
 pub use routing::{Router, Wire, WireId};
 
-use crate::circuit::{Circuit, ComponentId, PinId, Position};
+use crate::circuit::{Circuit, ComponentId, Footprint, PinId, Position};
 
 /// 布局错误。`apply` / `validate` / `from_layout` 都会返回这个。
 ///
@@ -101,6 +101,32 @@ impl<'c> Layout<'c> {
         self.occupancy(board).map(|_| ())
     }
 
+    /// 把所有有 footprint 的 component 横向摆在指定行, R0 方向, 元件之间留 1 空列。
+    ///
+    /// 最简单的"排成一排"策略: 按 component 顺序, 算出 footprint 水平跨度,
+    /// 依次放下去。**会覆盖已存在的 placement**; 没有 footprint 的 component 跳过
+    /// (validate 会把它们报为 `NoFootprint`)。
+    ///
+    /// 越界 / pin 碰撞 / wire 冲突都通过返回值上报; 即使有错, placement 也已经写入,
+    /// 调用方可以检查后调整。
+    pub fn place_row(&mut self, board: &Breadboard, row: i32) -> Result<(), Vec<LayoutError>> {
+        let mut col: i32 = 0;
+        for component in &self.circuit.components {
+            let Some(fid) = component.footprint else {
+                continue;
+            };
+            let footprint = &self.circuit.footprints[fid.0];
+            let width = footprint_horizontal_width(footprint);
+
+            self.placements[component.id.0] = Some(Placement {
+                position: Position { x: col, y: row },
+                rotation: Rotation::R0,
+            });
+            col += width + 1; // +1 是元件间空列
+        }
+        self.validate(board)
+    }
+
     /// 从 placements + wires 派生当前占用, 同时验证合法性。
     ///
     /// **严格**: 任何非法状态返回 `Err`, 不返回部分 occupancy。
@@ -108,6 +134,18 @@ impl<'c> Layout<'c> {
     pub fn occupancy(&self, board: &Breadboard) -> Result<Occupancy, Vec<LayoutError>> {
         Occupancy::from_layout(self, board)
     }
+}
+
+/// R0 方向下 footprint 占多少个列 (= `max_x - min_x + 1`)。
+///
+/// 空 footprint 当作 1 列, 防止减法下溢。
+fn footprint_horizontal_width(footprint: &Footprint) -> i32 {
+    if footprint.pins.is_empty() {
+        return 1;
+    }
+    let min_x = footprint.pins.iter().map(|p| p.offset.x).min().unwrap();
+    let max_x = footprint.pins.iter().map(|p| p.offset.x).max().unwrap();
+    max_x - min_x + 1
 }
 
 #[cfg(test)]
@@ -309,5 +347,187 @@ mod tests {
                 component: ComponentId(1)
             }
         )));
+    }
+
+    /// 两个 component + 两个 footprint, Q1(宽 3) + R(宽 4), 用来测列间隔。
+    fn two_component_fixture() -> &'static Circuit {
+        Box::leak(Box::new(Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "Q1".to_string(),
+                    kind: "NPN".to_string(),
+                    value: None,
+                    pins: vec![PinId(0), PinId(1), PinId(2)],
+                    footprint: Some(FootprintId(0)),
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "R1".to_string(),
+                    kind: "R".to_string(),
+                    value: None,
+                    pins: vec![PinId(3), PinId(4)],
+                    footprint: Some(FootprintId(1)),
+                },
+            ],
+            pins: vec![],
+            nets: vec![],
+            footprints: vec![
+                Footprint {
+                    id: FootprintId(0),
+                    name: "TO92".to_string(),
+                    pins: vec![
+                        PhysicalPin {
+                            name: "C".to_string(),
+                            offset: Position { x: 0, y: 0 },
+                        },
+                        PhysicalPin {
+                            name: "B".to_string(),
+                            offset: Position { x: 1, y: 0 },
+                        },
+                        PhysicalPin {
+                            name: "E".to_string(),
+                            offset: Position { x: 2, y: 0 },
+                        },
+                    ],
+                },
+                Footprint {
+                    id: FootprintId(1),
+                    name: "R2".to_string(),
+                    pins: vec![
+                        PhysicalPin {
+                            name: "1".to_string(),
+                            offset: Position { x: 0, y: 0 },
+                        },
+                        PhysicalPin {
+                            name: "2".to_string(),
+                            offset: Position { x: 3, y: 0 },
+                        },
+                    ],
+                },
+            ],
+        }))
+    }
+
+    #[test]
+    fn place_row_first_at_origin() {
+        let board = board();
+        let mut layout = Layout::new(two_component_fixture());
+        layout.place_row(&board, 2).unwrap();
+
+        let q1 = layout.placement(ComponentId(0)).unwrap();
+        assert_eq!(q1.position, Position { x: 0, y: 2 });
+        assert_eq!(q1.rotation, Rotation::R0);
+    }
+
+    #[test]
+    fn place_row_uses_footprint_width_plus_gap() {
+        let board = board();
+        let mut layout = Layout::new(two_component_fixture());
+        layout.place_row(&board, 2).unwrap();
+
+        // Q1 footprint 宽 3, 放 col 0, 下一个应从 col 3+1=4 开始
+        let r1 = layout.placement(ComponentId(1)).unwrap();
+        assert_eq!(r1.position, Position { x: 4, y: 2 });
+    }
+
+    #[test]
+    fn place_row_occupancy_matches_layout() {
+        let board = board();
+        let mut layout = Layout::new(two_component_fixture());
+        layout.place_row(&board, 2).unwrap();
+
+        let occ = layout.occupancy(&board).unwrap();
+        // Q1 在 (0,2): 占 (0,2) (1,2) (2,2)
+        assert_eq!(
+            occ.occupant_at(board.at(0, 2).unwrap()),
+            Some(Occupant::Pin(PinId(0)))
+        );
+        assert_eq!(
+            occ.occupant_at(board.at(1, 2).unwrap()),
+            Some(Occupant::Pin(PinId(1)))
+        );
+        assert_eq!(
+            occ.occupant_at(board.at(2, 2).unwrap()),
+            Some(Occupant::Pin(PinId(2)))
+        );
+        // col 3 是间隙
+        assert_eq!(occ.occupant_at(board.at(3, 2).unwrap()), None);
+        // R1 在 (4,2): 占 (4,2) (7,2) (因为 pin2 offset.x=3)
+        assert_eq!(
+            occ.occupant_at(board.at(4, 2).unwrap()),
+            Some(Occupant::Pin(PinId(3)))
+        );
+        assert_eq!(
+            occ.occupant_at(board.at(7, 2).unwrap()),
+            Some(Occupant::Pin(PinId(4)))
+        );
+        // (5,2) (6,2) R1 跨度内但无 pin, 应该空
+        assert_eq!(occ.occupant_at(board.at(5, 2).unwrap()), None);
+        assert_eq!(occ.occupant_at(board.at(6, 2).unwrap()), None);
+    }
+
+    /// 关键: 没有 footprint 的 component 跳过, 不写 placement
+    /// (`Occupancy::from_layout` 只检查已摆放的 component, 所以不报错)
+    #[test]
+    fn place_row_skips_components_without_footprint() {
+        let board = board();
+        // Q1 有 footprint, R1 没 footprint
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "Q1".to_string(),
+                    kind: "NPN".to_string(),
+                    value: None,
+                    pins: vec![PinId(0)],
+                    footprint: Some(FootprintId(0)),
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "R1".to_string(),
+                    kind: "R".to_string(),
+                    value: None,
+                    pins: vec![PinId(1)],
+                    footprint: None,
+                },
+            ],
+            pins: vec![],
+            nets: vec![],
+            footprints: vec![Footprint {
+                id: FootprintId(0),
+                name: "X".to_string(),
+                pins: vec![PhysicalPin {
+                    name: "p".to_string(),
+                    offset: Position { x: 0, y: 0 },
+                }],
+            }],
+        }));
+        let mut layout = Layout::new(circuit);
+        let result = layout.place_row(&board, 2);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        // Q1 摆上了
+        assert!(layout.placement(ComponentId(0)).is_some());
+        // R1 跳过
+        assert!(layout.placement(ComponentId(1)).is_none());
+    }
+
+    /// 关键: 越界时 place_row 返回 Err, 但 placement 已经被写入
+    /// (Q1 宽 3, 放在 (29, 2) → pin 2 落在 (31,2) 越界)
+    #[test]
+    fn place_row_returns_error_when_out_of_bounds() {
+        let board = board(); // 30x5
+        let mut layout = Layout::new(fixture()); // 单 TO92, 宽 3
+        // 手动把它放在 (28, 2) → pin 2 落在 (30, 2) 越界
+        layout.placements[ComponentId(0).0] = Some(Placement {
+            position: Position { x: 28, y: 2 },
+            rotation: Rotation::R0,
+        });
+        let errors = layout.validate(&board).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, LayoutError::OutOfBounds { .. }))
+        );
     }
 }

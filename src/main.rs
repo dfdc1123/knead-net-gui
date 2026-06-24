@@ -2,6 +2,7 @@ use std::fs;
 
 use knead_net::input::footprint::parse_many as parse_footprints;
 use knead_net::input::netlist::parse_netlist;
+use knead_net::{Breadboard, Layout, Occupant};
 
 fn main() {
     let kicad_dir = "examples/kicad";
@@ -31,5 +32,56 @@ fn main() {
     // 3. 组合成 Circuit (footprint ref 在这一步自动连到 FootprintId)
     let circuit = netlist.into_circuit(&footprints);
 
-    println!("{circuit:#?}");
+    // 4. 布局: 把所有元件横着排在 row=2
+    let board = Breadboard::new(30, 5);
+    let mut layout = Layout::new(&circuit);
+    if let Err(errors) = layout.place_row(&board, 2) {
+        eprintln!("布局错误 ({} 个):", errors.len());
+        for e in &errors {
+            eprintln!("  - {e:?}");
+        }
+    }
+
+    println!("=== 摆放 (row=2, R0) ===");
+    for c in circuit.components() {
+        match layout.placement(c.id()) {
+            Some(p) => println!(
+                "  {} ({}) footprint={:?} -> ({}, {}) {:?}",
+                c.ref_(),
+                c.kind(),
+                c.footprint(),
+                p.position.x,
+                p.position.y,
+                p.rotation
+            ),
+            None => println!(
+                "  {} ({}) footprint={:?} -> 未摆放",
+                c.ref_(),
+                c.kind(),
+                c.footprint()
+            ),
+        }
+    }
+
+    if let Ok(occ) = layout.occupancy(&board) {
+        println!("=== 占用 ===");
+        for hole in board.holes() {
+            let Some(occupant) = occ.occupant_at(hole.id) else {
+                continue;
+            };
+            let pos = hole.position;
+            let desc = match occupant {
+                Occupant::Pin(pin_id) => {
+                    let pin = &circuit.pins()[pin_id.raw()];
+                    let comp = &circuit.components()[pin.component().raw()];
+                    match pin.pinfunction() {
+                        Some(f) => format!("{} pad {} ({})", comp.ref_(), pin.num(), f),
+                        None => format!("{} pad {}", comp.ref_(), pin.num()),
+                    }
+                }
+                Occupant::Wire(wire_id) => format!("wire #{}", wire_id.raw()),
+            };
+            println!("  ({:>2}, {}): {}", pos.x, pos.y, desc);
+        }
+    }
 }
