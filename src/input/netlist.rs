@@ -25,6 +25,8 @@ pub struct NetlistComp {
     pub ref_: String,
     /// libsource 里的 part, 例如 "R", "NPN", "LED" — 当作 Component.kind
     pub libsource_part: String,
+    /// KiCad (value ...) 字段, 例如电阻的 "220", 拿去当 Component.value
+    pub value: Option<String>,
     /// 完整 footprint 引用, 例如 "LED_THT:LED_D5.0mm"
     pub footprint_ref: String,
     /// instance 的 pin num 列表 (来自 units/unit/pins/pin/num)
@@ -40,6 +42,8 @@ pub struct NetlistNode {
     pub ref_: String,
     /// KiCad 里这个字段叫 "pin", 但内容是 num 不是 name
     pub pin_num: String,
+    /// KiCad node 里的 (pinfunction "B"/"C"/"E"/"K"/"A" ...), 传给 Pin.pinfunction
+    pub pinfunction: Option<String>,
 }
 
 impl NetlistInput {
@@ -66,7 +70,8 @@ impl NetlistInput {
                 pins.push(Pin {
                     id: pin_id,
                     component: component_id,
-                    name: pin_num.clone(),
+                    num: pin_num.clone(),
+                    pinfunction: None,
                     net: None,
                 });
                 pin_lookup.insert((comp_in.ref_.clone(), pin_num.clone()), pin_id);
@@ -80,8 +85,9 @@ impl NetlistInput {
 
             components.push(Component {
                 id: component_id,
-                name: comp_in.ref_,
+                ref_: comp_in.ref_,
                 kind: comp_in.libsource_part,
+                value: comp_in.value,
                 pins: comp_pin_ids,
                 footprint,
             });
@@ -103,6 +109,10 @@ impl NetlistInput {
                             net_in.name, node.ref_, node.pin_num
                         )
                     });
+                // 在 Pass 2 里 pin.pinfunction 暂为 None, 这里用 node 的 pinfunction 回填
+                if pins[pin_id.0].pinfunction.is_none() {
+                    pins[pin_id.0].pinfunction = node.pinfunction.clone();
+                }
                 pins[pin_id.0].net = Some(net_id);
                 net_pins.push(pin_id);
             }
@@ -186,6 +196,7 @@ fn extract_comp(sexp: &Sexp) -> Option<NetlistComp> {
 
     let mut ref_ = None;
     let mut libsource_part = None;
+    let mut value = None;
     let mut footprint_ref = None;
     let mut pin_nums = Vec::new();
 
@@ -195,6 +206,7 @@ fn extract_comp(sexp: &Sexp) -> Option<NetlistComp> {
                 match head.as_str() {
                     "ref" => ref_ = atom_value(&sub[1..]),
                     "footprint" => footprint_ref = atom_value(&sub[1..]),
+                    "value" => value = atom_value(&sub[1..]),
                     "libsource" => libsource_part = extract_libsource_part(item),
                     "units" => pin_nums = extract_pin_nums(item),
                     _ => {}
@@ -206,6 +218,7 @@ fn extract_comp(sexp: &Sexp) -> Option<NetlistComp> {
     Some(NetlistComp {
         ref_: ref_?,
         libsource_part: libsource_part?,
+        value,
         footprint_ref: footprint_ref?,
         pin_nums,
     })
@@ -293,12 +306,14 @@ fn extract_node(sexp: &Sexp) -> Option<NetlistNode> {
     };
     let mut ref_ = None;
     let mut pin_num = None;
+    let mut pinfunction = None;
     for item in items {
         if let Sexp::List(sub) = item {
             if let Some(Sexp::Atom(head)) = sub.first() {
                 match head.as_str() {
                     "ref" => ref_ = atom_value(&sub[1..]),
                     "pin" => pin_num = atom_value(&sub[1..]),
+                    "pinfunction" => pinfunction = atom_value(&sub[1..]),
                     _ => {}
                 }
             }
@@ -307,6 +322,7 @@ fn extract_node(sexp: &Sexp) -> Option<NetlistNode> {
     Some(NetlistNode {
         ref_: ref_?,
         pin_num: pin_num?,
+        pinfunction,
     })
 }
 

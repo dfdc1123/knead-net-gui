@@ -56,7 +56,8 @@ impl From<CircuitInput> for Circuit {
                 pins.push(Pin {
                     id: pin_id,
                     component: component_id,
-                    name: pin_in.name.clone(),
+                    num: pin_in.name.clone(),
+                    pinfunction: None,
                     net: None,
                 });
                 pin_lookup.insert((comp_name.clone(), pin_in.name), pin_id);
@@ -65,8 +66,9 @@ impl From<CircuitInput> for Circuit {
 
             components.push(Component {
                 id: component_id,
-                name: comp_name,
+                ref_: comp_name,
                 kind: comp_in.kind,
+                value: None,
                 pins: comp_pin_ids,
                 footprint: None,
             });

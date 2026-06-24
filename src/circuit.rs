@@ -37,8 +37,12 @@ pub struct Circuit {
 #[derive(Debug)]
 pub struct Component {
     pub(crate) id: ComponentId,
-    pub(crate) name: String,
+    /// KiCad ref, 例如 "R1", "Q1", "D1"
+    pub(crate) ref_: String,
+    /// libsource 里的 part, 例如 "R", "NPN", "LED"
     pub(crate) kind: String,
+    /// KiCad (value ...) 字段: 电阻的阻值 ("220"), IC 的型号等
+    pub(crate) value: Option<String>,
     pub(crate) pins: Vec<PinId>,
     pub(crate) footprint: Option<FootprintId>,
 }
@@ -49,7 +53,11 @@ pub struct Pin {
 
     pub(crate) component: ComponentId,
 
-    pub(crate) name: String,
+    /// pin num, 跟 .kicad_mod 里 (pad "X") 的 X 一致
+    pub(crate) num: String,
+
+    /// KiCad node 里的 (pinfunction "B"/"C"/"E"/"K"/"A" ...), 用来识别极性
+    pub(crate) pinfunction: Option<String>,
 
     pub(crate) net: Option<NetId>,
 }

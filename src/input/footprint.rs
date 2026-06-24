@@ -60,6 +60,16 @@ pub fn parse_one(text: &str) -> Result<FootprintDraft, ParseError> {
     };
 
     // 在剩下的元素里找所有 (pad "NUM" ... (at X Y) ...) 形式
+    // 但首先排除 SMD: 面包板只能用直插 (through_hole) 元件
+    for item in &top[2..] {
+        if is_smd_attr(item) {
+            panic!(
+                "footprint '{}' 是 SMD, 面包板只能用直插 (through_hole) 元件",
+                name
+            );
+        }
+    }
+
     let mut pins = Vec::new();
     for item in &top[2..] {
         if let Some(pin) = extract_pad(item) {
@@ -68,6 +78,18 @@ pub fn parse_one(text: &str) -> Result<FootprintDraft, ParseError> {
     }
 
     Ok(FootprintDraft { name, pins })
+}
+
+/// 判断一个 sexp 是不是 (attr smd)
+fn is_smd_attr(sexp: &Sexp) -> bool {
+    if let Sexp::List(items) = sexp {
+        if matches!(items.first(), Some(Sexp::Atom(s)) if s == "attr") {
+            if let Some(Sexp::Atom(s)) = items.get(1) {
+                return s == "smd";
+            }
+        }
+    }
+    false
 }
 
 /// 解析多个 .kicad_mod 文件, 按顺序给每个 footprint 分配 FootprintId(0), (1), ...
