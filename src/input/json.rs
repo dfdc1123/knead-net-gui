@@ -68,6 +68,7 @@ impl From<CircuitInput> for Circuit {
                 name: comp_name,
                 kind: comp_in.kind,
                 pins: comp_pin_ids,
+                footprint: None,
             });
         }
 
@@ -103,6 +104,7 @@ impl From<CircuitInput> for Circuit {
             components,
             pins,
             nets,
+            footprints: Vec::new(),
         }
     }
 }

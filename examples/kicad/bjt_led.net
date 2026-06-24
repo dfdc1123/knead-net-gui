@@ -2,7 +2,7 @@
 	(version "E")
 	(design
 		(source "/home/dfdc/Documents/Projects/bjt_led/bjt_led/bjt_led.kicad_sch")
-		(date "2026-06-23T01:52:00")
+		(date "2026-06-24T15:36:41")
 		(tool "Eeschema 10.0.4")
 		(sheet
 			(number "1")
@@ -117,7 +117,7 @@
 		(comp
 			(ref "Q1")
 			(value "NPN")
-			(footprint "Package_TO_SOT_THT:TO-92L_Inline")
+			(footprint "Package_TO_SOT_THT:TO-92L_Inline_Wide")
 			(datasheet "https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml#cha_BJTs")
 			(description "Bipolar transistor symbol for simulation only, substrate tied to the emitter")
 			(fields
@@ -128,7 +128,7 @@
 				(field
 					(name "Sim.Pins") "1=C 2=B 3=E")
 				(field
-					(name "Footprint") "Package_TO_SOT_THT:TO-92L_Inline")
+					(name "Footprint") "Package_TO_SOT_THT:TO-92L_Inline_Wide")
 				(field
 					(name "Datasheet") "https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml#cha_BJTs")
 				(field

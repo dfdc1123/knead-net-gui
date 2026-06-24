@@ -12,8 +12,30 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "knead-net"
 version = "0.1.0"
 dependencies = [
+ "lexpr",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lexpr"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a84de6a9df442363b08f5dbf0cd5b92edc70097b89c4ce4bfea4679fe48bc67"
+dependencies = [
+ "itoa",
+ "lexpr-macros",
+ "ryu",
+]
+
+[[package]]
+name = "lexpr-macros"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36b5cb8bb985c81a8ac1a0f8b5c4865214f574ddd64397ef7a99c236e21f35bb"
+dependencies = [
+ "proc-macro2",
+ "quote",
 ]
 
 [[package]]
@@ -39,6 +61,12 @@ checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "serde"
