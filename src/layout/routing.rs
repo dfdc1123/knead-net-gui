@@ -17,28 +17,32 @@ impl WireId {
 
 /// 一段面包板跳线。
 ///
-/// 路径 = `[from, waypoints..., to]`, 全部 HoleId。
-/// 物理上整条线插在每个 path 上的孔里 (waypoint 是拐弯点, 也被线穿过)。
+/// 物理事实: 跳线就是一段线, 两个头插在两个孔里, 中间悬空。
+/// 所以 `Wire` 只有 `from` 和 `to` 两个接触点, 没有中间点。
+/// 走弯路时用**两根线**在一个公共孔上接续, 而不是给单根线加 waypoint。
 #[derive(Debug, Clone)]
 pub struct Wire {
     pub id: WireId,
     pub net: NetId,
     pub from: HoleId,
     pub to: HoleId,
-    /// 拐弯点, 都必须是 HoleId
-    pub waypoints: Vec<HoleId>,
 }
 
 impl Wire {
-    /// 完整路径: from + waypoints + to, 顺序连接。
-    pub fn path(&self) -> impl Iterator<Item = HoleId> + '_ {
-        std::iter::once(self.from)
-            .chain(self.waypoints.iter().copied())
-            .chain(std::iter::once(self.to))
+    /// Wire 接触的两个孔: `[from, to]`。
+    pub fn contacts(&self) -> [HoleId; 2] {
+        [self.from, self.to]
     }
 }
 
 /// 接线算法接口。给定一个 circuit + board + 当前占用, 返回一组 wire 满足所有 net。
+///
+/// 走线原则:
+/// - Wire 只有 `from` 和 `to` 两个接触点, 绝不共享端点
+/// - **同一列的孔已经由面包板内部连通**, 不用 wire 桥接
+/// - Wire 只用来跨列连接 (例如把列 5 的某孔连到列 10 的某孔)
+/// - 列内多点接到一个 net: 随便挑该列上的孔当 wire 端点, 面包板自动
+///   把同列所有 pin 连在一起
 pub trait Router {
     fn route(&self, circuit: &Circuit, board: &Breadboard, occupancy: &Occupancy) -> Vec<Wire>;
 }

@@ -15,7 +15,7 @@ use super::routing::Wire;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Occupant {
     Pin(PinId),
-    /// 线插在此孔。from / to / 任何 waypoint 都算 (都是 wire path 上的物理接触点)。
+    /// 线插在此孔。`Wire` 只有 `from` 和 `to` 两个接触点 (没有中间点)。
     Wire(super::routing::WireId),
 }
 
@@ -75,7 +75,7 @@ impl Occupancy {
         }
 
         for wire in layout.wires() {
-            for hole in wire.path() {
+            for hole in wire.contacts() {
                 if !occupied.insert(hole) {
                     errors.push(LayoutError::WireConflict {
                         wire: wire.id,
@@ -103,7 +103,7 @@ impl Occupancy {
     }
 
     pub fn can_add_wire(&self, wire: &Wire) -> bool {
-        wire.path().all(|h| self.at[h.0].is_none())
+        self.at[wire.from.0].is_none() && self.at[wire.to.0].is_none()
     }
 }
 
@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_blocks_its_path() {
+    fn wire_occupies_only_endpoints() {
         let b = board();
         let circuit = Box::leak(Box::new(crate::circuit::Circuit {
             components: vec![],
@@ -212,37 +212,31 @@ mod tests {
             footprints: vec![],
         }));
         let mut layout = Layout::new(circuit);
-        // wire: from (5, 0) → waypoint (5, 2) → to (5, 4)
-        // path: (5, 0) (5, 2) (5, 4)
+        // 跨列 wire: from (5, 2) → to (10, 2), 桥接两列
+        // 只有这两个端点被 wire 占用, 中间 (6, 2)..(9, 2) 都不占用
         let wire = Wire {
             id: super::super::routing::WireId(0),
             net: crate::circuit::NetId(0),
-            from: b.at(5, 0).unwrap(),
-            to: b.at(5, 4).unwrap(),
-            waypoints: vec![b.at(5, 2).unwrap()],
+            from: b.at(5, 2).unwrap(),
+            to: b.at(10, 2).unwrap(),
         };
         layout.add_wire(wire.clone());
 
         let occ = layout.occupancy(&b).unwrap();
         assert_eq!(
-            occ.occupant_at(b.at(5, 0).unwrap()),
-            Some(Occupant::Wire(super::super::routing::WireId(0)))
-        );
-        assert_eq!(
             occ.occupant_at(b.at(5, 2).unwrap()),
             Some(Occupant::Wire(super::super::routing::WireId(0)))
         );
         assert_eq!(
-            occ.occupant_at(b.at(5, 4).unwrap()),
+            occ.occupant_at(b.at(10, 2).unwrap()),
             Some(Occupant::Wire(super::super::routing::WireId(0)))
         );
 
-        // (5, 1) 和 (5, 3) 不在 path 上, 可以放
-        assert!(occ.can_place_pin(b.at(5, 1).unwrap()));
-        assert!(occ.can_place_pin(b.at(5, 3).unwrap()));
-
-        // (5, 2) 不能再放
-        assert!(!occ.can_place_pin(b.at(5, 2).unwrap()));
+        // 中间 (6, 2)..(9, 2) 不被 wire 占用
+        assert!(occ.can_place_pin(b.at(6, 2).unwrap()));
+        assert!(occ.can_place_pin(b.at(7, 2).unwrap()));
+        assert!(occ.can_place_pin(b.at(8, 2).unwrap()));
+        assert!(occ.can_place_pin(b.at(9, 2).unwrap()));
 
         assert!(!occ.can_add_wire(&wire));
     }
@@ -319,7 +313,7 @@ mod tests {
         );
     }
 
-    /// 关键 bug 修复测试: wire 路径穿过已有 pin, 应该返回 Err
+    /// 关键 bug 修复测试: wire 端点跟 pin 撞同孔, 应该返回 Err
     #[test]
     fn from_layout_detects_wire_pin_conflict() {
         let b = board();
@@ -332,14 +326,12 @@ mod tests {
                 rotation: Rotation::R0,
             },
         );
-        // 加一根 wire, waypoint 经过 (11, 2)
-        // path = from + waypoint + to = (0,2) (11,2) (20,2)
+        // wire 的 to 端点选 (11, 2) — 跟 Q1.pin1 撞
         let wire = Wire {
             id: super::super::routing::WireId(0),
             net: crate::circuit::NetId(0),
-            from: b.at(0, 2).unwrap(),
-            to: b.at(20, 2).unwrap(),
-            waypoints: vec![b.at(11, 2).unwrap()],
+            from: b.at(15, 4).unwrap(),
+            to: b.at(11, 2).unwrap(),
         };
         layout.add_wire(wire);
 
