@@ -15,7 +15,7 @@ pub mod routing;
 pub use breadboard::{Breadboard, Hole, HoleId};
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{PinHole, PlacedFootprint, Placement, Rotation};
-pub use routing::{Router, Wire, WireId};
+pub use routing::{PathFinderRouter, Router, Wire, WireId};
 
 use crate::circuit::{Circuit, ComponentId, Footprint, PinId, Position};
 
@@ -42,6 +42,12 @@ pub enum LayoutError {
     },
     /// wire path 跟已占用的孔冲突 (跟 pin 或别的 wire)
     WireConflict { wire: WireId, hole: HoleId },
+    /// Component 引用了 footprint 里不存在的 pad (按 num 找)
+    NoFootprintPad {
+        component: ComponentId,
+        pin: PinId,
+        pad_name: String,
+    },
 }
 
 /// 顶层布局: 持有 Circuit 引用 + 每个 component 的 placement + 所有 wire。
@@ -151,7 +157,7 @@ fn footprint_horizontal_width(footprint: &Footprint) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::circuit::{Component, Footprint, FootprintId, PhysicalPin, PinId, Position};
+    use crate::circuit::{Component, Footprint, FootprintId, PhysicalPin, Pin, PinId, Position};
 
     fn fixture() -> &'static Circuit {
         Box::leak(Box::new(Circuit {
@@ -163,22 +169,44 @@ mod tests {
                 pins: vec![PinId(0), PinId(1), PinId(2)],
                 footprint: Some(FootprintId(0)),
             }],
-            pins: vec![],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(2),
+                    component: ComponentId(0),
+                    num: "3".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+            ],
             nets: vec![],
             footprints: vec![Footprint {
                 id: FootprintId(0),
                 name: "TO92".to_string(),
                 pins: vec![
                     PhysicalPin {
-                        name: "C".to_string(),
+                        name: "1".to_string(),
                         offset: Position { x: 0, y: 0 },
                     },
                     PhysicalPin {
-                        name: "B".to_string(),
+                        name: "2".to_string(),
                         offset: Position { x: 1, y: 0 },
                     },
                     PhysicalPin {
-                        name: "E".to_string(),
+                        name: "3".to_string(),
                         offset: Position { x: 2, y: 0 },
                     },
                 ],
@@ -295,22 +323,51 @@ mod tests {
                     footprint: None,
                 },
             ],
-            pins: vec![],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(2),
+                    component: ComponentId(0),
+                    num: "3".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(3),
+                    component: ComponentId(1),
+                    num: "x".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+            ],
             nets: vec![],
             footprints: vec![Footprint {
                 id: FootprintId(0),
                 name: "TO92".to_string(),
                 pins: vec![
                     PhysicalPin {
-                        name: "C".to_string(),
+                        name: "1".to_string(),
                         offset: Position { x: 0, y: 0 },
                     },
                     PhysicalPin {
-                        name: "B".to_string(),
+                        name: "2".to_string(),
                         offset: Position { x: 1, y: 0 },
                     },
                     PhysicalPin {
-                        name: "E".to_string(),
+                        name: "3".to_string(),
                         offset: Position { x: 2, y: 0 },
                     },
                 ],
@@ -370,7 +427,43 @@ mod tests {
                     footprint: Some(FootprintId(1)),
                 },
             ],
-            pins: vec![],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(2),
+                    component: ComponentId(0),
+                    num: "3".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(3),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(4),
+                    component: ComponentId(1),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+            ],
             nets: vec![],
             footprints: vec![
                 Footprint {
@@ -378,15 +471,15 @@ mod tests {
                     name: "TO92".to_string(),
                     pins: vec![
                         PhysicalPin {
-                            name: "C".to_string(),
+                            name: "1".to_string(),
                             offset: Position { x: 0, y: 0 },
                         },
                         PhysicalPin {
-                            name: "B".to_string(),
+                            name: "2".to_string(),
                             offset: Position { x: 1, y: 0 },
                         },
                         PhysicalPin {
-                            name: "E".to_string(),
+                            name: "3".to_string(),
                             offset: Position { x: 2, y: 0 },
                         },
                     ],
@@ -492,7 +585,22 @@ mod tests {
                     footprint: None,
                 },
             ],
-            pins: vec![],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "p".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+            ],
             nets: vec![],
             footprints: vec![Footprint {
                 id: FootprintId(0),

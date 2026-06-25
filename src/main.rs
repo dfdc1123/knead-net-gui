@@ -2,7 +2,7 @@ use std::fs;
 
 use knead_net::input::footprint::parse_many as parse_footprints;
 use knead_net::input::netlist::parse_netlist;
-use knead_net::{Breadboard, Layout, Occupant};
+use knead_net::{Breadboard, Layout, Occupant, PathFinderRouter, Router};
 
 fn main() {
     let kicad_dir = "examples/kicad";
@@ -25,7 +25,7 @@ fn main() {
     let footprints = parse_footprints(footprint_texts).unwrap();
 
     // 2. 读 .net 文件
-    let netlist_path = format!("{kicad_dir}/bjt_led.net");
+    let netlist_path = format!("{kicad_dir}/random.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 
@@ -44,44 +44,95 @@ fn main() {
 
     println!("=== 摆放 (row=2, R0) ===");
     for c in circuit.components() {
+        // Component.footprint 是 FootprintId, 查一下拿名字
+        let footprint_name = c
+            .footprint()
+            .and_then(|fid| circuit.footprints().get(fid.raw()))
+            .map(|fp| fp.name())
+            .unwrap_or("<none>");
         match layout.placement(c.id()) {
             Some(p) => println!(
-                "  {} ({}) footprint={:?} -> ({}, {}) {:?}",
+                "  {:<3} ({:<4}) {:<48} -> ({:>2}, {}) {:?}",
                 c.ref_(),
                 c.kind(),
-                c.footprint(),
+                footprint_name,
                 p.position.x,
                 p.position.y,
                 p.rotation
             ),
             None => println!(
-                "  {} ({}) footprint={:?} -> 未摆放",
+                "  {:<3} ({:<4}) {:<48} -> 未摆放",
                 c.ref_(),
                 c.kind(),
-                c.footprint()
+                footprint_name
             ),
         }
     }
 
-    if let Ok(occ) = layout.occupancy(&board) {
-        println!("=== 占用 ===");
-        for hole in board.holes() {
-            let Some(occupant) = occ.occupant_at(hole.id) else {
-                continue;
+    // 5. 接线: PathFinder 把所有 net 串起来
+    let wires = match layout.occupancy(&board) {
+        Ok(occ) => {
+            let router = PathFinderRouter {
+                max_iterations: 200,
+                history_increment: 1.0,
             };
-            let pos = hole.position;
-            let desc = match occupant {
-                Occupant::Pin(pin_id) => {
-                    let pin = &circuit.pins()[pin_id.raw()];
-                    let comp = &circuit.components()[pin.component().raw()];
-                    match pin.pinfunction() {
-                        Some(f) => format!("{} pad {} ({})", comp.ref_(), pin.num(), f),
-                        None => format!("{} pad {}", comp.ref_(), pin.num()),
+            router.route(&circuit, &board, &occ)
+        }
+        Err(errs) => {
+            eprintln!("布局不合法, 跳过接线 ({} 个错误)", errs.len());
+            for e in &errs {
+                eprintln!("  - {e:?}");
+            }
+            return;
+        }
+    };
+    println!("=== 接线 ({} 根 wire) ===", wires.len());
+    for w in &wires {
+        let from_pos = board.hole(w.from).position;
+        let to_pos = board.hole(w.to).position;
+        let net = &circuit.nets()[w.net.raw()];
+        println!(
+            "  wire #{} (net '{}'): ({:>2},{}) <-> ({:>2},{})",
+            w.id.raw(),
+            net.name(),
+            from_pos.x,
+            from_pos.y,
+            to_pos.x,
+            to_pos.y
+        );
+    }
+    for w in &wires {
+        layout.add_wire(w.clone());
+    }
+
+    // 6. 打完 wire 再打印一遍占用
+    println!("=== 最终占用 (含 wire) ===");
+    match layout.occupancy(&board) {
+        Ok(occ) => {
+            for hole in board.holes() {
+                let Some(occupant) = occ.occupant_at(hole.id) else {
+                    continue;
+                };
+                let pos = hole.position;
+                let desc = match occupant {
+                    Occupant::Pin(pin_id) => {
+                        let pin = &circuit.pins()[pin_id.raw()];
+                        let comp = &circuit.components()[pin.component().raw()];
+                        match pin.pinfunction() {
+                            Some(f) => format!("{} pad {} ({})", comp.ref_(), pin.num(), f),
+                            None => format!("{} pad {}", comp.ref_(), pin.num()),
+                        }
                     }
-                }
-                Occupant::Wire(wire_id) => format!("wire #{}", wire_id.raw()),
-            };
-            println!("  ({:>2}, {}): {}", pos.x, pos.y, desc);
+                    Occupant::Wire(wire_id) => format!("wire #{}", wire_id.raw()),
+                };
+                println!("  ({:>2}, {}): {}", pos.x, pos.y, desc);
+            }
+        }
+        Err(errs) => {
+            eprintln!("接线后布局不合法 ({} 个错误):", errs.len());
+            for e in &errs {
+                eprintln!("  - {e:?}");
+            }
         }
     }
 }

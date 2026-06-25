@@ -15,6 +15,6 @@ pub use circuit::{
     Position,
 };
 pub use layout::{
-    Breadboard, Hole, HoleId, Layout, LayoutError, Occupancy, Occupant, PinHole, PlacedFootprint,
-    Placement, Rotation, Wire, WireId,
+    Breadboard, Hole, HoleId, Layout, LayoutError, Occupancy, Occupant, PathFinderRouter, PinHole,
+    PlacedFootprint, Placement, Rotation, Router, Wire, WireId,
 };

@@ -80,10 +80,30 @@ pub struct Pin {
     /// pin num, 跟 .kicad_mod 里 (pad "X") 的 X 一致
     pub(crate) num: String,
 
-    /// KiCad node 里的 (pinfunction "B"/"C"/"E"/"K"/"A" ...), 用来识别极性
+    /// KiCad netlist 里的 (pinfunction "B"/"C"/"E"/"K"/"A" ...), 用来识别极性
     pub(crate) pinfunction: Option<String>,
 
     pub(crate) net: Option<NetId>,
+}
+
+impl Pin {
+    pub fn id(&self) -> PinId {
+        self.id
+    }
+
+    pub fn component(&self) -> ComponentId {
+        self.component
+    }
+
+    /// KiCad netlist 里的 (pin (num "X")) — 元件库里的引脚编号
+    pub fn num(&self) -> &str {
+        &self.num
+    }
+
+    /// KiCad netlist 里的 (pinfunction "K"/"A"/"C"/"B"/"E"/...) — 语义名
+    pub fn pinfunction(&self) -> Option<&str> {
+        self.pinfunction.as_deref()
+    }
 }
 
 #[derive(Debug)]
@@ -95,11 +115,35 @@ pub struct Net {
     pub(crate) pins: Vec<PinId>,
 }
 
+impl Net {
+    pub fn id(&self) -> NetId {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn pins(&self) -> &[PinId] {
+        &self.pins
+    }
+}
+
 /// 物理封装上的一个 pin, 包含名字和在封装局部坐标里的偏移
 #[derive(Debug, Clone)]
 pub struct PhysicalPin {
     pub(crate) name: String,
     pub(crate) offset: Position,
+}
+
+impl PhysicalPin {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn offset(&self) -> Position {
+        self.offset
+    }
 }
 
 /// 物理封装: 一种元件的"焊盘 / 引脚布局"模板
@@ -111,6 +155,20 @@ pub struct Footprint {
     pub(crate) id: FootprintId,
     pub(crate) name: String,
     pub(crate) pins: Vec<PhysicalPin>,
+}
+
+impl Footprint {
+    pub fn id(&self) -> FootprintId {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn pins(&self) -> &[PhysicalPin] {
+        &self.pins
+    }
 }
 
 impl Circuit {
@@ -128,6 +186,10 @@ impl Circuit {
 
     pub fn pins(&self) -> &[Pin] {
         &self.pins
+    }
+
+    pub fn nets(&self) -> &[Net] {
+        &self.nets
     }
 
     pub fn footprints(&self) -> &[Footprint] {
@@ -156,25 +218,5 @@ impl Component {
 
     pub fn pins(&self) -> &[PinId] {
         &self.pins
-    }
-}
-
-impl Pin {
-    pub fn id(&self) -> PinId {
-        self.id
-    }
-
-    pub fn component(&self) -> ComponentId {
-        self.component
-    }
-
-    /// KiCad netlist 里的 (pin (num "X")) — 元件库里的引脚编号
-    pub fn num(&self) -> &str {
-        &self.num
-    }
-
-    /// KiCad netlist 里的 (pinfunction "K"/"A"/"C"/"B"/"E"/...) — 语义名
-    pub fn pinfunction(&self) -> Option<&str> {
-        self.pinfunction.as_deref()
     }
 }
