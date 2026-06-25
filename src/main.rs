@@ -135,4 +135,10 @@ fn main() {
             }
         }
     }
+
+    // 7. 渲染 SVG
+    let svg = knead_net::render::to_svg(&circuit, &board, &layout);
+    let svg_path = format!("{kicad_dir}/layout.svg");
+    fs::write(&svg_path, &svg).expect("写 SVG 失败");
+    println!("=== SVG 已写入 {svg_path} ({} 字节) ===", svg.len());
 }

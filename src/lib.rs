@@ -8,6 +8,7 @@
 pub mod circuit;
 pub mod input;
 pub mod layout;
+pub mod render;
 
 // 把最常用的领域类型提到 crate 根, 用 `knead_net::Circuit` 就能拿到
 pub use circuit::{
