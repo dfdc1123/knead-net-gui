@@ -110,17 +110,24 @@ impl Router for PathFinderRouter {
             })
             .collect();
 
-        // 每个 net 的 unique pin columns
-        let mut net_columns: Vec<Vec<i32>> = vec![Vec::new(); circuit.nets().len()];
+        // 每个 net 的 unique pin (col, rail_top) 对。
+        // 引入 blocked row 后, 同列不同 rail 是两个独立的"汇点" — wire 端点必须
+        // 落在 pin 所在 rail 才能靠面包板内部连通接到 pin。 同列同 rail 合并。
+        let mut net_pins: Vec<Vec<(i32, i32)>> = vec![Vec::new(); circuit.nets().len()];
         for net in circuit.nets() {
-            let mut cols: Vec<i32> = net
+            let mut pins: Vec<(i32, i32)> = net
                 .pins
                 .iter()
-                .filter_map(|p| pin_hole.get(p).map(|h| board.hole(*h).position.x))
+                .filter_map(|p| {
+                    let h = pin_hole.get(p)?;
+                    let pos = board.hole(*h).position;
+                    let rail_top = board.rail_rows(pos.y).first().copied().unwrap_or(pos.y);
+                    Some((pos.x, rail_top))
+                })
                 .collect();
-            cols.sort();
-            cols.dedup();
-            net_columns[net.id.0] = cols;
+            pins.sort();
+            pins.dedup();
+            net_pins[net.id.0] = pins;
         }
 
         let mut history: Vec<f64> = vec![0.0; board.len()];
@@ -129,14 +136,8 @@ impl Router for PathFinderRouter {
         let mut next_id: usize = 0;
 
         for _ in 0..self.max_iterations {
-            let (wires, conflicts) = route_iteration(
-                circuit,
-                board,
-                occupancy,
-                &net_columns,
-                &history,
-                &mut next_id,
-            );
+            let (wires, conflicts) =
+                route_iteration(circuit, board, occupancy, &net_pins, &history, &mut next_id);
 
             if conflicts == 0 {
                 return rewire_ids(wires);
@@ -159,7 +160,7 @@ fn route_iteration(
     circuit: &Circuit,
     board: &Breadboard,
     occupancy: &Occupancy,
-    net_columns: &[Vec<i32>],
+    net_pins: &[Vec<(i32, i32)>],
     history: &[f64],
     next_id: &mut usize,
 ) -> (Vec<Wire>, usize) {
@@ -167,13 +168,13 @@ fn route_iteration(
     let mut usage: HashMap<HoleId, usize> = HashMap::new();
 
     for net in circuit.nets() {
-        let columns = &net_columns[net.id.0];
-        if columns.len() < 2 {
-            // 0 或 1 个 column: 不需要 wire (列内已连通, 或没东西)
+        let pins = &net_pins[net.id.0];
+        if pins.len() < 2 {
+            // 0 或 1 个 (col, rail) 汇点: 不需要 wire (同 rail 同列内已连通, 或没东西)
             continue;
         }
 
-        for (from, to) in mst_wires(columns, board, occupancy, history) {
+        for (from, to) in mst_wires(pins, board, occupancy, history) {
             *usage.entry(from).or_insert(0) += 1;
             *usage.entry(to).or_insert(0) += 1;
             all_wires.push(Wire {
@@ -191,7 +192,7 @@ fn route_iteration(
     (all_wires, conflicts)
 }
 
-/// 给一个 net 的 columns 算最小生成树 (Kruskal), 返回 tree 的边 (端点对)
+/// 给一个 net 的 (col, rail_top) 汇点算最小生成树 (Kruskal), 返回 tree 的边 (端点对)
 ///
 /// 关键: Kruskal 每加一条边, 重算 best wire 时刻意排除本 net 已用的孔,
 /// 避免 net 内部两根 wire 撞同一个孔 (尤其是度 >= 2 的 hub column)。
@@ -199,12 +200,12 @@ fn route_iteration(
 /// edge cost 排序是按"理想" cost (不排除已用孔) — 只用来选 MST 结构;
 /// 最终的孔选择是加边时重算的, 会略高于理想 cost, 但合法。
 fn mst_wires(
-    columns: &[i32],
+    pins: &[(i32, i32)],
     board: &Breadboard,
     occupancy: &Occupancy,
     history: &[f64],
 ) -> Vec<(HoleId, HoleId)> {
-    let n = columns.len();
+    let n = pins.len();
     if n < 2 {
         return Vec::new();
     }
@@ -213,8 +214,7 @@ fn mst_wires(
     let mut edges: Vec<(usize, usize, f64)> = Vec::new();
     for i in 0..n {
         for j in (i + 1)..n {
-            if let Some((cost, _, _)) = best_wire(columns[i], columns[j], board, occupancy, history)
-            {
+            if let Some((cost, _, _)) = best_wire(pins[i], pins[j], board, occupancy, history) {
                 edges.push((i, j, cost));
             }
         }
@@ -233,14 +233,9 @@ fn mst_wires(
             continue;
         }
         // 重算 best wire, 排除本 net 已用孔
-        if let Some((_, ha, hb)) = best_wire_avoiding(
-            columns[i],
-            columns[j],
-            board,
-            occupancy,
-            history,
-            &used_holes,
-        ) {
+        if let Some((_, ha, hb)) =
+            best_wire_avoiding(pins[i], pins[j], board, occupancy, history, &used_holes)
+        {
             parent[ri] = rj;
             used_holes.insert(ha);
             used_holes.insert(hb);
@@ -260,30 +255,32 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
     x
 }
 
-/// 给定两列, 找一对空孔 (ha, hb) 让 wire cost 最小
+/// 给定两个 (col, rail_top) 汇点, 找一对空孔 (ha, hb) 让 wire cost 最小
 ///
 /// wire cost = Manhattan(ha, hb) + history[ha] + history[hb]
+/// **关键约束**: ha 必须在 `pin_a` 所在 rail 内, hb 在 `pin_b` 所在 rail 内 —
+/// 否则面包板内部连通接不到 pin, 整个 net 实际是断的。
 fn best_wire(
-    col_a: i32,
-    col_b: i32,
+    pin_a: (i32, i32),
+    pin_b: (i32, i32),
     board: &Breadboard,
     occupancy: &Occupancy,
     history: &[f64],
 ) -> Option<(f64, HoleId, HoleId)> {
-    best_wire_avoiding(col_a, col_b, board, occupancy, history, &HashSet::new())
+    best_wire_avoiding(pin_a, pin_b, board, occupancy, history, &HashSet::new())
 }
 
 /// 同 `best_wire`, 但排除 `used` 里的孔 (本 net 内部已占的孔)
 fn best_wire_avoiding(
-    col_a: i32,
-    col_b: i32,
+    pin_a: (i32, i32),
+    pin_b: (i32, i32),
     board: &Breadboard,
     occupancy: &Occupancy,
     history: &[f64],
     used: &HashSet<HoleId>,
 ) -> Option<(f64, HoleId, HoleId)> {
-    let holes_a = empty_holes_in_column(col_a, board, occupancy);
-    let holes_b = empty_holes_in_column(col_b, board, occupancy);
+    let holes_a = empty_holes_in_rail(pin_a.0, pin_a.1, board, occupancy);
+    let holes_b = empty_holes_in_rail(pin_b.0, pin_b.1, board, occupancy);
     if holes_a.is_empty() || holes_b.is_empty() {
         return None;
     }
@@ -309,9 +306,17 @@ fn best_wire_avoiding(
     best
 }
 
-/// 一列上所有空孔
-fn empty_holes_in_column(col: i32, board: &Breadboard, occupancy: &Occupancy) -> Vec<HoleId> {
-    (0..board.rows() as i32)
+/// 一列上某 rail 的所有空孔 (含 rail_top 所在 rail 的所有行)。
+/// 重点: blocked row 上的位置天然被 `at` 过滤掉, 不需要额外检查。
+fn empty_holes_in_rail(
+    col: i32,
+    rail_top: i32,
+    board: &Breadboard,
+    occupancy: &Occupancy,
+) -> Vec<HoleId> {
+    board
+        .rail_rows(rail_top)
+        .into_iter()
         .filter_map(|row| board.at(col, row))
         .filter(|&id| occupancy.can_place_pin(id))
         .collect()
@@ -715,5 +720,90 @@ mod tests {
         }
         // 至少走出一根 wire (三个 pin 跨 3 个 column)
         assert!(!wires.is_empty(), "应能走出一根线");
+    }
+
+    /// 验证: 在标准板 (30x12) 上, 上下 rail 各 1 个 pin 属于同一 net, 路由不需走线
+    /// (同列不同 rail 不能靠面包板连通, 必须有 wire)。Pin 跨上下 rail 时, 路由
+    /// 仍能正确产生 wire。
+    #[test]
+    fn router_connects_across_rails() {
+        let b = Breadboard::standard();
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "single".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "A".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(0)],
+                    footprint: Some(FootprintId(0)),
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "B".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(1)],
+                    footprint: Some(FootprintId(0)),
+                },
+            ],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+            ],
+            nets: vec![Net {
+                id: NetId(0),
+                name: "N".into(),
+                pins: vec![PinId(0), PinId(1)],
+            }],
+            footprints: vec![fp],
+        }));
+        let mut layout = Layout::new(circuit);
+        // A 在 (0, 2) 上 rail, B 在 (5, 10) 下 rail — 跨 rail 又跨 col
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 0, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        layout.place(
+            ComponentId(1),
+            Placement {
+                position: Position { x: 5, y: 10 },
+                rotation: Rotation::R0,
+            },
+        );
+        let occ = layout.occupancy(&b).unwrap();
+        let wires = PathFinderRouter::default().route(circuit, &b, &occ);
+        assert_eq!(wires.len(), 1, "跨 rail 跨 col 同 net → 1 根 wire");
+        let w = &wires[0];
+        let p1 = b.hole(w.from).position;
+        let p2 = b.hole(w.to).position;
+        // 端点应分别在 (0, 2) 和 (5, 10) 附近 (具体 y 不定, 但必须不落在 blocked row)
+        assert_eq!(p1.x, 0);
+        assert_eq!(p2.x, 5);
+        assert!(p1.y < 5, "p1 应该在 上 rail, got {p1:?}");
+        assert!(p2.y >= 7, "p2 应该在 下 rail (y=7..12), got {p2:?}");
     }
 }

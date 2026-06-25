@@ -50,8 +50,10 @@ impl Occupancy {
         let mut occ = Self::empty(board);
         let mut errors = Vec::new();
         let mut occupied: HashSet<HoleId> = HashSet::new();
-        // 按列收集 endpoint, 用于检查"同列不同 net" 短路。
-        let mut by_column: std::collections::BTreeMap<i32, Vec<super::ColumnEndpoint>> =
+        // 按 (col, rail) 收集 endpoint, 用于检查"同列同 rail 不同 net" 短路。
+        // 之前只按 col 收集; 引入 blocked row 后, 同一列被分成多段独立 rail,
+        // 上下半的 pin 即便 x 相同也不该视为冲突。
+        let mut by_column: std::collections::BTreeMap<(i32, i32), Vec<super::ColumnEndpoint>> =
             std::collections::BTreeMap::new();
 
         for (idx, placement_opt) in layout.placements().iter().enumerate() {
@@ -105,9 +107,12 @@ impl Occupancy {
                 occupied.insert(hole);
                 occ.at[hole.0] = Some(Occupant::Pin(ph.pin));
                 let pin = &layout.circuit().pins[ph.pin.0];
-                let col = board.hole(hole).position.x;
+                let pos = board.hole(hole).position;
+                // rail_top = 该孔所在 rail 的最小 y 值; blocked row 上 at 已是 None,
+                // 所以这里总能拿到 Some。拿到 None 的极端情况 (row < 0) 视为同一 rail 0。
+                let rail_top = board.rail_rows(pos.y).first().copied().unwrap_or(pos.y);
                 by_column
-                    .entry(col)
+                    .entry((pos.x, rail_top))
                     .or_default()
                     .push(super::ColumnEndpoint::Pin {
                         pin: ph.pin,
@@ -187,9 +192,10 @@ impl Occupancy {
                 }
                 occupied.insert(hole);
                 occ.at[hole.0] = Some(Occupant::Wire(wire.id));
-                let col = board.hole(hole).position.x;
+                let pos = board.hole(hole).position;
+                let rail_top = board.rail_rows(pos.y).first().copied().unwrap_or(pos.y);
                 by_column
-                    .entry(col)
+                    .entry((pos.x, rail_top))
                     .or_default()
                     .push(super::ColumnEndpoint::Wire {
                         wire: wire.id,
@@ -198,9 +204,9 @@ impl Occupancy {
             }
         }
 
-        // 列短路检查: 任意一列上, 任意两个 endpoint 的 net 不一致 → 报 ColumnConflict。
+        // 列短路检查: 任意 (col, rail) 上, 任意两个 endpoint 的 net 不一致 → 报 ColumnConflict。
         // 选第一项作为"基准", 其后只报第一对 (一列报一次避免刷屏)。
-        for (col, endpoints) in by_column {
+        for ((col, _rail), endpoints) in by_column {
             if endpoints.len() < 2 {
                 continue;
             }
@@ -1258,5 +1264,180 @@ mod tests {
         let result = layout.occupancy(&b);
         // 哪怕 Q1 单独是合法的, 只要整个 layout 有错, 就返回 Err
         assert!(result.is_err());
+    }
+
+    // ============================================================
+    //  Rail 感知: 上下半的 pin 即便同列, 也不该视为冲突
+    // ============================================================
+
+    /// 标准板 (30x12, rows 5..7 blocked) 上, 同列不同 rail 的不同 net pin
+    /// 不该被报 ColumnConflict — 它们在物理上不连通。
+    #[test]
+    fn column_conflict_ignores_different_rails_on_full_board() {
+        let b = Breadboard::standard();
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "single".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "A".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(0)],
+                    footprint: Some(FootprintId(0)),
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "B".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(1)],
+                    footprint: Some(FootprintId(0)),
+                },
+            ],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "n0".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "n1".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        }));
+        let mut layout = Layout::new(circuit);
+        // A 在上 rail: (0, 2), B 在下 rail: (0, 10) — 同 col, 不同 rail
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 0, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        layout.place(
+            ComponentId(1),
+            Placement {
+                position: Position { x: 0, y: 10 },
+                rotation: Rotation::R0,
+            },
+        );
+        let result = layout.occupancy(&b);
+        assert!(
+            result.is_ok(),
+            "上下 rail 同列不同 net 不该报 ColumnConflict, got: {result:?}"
+        );
+    }
+
+    /// 标准板上, 同列同 rail 不同 net → 仍报 ColumnConflict (回归测试)。
+    #[test]
+    fn column_conflict_still_reports_same_rail_on_full_board() {
+        let b = Breadboard::standard();
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "single".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "A".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(0)],
+                    footprint: Some(FootprintId(0)),
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "B".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(1)],
+                    footprint: Some(FootprintId(0)),
+                },
+            ],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "n0".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "n1".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        }));
+        let mut layout = Layout::new(circuit);
+        // A 在上 rail: (0, 2), B 在上 rail: (0, 4) — 同 col, 同 rail, 不同 net
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 0, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        layout.place(
+            ComponentId(1),
+            Placement {
+                position: Position { x: 0, y: 4 },
+                rotation: Rotation::R0,
+            },
+        );
+        let errors = layout.occupancy(&b).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, crate::layout::LayoutError::ColumnConflict { .. })),
+            "同 rail 内同列不同 net 必须报 ColumnConflict, got: {errors:?}"
+        );
     }
 }

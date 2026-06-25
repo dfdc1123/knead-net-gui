@@ -118,14 +118,20 @@ impl SAState {
 
             let mut found: Option<(i32, i32)> = None;
             'outer: for try_y in 0..board.rows() as i32 {
+                if board.is_blocked(try_y as usize) {
+                    continue;
+                }
                 for try_x in 0..board.cols() as i32 {
-                    let oob = bbox_cells.iter().any(|&(dx, dy)| {
-                        try_x + dx < 0
-                            || try_x + dx >= board.cols() as i32
-                            || try_y + dy < 0
-                            || try_y + dy >= board.rows() as i32
+                    let oob_or_blocked = bbox_cells.iter().any(|&(dx, dy)| {
+                        let x = try_x + dx;
+                        let y = try_y + dy;
+                        x < 0
+                            || x >= board.cols() as i32
+                            || y < 0
+                            || y >= board.rows() as i32
+                            || board.is_blocked(y as usize)
                     });
-                    if oob {
+                    if oob_or_blocked {
                         continue;
                     }
                     let collides = bbox_cells
@@ -301,14 +307,20 @@ impl SAState {
             let mut best: Option<(i32, i32)> = None;
             let mut best_dist_sq = f64::INFINITY;
             for try_y in 0..board.rows() as i32 {
+                if board.is_blocked(try_y as usize) {
+                    continue;
+                }
                 for try_x in 0..board.cols() as i32 {
-                    let oob = bbox_cells.iter().any(|&(dx, dy)| {
-                        try_x + dx < 0
-                            || try_x + dx >= board.cols() as i32
-                            || try_y + dy < 0
-                            || try_y + dy >= board.rows() as i32
+                    let oob_or_blocked = bbox_cells.iter().any(|&(dx, dy)| {
+                        let x = try_x + dx;
+                        let y = try_y + dy;
+                        x < 0
+                            || x >= board.cols() as i32
+                            || y < 0
+                            || y >= board.rows() as i32
+                            || board.is_blocked(y as usize)
                     });
-                    if oob {
+                    if oob_or_blocked {
                         continue;
                     }
                     let collides = bbox_cells
@@ -407,10 +419,13 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         bboxes.push(BBox::from_points(world_positions));
     }
 
-    // 2. OOB
+    // 2. OOB: 超出板边 或 落在 blocked row (被面包板本身永久占用的行) 都算。
+    //    blocked row 不是可放置区域, pin 落在上面 = 跟越界一样的“不能放”。
     let mut oob_count = 0;
     for &(c, r) in &holes {
         if c < 0 || c >= cols_i || r < 0 || r >= rows_i {
+            oob_count += 1;
+        } else if board.is_blocked(r as usize) {
             oob_count += 1;
         }
     }
@@ -419,7 +434,10 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
     let mut coll_count = 0;
     let mut seen: HashMap<(i32, i32), ()> = HashMap::new();
     for &hole in &holes {
-        if in_board(hole, cols_i, rows_i) && seen.insert(hole, ()).is_some() {
+        if in_board(hole, cols_i, rows_i)
+            && !board.is_blocked(hole.1 as usize)
+            && seen.insert(hole, ()).is_some()
+        {
             coll_count += 1;
         }
     }
@@ -447,8 +465,8 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
     let mut by_net: HashMap<NetId, Vec<(i32, i32)>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
         let hole = holes[i];
-        if !in_board(hole, cols_i, rows_i) {
-            continue; // OOB pin 不参与 HPWL (会被压到板内, 没意义)
+        if !in_board(hole, cols_i, rows_i) || board.is_blocked(hole.1 as usize) {
+            continue; // OOB / blocked-row pin 不参与 HPWL (会被压到板内, 没意义)
         }
         if let Some(net) = net_opt {
             by_net.entry(net).or_default().push(hole);
@@ -464,14 +482,17 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         hpwl_sum += (max_col - min_col) as f64;
     }
 
-    // 6. 列冲突: 按列聚合, 计数"不同 net" 的对数
-    let mut by_col: HashMap<i32, Vec<Option<NetId>>> = HashMap::new();
+    // 6. 列冲突: 按 (col, rail) 聚合, 计数"不同 net" 的对数。
+    //    之前只按 col, 引入 blocked row 后同列会被切分成多个 rail, 必须分桶。
+    //    blocked-row 上的 pin 也不该参与 (它根本放不上板, rail 都不算)。
+    let mut by_col: HashMap<(i32, i32), Vec<Option<NetId>>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
         let hole = holes[i];
-        if !in_board(hole, cols_i, rows_i) {
+        if !in_board(hole, cols_i, rows_i) || board.is_blocked(hole.1 as usize) {
             continue;
         }
-        by_col.entry(hole.0).or_default().push(net_opt);
+        let rail_top = board.rail_rows(hole.1).first().copied().unwrap_or(hole.1);
+        by_col.entry((hole.0, rail_top)).or_default().push(net_opt);
     }
     let mut col_conflict_pairs = 0usize;
     for col_owners in by_col.values() {
@@ -708,6 +729,54 @@ mod tests {
             (c_col_only - Weights::default().column_conflict).abs() < 1e-9,
             "expected only column_conflict penalty, got {}",
             c_col_only
+        );
+    }
+
+    /// 标准板上, 同列不同 rail 的不同 net pin 不该被记为列冲突。
+    #[test]
+    fn column_conflict_ignores_different_rails_in_cost() {
+        let board = crate::layout::Breadboard::standard();
+        let fp = one_pin_fp();
+        let comps = (0..2)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..2)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(i)),
+            })
+            .collect();
+        let nets = (0..2)
+            .map(|i| Net {
+                id: NetId(i),
+                name: format!("n{i}"),
+                pins: vec![PinId(i)],
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 0, &[1, 1]);
+        // 同 col 0, C0 在上 rail (y=2), C1 在下 rail (y=10) — 物理不连通
+        state.x = vec![0, 0];
+        state.y = vec![2, 10];
+        let c = cost(&state, &circuit, &board, &Weights::default());
+        assert_eq!(
+            c, 0.0,
+            "上下 rail 同列不同 net 不该被 cost 记为冲突, got {c}"
         );
     }
 

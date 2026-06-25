@@ -46,6 +46,17 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
         r##"<rect width="100%" height="100%" fill="#fafafa"/>"##
     );
 
+    // 画中央通道 (blocked row 拼接的带) — 面包板中线的简化表示。
+    if let Some((gap_top, gap_bottom)) = gap_extent(board) {
+        let gap_y = MARGIN + gap_top as f32 * CELL_Y;
+        let gap_h = (gap_bottom - gap_top + 1) as f32 * CELL_Y;
+        let inner_w = board.cols() as f32 * CELL_X;
+        let _ = writeln!(
+            out,
+            r##"<rect x="{MARGIN}" y="{gap_y}" width="{inner_w}" height="{gap_h}" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.5"/>"##
+        );
+    }
+
     // 1) 元件包围框 + ref 文字
     for (i, slot) in layout.placements().iter().enumerate() {
         let Some(placement) = *slot else { continue };
@@ -118,6 +129,35 @@ fn hole_px_from_pos(pos: Position) -> (f32, f32) {
         MARGIN + pos.x as f32 * CELL_X + CELL_X / 2.0,
         MARGIN + pos.y as f32 * CELL_Y + CELL_Y / 2.0,
     )
+}
+
+/// 算中央通道 (连续 blocked row) 的 (top, bottom) 范围, 没有则返回 None。
+/// 现在 Breadboard 只允许一个连续 blocked 范围 (跟面包板中线对应), 但这里按
+/// 通用做法写: 找最长的连续 blocked 段, 覆盖中央主要部分。
+fn gap_extent(board: &Breadboard) -> Option<(usize, usize)> {
+    let blocked = board.blocked_rows();
+    if blocked.is_empty() {
+        return None;
+    }
+    // 找最长连续段
+    let mut best = (blocked[0], blocked[0]);
+    let mut cur_start = blocked[0];
+    let mut cur_end = blocked[0];
+    for &r in blocked.iter().skip(1) {
+        if r == cur_end + 1 {
+            cur_end = r;
+        } else {
+            if cur_end - cur_start > best.1 - best.0 {
+                best = (cur_start, cur_end);
+            }
+            cur_start = r;
+            cur_end = r;
+        }
+    }
+    if cur_end - cur_start > best.1 - best.0 {
+        best = (cur_start, cur_end);
+    }
+    Some(best)
 }
 
 // ---------- 接线规划 ----------

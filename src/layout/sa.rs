@@ -214,6 +214,12 @@ pub(super) fn simulate(
         let m = random_move(&state, &mut rng, board);
         let mut candidate = state.clone();
         apply_move(&mut candidate, m);
+        // 拒绝任何产生越界 / blocked row y 的候选 — 物理上不该考虑的状态。
+        // (cost 会扣 OOB 惩罚让 SA 远离开, 但放在这里少跑 cost 计算。
+        // 另外, 若初始状态本身就合法, SA 也不会被锁定到 "都是 OOB 的同代价态"。)
+        if !state_y_valid(&candidate, board) {
+            continue;
+        }
         let new_cost = cost(&candidate, circuit, board, &config.weights);
         let delta = new_cost - current_cost;
 
@@ -236,6 +242,16 @@ pub(super) fn simulate(
     best_state
 }
 
+/// 检查 SAState 里所有 y 是否在板内且非 blocked row。
+/// ShiftY ±1 可能把 y=0 的元件推到 y=-1 (越界), 把 y=4 的推到 y=5 (blocked row),
+/// 这些候选从一开始就不该让 SA 考虑。
+fn state_y_valid(state: &SAState, board: &Breadboard) -> bool {
+    state
+        .y
+        .iter()
+        .all(|&y| y >= 0 && (y as usize) < board.rows() && !board.is_blocked(y as usize))
+}
+
 // ============================================================
 //  退火后的位置压缩
 // ============================================================
@@ -252,10 +268,11 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) ->
     let n = state.n();
     let mut new_x = vec![0i32; n];
     let mut occupied: HashSet<(i32, i32)> = HashSet::new();
-    // 列 → 该列上第一个放下的 pin 的 net (与 `cost` 里 "col_owners[0] == base" 的语义一致)。
-    // 后续 pin 落到该列时, 如果 net != first_net 且双方都 Some 就视为冲突;
+    // (col, rail_top) → 该位置第一个放下的 pin 的 net (与 `cost` 里 "col_owners[0] == base" 的语义一致)。
+    // 后续 pin 落到该 (col, rail) 时, 如果 net != first_net 且双方都 Some 就视为冲突;
     // 任何一边是 None 也算冲突, 与 SA 成本函数保持一致。
-    let mut col_first_net: HashMap<i32, Option<crate::circuit::NetId>> = HashMap::new();
+    // rail 区分上下半: 同一列上的上 rail 和下 rail 是两个独立桶。
+    let mut col_first_net: HashMap<(i32, i32), Option<crate::circuit::NetId>> = HashMap::new();
 
     for idx in 0..n {
         let comp_id = state.placeable[idx];
@@ -311,14 +328,27 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) ->
         let mut chosen: Option<i32> = None;
         let mut cur = board_min_x;
         while cur <= board_max_x {
-            let collides = bbox_offsets
-                .iter()
-                .any(|&(rdx, rdy)| occupied.contains(&(cur + rdx, row_y + rdy)));
-            if !collides {
-                // 列冲突: 该候选位置下, 任一 pin 落在 col_first_net 已记录且 net 不一致的列
-                let col_conflict = pin_info.iter().any(|&((rdx, _), net)| {
+            // bbox 任意一格越界 / 落在 blocked row / 已被占 → 跳过
+            let bbox_invalid = bbox_offsets.iter().any(|&(rdx, rdy)| {
+                let x = cur + rdx;
+                let y = row_y + rdy;
+                x < 0
+                    || x >= board.cols() as i32
+                    || y < 0
+                    || y >= board.rows() as i32
+                    || board.is_blocked(y as usize)
+                    || occupied.contains(&(x, y))
+            });
+            if !bbox_invalid {
+                // 列冲突: 该候选位置下, 任一 pin 落在已记录 net 不一致的 (col, rail)
+                let col_conflict = pin_info.iter().any(|&((rdx, rdy), net)| {
                     let col = cur + rdx;
-                    match col_first_net.get(&col) {
+                    let rail_top = board
+                        .rail_rows(row_y + rdy)
+                        .first()
+                        .copied()
+                        .unwrap_or(row_y + rdy);
+                    match col_first_net.get(&(col, rail_top)) {
                         None => false,
                         Some(existing) => existing != &net,
                     }
@@ -337,10 +367,12 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) ->
         for &(rdx, rdy) in &bbox_offsets {
             occupied.insert((new_x[idx] + rdx, row_y + rdy));
         }
-        // pin 单独记列上的 net (只有 pin 决定该列的"owner net", blocked 不影响)。
+        // pin 单独记 (col, rail) 上的 net (只有 pin 决定该列的"owner net", blocked 不影响)。
         for &((rdx, rdy), net) in &pin_info {
-            let abs = (new_x[idx] + rdx, row_y + rdy);
-            col_first_net.entry(abs.0).or_insert(net);
+            let abs_x = new_x[idx] + rdx;
+            let abs_y = row_y + rdy;
+            let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+            col_first_net.entry((abs_x, rail_top)).or_insert(net);
         }
     }
 
@@ -599,6 +631,82 @@ mod tests {
         let xs = compact(&state, &circuit, &board());
         assert_eq!(xs[0], 0, "C0 应当压到 0");
         assert_eq!(xs[1], 1, "C1 应跳到 col 1 避免同列不同 net, got {}", xs[1]);
+    }
+
+    /// 验证在标准板上, compact 可以把两个不同 net 的 pin 压到同列 (上 rail + 下 rail),
+    /// 不该误报列冲突。
+    #[test]
+    fn compact_allows_same_column_different_rails() {
+        let board = crate::layout::Breadboard::standard();
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "one".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let components = (0..2)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("C{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..2)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(i)),
+            })
+            .collect();
+        let nets = (0..2)
+            .map(|i| Net {
+                id: NetId(i),
+                name: format!("n{i}"),
+                pins: vec![PinId(i)],
+            })
+            .collect();
+        let circuit = Circuit {
+            components,
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        // C0 在上 rail (0, 2), C1 在下 rail (0, 10) — 同 col 0, 不同 rail
+        let state = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 0],
+            y: vec![2, 10],
+            rotation: vec![Rotation::R0; 2],
+        };
+        let xs = compact(&state, &circuit, &board);
+        // 两个都可以压到 0 (上下 rail 互不干扰)
+        assert_eq!(xs[0], 0, "C0 应在 col 0");
+        assert_eq!(
+            xs[1], 0,
+            "C1 应保持 col 0 — 上下 rail 不该报列冲突, got {}",
+            xs[1]
+        );
+    }
+
+    /// 验证 SAState::from_greedy 在标准板上不会试着把元件放中间 blocked row。
+    #[test]
+    fn from_greedy_avoids_blocked_rows() {
+        let board = crate::layout::Breadboard::standard();
+        let circuit = simple_circuit();
+        let state = SAState::from_greedy(vec![ComponentId(0), ComponentId(1)], &circuit, &board);
+        for &y in &state.y {
+            assert!(
+                !board.is_blocked(y as usize),
+                "from_greedy 把元件放到了 blocked row y={y}"
+            );
+        }
     }
 
     #[test]
