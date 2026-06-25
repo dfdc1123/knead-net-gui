@@ -3,12 +3,20 @@
 //! 流程: [`simulate`] → 写回 `Layout.placements` → `validate`。
 //! 紧凑度已折进 [`cost::cost`], SA 一次跑完搞定。
 //!
-//! 扰动集 (v2, 概率):
-//! - 30% `Swap`     —— 交换两个元件的 `(x, y, rotation)` 三元组
-//! - 15% `Flip`     —— 翻转单个元件的方向 (R0 ↔ R180)
-//! - 20% `ShiftX`   —— 单个元件左右微调 ±1 col
-//! - 20% `ShiftY`   —— 单个元件上下微调 ±1 row
-//! - 15% `Teleport` —— 单个元件跳到任意合法 `(x, y)`
+//! 扰动集 (v3, 概率):
+//! - 60% `ShiftX` —— 单个元件左右微调; 高温期幅度可达 ±3 col, 低温退到 ±1
+//! - 30% `Flip`   —— 翻转单个元件的方向 (R0 ↔ R180)
+//! - 10% `ShiftY` —— 单个元件上下微调; 高温期幅度可达 ±3 row, 低温退到 ±1
+//!
+//! v3 相对 v2 的关键变化:
+//! - 删 `Swap` / `Teleport`: FD 初排已经给好全局形状, SA 阶段不需要远距离重排;
+//!   远距离重排靠高温期 `ShiftX` 的大步长 (`N=2 or 3`) 多次迭代实现。
+//! - `ShiftX` 概率从 20% 提到 60%: 18 元件板上 2.5 cell 量级的"局部最优"
+//!   (如 R2 卡在 x=1 vs 真实 x=2) 是 SA 的主战场, 需要更多采样。
+//! - `ShiftY` 从 20% 降到 10%: 所有 footprint 的 y 跨度 ≤ 1, ShiftY 大部分
+//!   move 对最终 layout 没贡献, 抽样成本高。
+//! - `Flip` 从 15% 提到 30%: TO-92 / DO-41 等有方向性的元件, 翻转是常见
+//!   "把 pin 挪到对面 rail"的手段, 概率太低会让方向修正跟不上。
 //!
 //! **不**用 R90/R270 (会改变 footprint 的水平宽度, 破坏"显式 2D 状态"假设)。
 //!
@@ -69,76 +77,50 @@ impl Default for SAConfig {
 
 #[derive(Debug, Clone, Copy)]
 enum Move {
-    /// 交换两个元件的 (x, y, rotation) 三元组
-    Swap(usize, usize),
     /// 翻转单个元件的旋转 (R0 ↔ R180)
     Flip(usize),
-    /// 单个元件 x 增 ±1
+    /// 单个元件 x 增 ±N (N 随温度: 高温 1..=3, 低温 1)
     ShiftX(usize, i32),
-    /// 单个元件 y 增 ±1
+    /// 单个元件 y 增 ±N (N 随温度: 高温 1..=3, 低温 1)
     ShiftY(usize, i32),
-    /// 单个元件跳到 (x, y)
-    Teleport(usize, i32, i32),
 }
 
-fn random_move(state: &SAState, rng: &mut fastrand::Rng, board: &Breadboard) -> Move {
+fn random_move(state: &SAState, rng: &mut fastrand::Rng, t: f64, t0: f64) -> Move {
     let n = state.n();
     if n == 0 {
         return Move::Flip(0);
     }
     let p = rng.usize(0..n);
     let r = rng.f64();
-    let dx = if rng.f64() < 0.5 { -1 } else { 1 };
-    let dy = if rng.f64() < 0.5 { -1 } else { 1 };
 
-    if n < 2 {
-        if r < 0.20 {
-            return Move::Flip(p);
-        }
-        if r < 0.40 {
-            return Move::ShiftX(p, dx);
-        }
-        if r < 0.60 {
-            return Move::ShiftY(p, dy);
-        }
-        return Move::Teleport(
-            p,
-            rng.usize(0..board.cols()) as i32,
-            rng.usize(0..board.rows()) as i32,
-        );
-    }
-
-    if r < 0.30 {
-        let q = loop {
-            let q = rng.usize(0..n);
-            if q != p {
-                break q;
-            }
-        };
-        Move::Swap(p, q)
-    } else if r < 0.45 {
-        Move::Flip(p)
-    } else if r < 0.65 {
-        Move::ShiftX(p, dx)
-    } else if r < 0.85 {
-        Move::ShiftY(p, dy)
+    // 步长随温度变: 高温期 N ∈ {1, 2, 3} 均匀, 中温 {1, 2}, 低温恒为 1。
+    // 三个区间按 T0 的 0.5 / 0.2 划分; 越冷越精细, 越热越敢跳。
+    let max_n = if t > t0 * 0.5 {
+        3
+    } else if t > t0 * 0.2 {
+        2
     } else {
-        Move::Teleport(
-            p,
-            rng.usize(0..board.cols()) as i32,
-            rng.usize(0..board.rows()) as i32,
-        )
+        1
+    };
+    // 用 max_n=1 时 rng.usize(0..1) 仍消耗一个随机数 (始终返回 0),
+    // 保持不同温度下 rng 序列的可比性 — 避免"高温多消费随机数"污染种子复现性。
+    let n_amp = 1 + rng.usize(0..max_n) as i32;
+    let dx_sign = if rng.f64() < 0.5 { -1 } else { 1 };
+    let dy_sign = if rng.f64() < 0.5 { -1 } else { 1 };
+    let dx = dx_sign * n_amp;
+    let dy = dy_sign * n_amp;
+
+    if r < 0.60 {
+        Move::ShiftX(p, dx)
+    } else if r < 0.90 {
+        Move::Flip(p)
+    } else {
+        Move::ShiftY(p, dy)
     }
 }
 
 fn apply_move(state: &mut SAState, m: Move) {
     match m {
-        Move::Swap(i, j) => {
-            state.placeable.swap(i, j);
-            state.x.swap(i, j);
-            state.y.swap(i, j);
-            state.rotation.swap(i, j);
-        }
         Move::Flip(i) => {
             state.rotation[i] = match state.rotation[i] {
                 Rotation::R0 => Rotation::R180,
@@ -148,10 +130,6 @@ fn apply_move(state: &mut SAState, m: Move) {
         }
         Move::ShiftX(i, dx) => state.x[i] += dx,
         Move::ShiftY(i, dy) => state.y[i] += dy,
-        Move::Teleport(i, x, y) => {
-            state.x[i] = x;
-            state.y[i] = y;
-        }
     }
 }
 
@@ -181,7 +159,7 @@ pub(super) fn simulate(
     let mut t = config.t0;
 
     for _ in 0..config.max_iters {
-        let m = random_move(&state, &mut rng, board);
+        let m = random_move(&state, &mut rng, t, config.t0);
         let mut candidate = state.clone();
         apply_move(&mut candidate, m);
         // 拒绝任何产生越界 / blocked row y 的候选 — 物理上不该考虑的状态。
@@ -314,34 +292,36 @@ mod tests {
             &board(),
         );
         let mut rng = fastrand::Rng::with_seed(0);
-        for _ in 0..200 {
-            let m = random_move(&state, &mut rng, &board());
+        // T0=30, T 在 [0.3, 30] 区间走过, 涵盖 max_n=3/2/1 三档。
+        for k in 0..200 {
+            let t = 30.0_f64 * (1.0 - k as f64 / 200.0) + 0.3;
+            let m = random_move(&state, &mut rng, t, 30.0);
             match m {
-                Move::Swap(i, j) => {
-                    assert!(i < state.n() && j < state.n());
-                    assert_ne!(i, j);
-                }
-                Move::Flip(i)
-                | Move::ShiftX(i, _)
-                | Move::ShiftY(i, _)
-                | Move::Teleport(i, _, _) => {
-                    assert!(i < state.n());
+                Move::Flip(i) | Move::ShiftX(i, _) | Move::ShiftY(i, _) => {
+                    assert!(i < state.n(), "index {i} out of range {}", state.n());
                 }
             }
         }
     }
 
     #[test]
-    fn apply_swap_swaps_all_fields() {
-        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
-        state.x = vec![5, 10];
-        state.y = vec![0, 3];
-        state.rotation = vec![Rotation::R0, Rotation::R180];
-        apply_move(&mut state, Move::Swap(0, 1));
-        assert_eq!(state.placeable, vec![ComponentId(1), ComponentId(0)]);
-        assert_eq!(state.x, vec![10, 5]);
-        assert_eq!(state.y, vec![3, 0]);
-        assert_eq!(state.rotation, vec![Rotation::R180, Rotation::R0]);
+    fn random_move_high_t_uses_larger_amplitude() {
+        // 同一个 state, 同一个 seed, 在不同 t 下生成的 ShiftX 步长分布不同
+        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
+        let mut rng_hi = fastrand::Rng::with_seed(0);
+        let mut rng_lo = fastrand::Rng::with_seed(0);
+        let mut hi_max = 0i32;
+        let mut lo_max = 0i32;
+        for _ in 0..2000 {
+            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_hi, 30.0, 30.0) {
+                hi_max = hi_max.max(dx.abs());
+            }
+            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_lo, 0.5, 30.0) {
+                lo_max = lo_max.max(dx.abs());
+            }
+        }
+        assert!(hi_max >= 2, "T=30 应该出现 N=2 或 N=3, 最大观测 = {hi_max}");
+        assert_eq!(lo_max, 1, "T=0.5 应该恒为 N=1, 最大观测 = {lo_max}");
     }
 
     #[test]
@@ -369,14 +349,6 @@ mod tests {
         assert_eq!(state.y[0], 3);
         apply_move(&mut state, Move::ShiftY(0, -2));
         assert_eq!(state.y[0], 1);
-    }
-
-    #[test]
-    fn apply_teleport_sets_position() {
-        let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
-        apply_move(&mut state, Move::Teleport(0, 7, 3));
-        assert_eq!(state.x[0], 7);
-        assert_eq!(state.y[0], 3);
     }
 
     /// 验证 SAState::from_greedy 在标准板上不会试着把元件放中间 blocked row。

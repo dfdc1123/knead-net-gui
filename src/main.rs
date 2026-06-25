@@ -44,8 +44,8 @@ fn main() {
             use_force_directed: true,
             max_iters: 50000,
             t0: 30.0,
-            cool_rate: 0.97,
-            n_seeds: 10,
+            cool_rate: 0.99,
+            n_seeds: 30,
             ..SAConfig::default()
         },
     ) {
