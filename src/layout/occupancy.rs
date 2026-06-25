@@ -146,6 +146,33 @@ impl Occupancy {
         self.at[hole.0]
     }
 
+    /// 从 layout 构造 occupancy, **忽略所有错误**。 有冲突/OOB 的孔要么不填, 要么
+    /// 后到的 pin 覆盖先到的。 主程序在 `validate` 报错时用它来 "尽力跑接线 + 画 SVG"。
+    pub fn from_layout_lossy(layout: &Layout, board: &Breadboard) -> Self {
+        let mut occ = Self::empty(board);
+        for (idx, slot) in layout.placements().iter().enumerate() {
+            let Some(placement) = *slot else { continue };
+            let component = &layout.circuit().components()[idx];
+            let Some(fid) = component.footprint() else {
+                continue;
+            };
+            let footprint = &layout.circuit().footprints()[fid.raw()];
+            let Ok(placed) = placement.apply(component, footprint, board, layout.circuit().pins())
+            else {
+                continue;
+            };
+            for ph in placed.pin_holes {
+                occ.at[ph.hole.0] = Some(Occupant::Pin(ph.pin));
+            }
+        }
+        for w in layout.wires() {
+            for h in w.contacts() {
+                occ.at[h.0] = Some(Occupant::Wire(w.id));
+            }
+        }
+        occ
+    }
+
     pub fn can_place_pin(&self, hole: HoleId) -> bool {
         self.at[hole.0].is_none()
     }
@@ -417,6 +444,94 @@ mod tests {
             result.is_ok(),
             "同 net pin + wire 同列不该报冲突: {result:?}"
         );
+    }
+
+    /// lossy: 有 column 冲突的 layout, lossy 版应该仍然出 occupancy
+    /// (pin 都在不同孔, 都能填进去)
+    #[test]
+    fn from_layout_lossy_succeeds_with_column_conflicts() {
+        let b = Breadboard::new(30, 5);
+        // 两个 1-pin 元件, 不同 net, 放同列不同行
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "single".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "A".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(0)],
+                    footprint: Some(FootprintId(0)),
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "B".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(1)],
+                    footprint: Some(FootprintId(0)),
+                },
+            ],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "n0".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "n1".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        }));
+        let mut layout = Layout::new(circuit);
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 0, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        layout.place(
+            ComponentId(1),
+            Placement {
+                position: Position { x: 0, y: 4 },
+                rotation: Rotation::R0,
+            },
+        );
+        // 严格版报 ColumnConflict
+        assert!(layout.occupancy(&b).is_err());
+        // lossy 版应该成功, 两个 pin 都在
+        let occ = Occupancy::from_layout_lossy(&layout, &b);
+        let p0 = b.at(0, 2).unwrap();
+        let p1 = b.at(0, 4).unwrap();
+        assert!(matches!(occ.occupant_at(p0), Some(Occupant::Pin(PinId(0)))));
+        assert!(matches!(occ.occupant_at(p1), Some(Occupant::Pin(PinId(1)))));
     }
 
     #[test]

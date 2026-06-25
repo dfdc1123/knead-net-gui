@@ -1,25 +1,26 @@
-//! 模拟退火布局: 顺序 + 旋转 + 行的扰动。
+//! 模拟退火布局: 显式 `(x, y, rotation)` 状态。
 //!
 //! 流程: [`simulate`] → [`compact`] → 写回 `Layout.placements` → `validate`。
 //!
-//! 扰动集 (概率):
-//! - 50% `Swap`  —— 交换两个元件的左右顺序
-//! - 25% `Flip`  —— 翻转单个元件的方向 (R0 ↔ R180)
-//! - 20% `ShiftY` —— 单个元件上下微调 ±1 行
-//! -  5% `Teleport` —— 单个元件跳到任意其他行 (5 行板上用得着, 解决"前排满后排空"僵局)
+//! 扰动集 (v2, 概率):
+//! - 30% `Swap`     —— 交换两个元件的 `(x, y, rotation)` 三元组
+//! - 15% `Flip`     —— 翻转单个元件的方向 (R0 ↔ R180)
+//! - 20% `ShiftX`   —— 单个元件左右微调 ±1 col
+//! - 20% `ShiftY`   —— 单个元件上下微调 ±1 row
+//! - 15% `Teleport` —— 单个元件跳到任意合法 `(x, y)`
 //!
-//! **不**用 R90/R270 (会改变 footprint 的水平宽度, 破坏"一维顺序"假设)。
+//! **不**用 R90/R270 (会改变 footprint 的水平宽度, 破坏"显式 2D 状态"假设)。
 //!
 //! Rng: 自己写的 [`Lcg`] (SplitMix64), 不引外部依赖。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::circuit::{Circuit, ComponentId};
 use crate::layout::breadboard::Breadboard;
-use crate::layout::cost::{SAState, Weights, cost};
+use crate::layout::cost::{FDConfig, SAState, Weights, cost};
 use crate::layout::placement::{Rotation, rotate};
 
-/// SA 总配置。`Default` 给出 5 元件级别的合理起点。
+/// SA 总配置。`Default` 给出 18 元件级别的合理起点。
 #[derive(Debug, Clone, Copy)]
 pub struct SAConfig {
     /// 退火总迭代数; 后期 SA 接受率接近 0, 跑也是空转。
@@ -31,16 +32,23 @@ pub struct SAConfig {
     pub weights: Weights,
     /// 决定随机扰动序列; 改 seed 可重新跑一遍出不同结果。
     pub seed: u64,
+    /// `true` 用 [`SAState::from_force_directed`] 做初排 (比 `from_greedy` 慢,
+    /// 但对强耦合电路起点好得多); `false` 用贪心 first-fit。
+    pub use_force_directed: bool,
+    /// 仅在 `use_force_directed = true` 时使用。
+    pub fd_config: FDConfig,
 }
 
 impl Default for SAConfig {
     fn default() -> Self {
         Self {
-            max_iters: 5000,
+            max_iters: 10000,
             t0: 10.0,
             cool_rate: 0.95,
             weights: Weights::default(),
             seed: 0xCAFE_F00D,
+            use_force_directed: false,
+            fd_config: FDConfig::default(),
         }
     }
 }
@@ -91,38 +99,46 @@ impl Lcg {
 
 #[derive(Debug, Clone, Copy)]
 enum Move {
-    /// 交换 order[i] 和 order[j]
+    /// 交换两个元件的 (x, y, rotation) 三元组
     Swap(usize, usize),
-    /// 翻转 order[i] 的旋转 (R0 ↔ R180)
+    /// 翻转单个元件的旋转 (R0 ↔ R180)
     Flip(usize),
-    /// order[i] 的 row 加上 dy (±1)
+    /// 单个元件 x 增 ±1
+    ShiftX(usize, i32),
+    /// 单个元件 y 增 ±1
     ShiftY(usize, i32),
-    /// order[i] 跳到任意行
-    Teleport(usize, i32),
+    /// 单个元件跳到 (x, y)
+    Teleport(usize, i32, i32),
 }
 
 fn random_move(state: &SAState, rng: &mut Lcg, board: &Breadboard) -> Move {
     let n = state.n();
     if n == 0 {
-        // 没有元件时不该被调用, 但返回个无害的
         return Move::Flip(0);
     }
     let p = rng.gen_range(0, n);
     let r = rng.gen_unit();
+    let dx = if rng.gen_bool_p(0.5) { -1 } else { 1 };
+    let dy = if rng.gen_bool_p(0.5) { -1 } else { 1 };
 
     if n < 2 {
-        // 没法 swap, 三个动作平分概率
-        if r < 1.0 / 3.0 {
+        if r < 0.20 {
             return Move::Flip(p);
         }
-        if r < 2.0 / 3.0 {
-            return Move::ShiftY(p, if rng.gen_bool_p(0.5) { -1 } else { 1 });
+        if r < 0.40 {
+            return Move::ShiftX(p, dx);
         }
-        return Move::Teleport(p, rng.gen_range(0, board.rows()) as i32);
+        if r < 0.60 {
+            return Move::ShiftY(p, dy);
+        }
+        return Move::Teleport(
+            p,
+            rng.gen_range(0, board.cols()) as i32,
+            rng.gen_range(0, board.rows()) as i32,
+        );
     }
 
-    if r < 0.50 {
-        // Swap; 保证 q != p
+    if r < 0.30 {
         let q = loop {
             let q = rng.gen_range(0, n);
             if q != p {
@@ -130,18 +146,29 @@ fn random_move(state: &SAState, rng: &mut Lcg, board: &Breadboard) -> Move {
             }
         };
         Move::Swap(p, q)
-    } else if r < 0.75 {
+    } else if r < 0.45 {
         Move::Flip(p)
-    } else if r < 0.95 {
-        Move::ShiftY(p, if rng.gen_bool_p(0.5) { -1 } else { 1 })
+    } else if r < 0.65 {
+        Move::ShiftX(p, dx)
+    } else if r < 0.85 {
+        Move::ShiftY(p, dy)
     } else {
-        Move::Teleport(p, rng.gen_range(0, board.rows()) as i32)
+        Move::Teleport(
+            p,
+            rng.gen_range(0, board.cols()) as i32,
+            rng.gen_range(0, board.rows()) as i32,
+        )
     }
 }
 
 fn apply_move(state: &mut SAState, m: Move) {
     match m {
-        Move::Swap(i, j) => state.placeable.swap(i, j),
+        Move::Swap(i, j) => {
+            state.placeable.swap(i, j);
+            state.x.swap(i, j);
+            state.y.swap(i, j);
+            state.rotation.swap(i, j);
+        }
         Move::Flip(i) => {
             state.rotation[i] = match state.rotation[i] {
                 Rotation::R0 => Rotation::R180,
@@ -149,8 +176,12 @@ fn apply_move(state: &mut SAState, m: Move) {
                 other => panic!("SA 只用 R0/R180, 不该出现 {:?}", other),
             };
         }
-        Move::ShiftY(i, dy) => state.row[i] += dy,
-        Move::Teleport(i, r) => state.row[i] = r,
+        Move::ShiftX(i, dx) => state.x[i] += dx,
+        Move::ShiftY(i, dy) => state.y[i] += dy,
+        Move::Teleport(i, x, y) => {
+            state.x[i] = x;
+            state.y[i] = y;
+        }
     }
 }
 
@@ -159,6 +190,9 @@ fn apply_move(state: &mut SAState, m: Move) {
 // ============================================================
 
 /// 跑模拟退火, 返回最佳 [`SAState`]。
+///
+/// 初始状态用 [`SAState::from_greedy`]: 按行从上到下、列从左到右贪心放置,
+/// 保证不 OOB、不撞 pin (但**不**保证无列短路——那是 SA 要优化的)。
 pub(super) fn simulate(
     placeable: Vec<ComponentId>,
     circuit: &Circuit,
@@ -166,8 +200,11 @@ pub(super) fn simulate(
     config: &SAConfig,
 ) -> SAState {
     let mut rng = Lcg::new(config.seed);
-    // 初始: 元件按输入顺序, 全部 R0, 全部同一行
-    let mut state = SAState::from_order(placeable, 2);
+    let mut state = if config.use_force_directed {
+        SAState::from_force_directed(placeable, circuit, board, &config.fd_config)
+    } else {
+        SAState::from_greedy(placeable, circuit, board)
+    };
     let mut current_cost = cost(&state, circuit, board, &config.weights);
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
@@ -175,7 +212,6 @@ pub(super) fn simulate(
 
     for _ in 0..config.max_iters {
         let m = random_move(&state, &mut rng, board);
-        // 复制一份做实验, 失败就丢弃
         let mut candidate = state.clone();
         apply_move(&mut candidate, m);
         let new_cost = cost(&candidate, circuit, board, &config.weights);
@@ -204,16 +240,14 @@ pub(super) fn simulate(
 //  退火后的位置压缩
 // ============================================================
 
-/// 把 SA 结果里每个元件的 x 推到"再左就会撞"为止。
+/// 把 SA 结果里每个元件的 x 推到"再左就会撞 pin"为止, y / rotation 保持不变。
 ///
-/// **规则**: v1 只用 R0/R180, footprint 不跨行, 所以"同行上, 下一个元件的最左 pin
-/// 必须比上一个最右 pin 远 ≥ 1 列" 就够。**不**扫整行找缝——留 TOD O, 收益小。
-pub(super) fn compact(state: &SAState, circuit: &Circuit, _board: &Breadboard) -> Vec<i32> {
+/// **不**扫整行找缝, **不**考虑列短路——SA 的 cost penalty 已经管了。
+/// 如果 SA 找到了 0 冲突的布局, compact 应当是几乎无操作 (只把可以左推的推一下)。
+pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) -> Vec<i32> {
     let n = state.n();
-    let mut x_positions = vec![0i32; n];
-    // 同行 row 上, 下一个元件 "最左 pin col" 的下限
-    // (初始 0, 每放一个元件就更新成"其最右 pin col + 1 + 1 间隙")
-    let mut next_leftmost: HashMap<i32, i32> = HashMap::new();
+    let mut new_x = vec![0i32; n];
+    let mut occupied: HashSet<(i32, i32)> = HashSet::new();
 
     for idx in 0..n {
         let comp_id = state.placeable[idx];
@@ -221,7 +255,7 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, _board: &Breadboard) -
         let fid = component.footprint.expect("placeable 必有 footprint");
         let footprint = &circuit.footprints[fid.0];
         let rotation = state.rotation[idx];
-        let row_y = state.row[idx];
+        let row_y = state.y[idx];
 
         let pin_offsets: Vec<(i32, i32)> = footprint
             .pins()
@@ -232,20 +266,34 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, _board: &Breadboard) -
             })
             .collect();
 
-        let min_rdx = pin_offsets.iter().map(|&(rdx, _)| rdx).min().unwrap_or(0);
-        let max_rdx = pin_offsets.iter().map(|&(rdx, _)| rdx).max().unwrap_or(0);
+        let board_min_x = pin_offsets.iter().map(|&(rdx, _)| -rdx).max().unwrap_or(0);
+        let board_max_x =
+            board.cols() as i32 - 1 - pin_offsets.iter().map(|&(rdx, _)| rdx).max().unwrap_or(0);
 
-        // 板内约束: x + min(rdx) >= 0
-        let board_min = -min_rdx;
-        // 同行约束: x + min(rdx) >= next_leftmost[row]
-        let row_min = next_leftmost.get(&row_y).copied().unwrap_or(0) - min_rdx;
-        let x = board_min.max(row_min);
+        let mut cur = board_min_x;
+        loop {
+            if cur > board_max_x {
+                break;
+            }
+            let collides = pin_offsets
+                .iter()
+                .any(|&(rdx, rdy)| occupied.contains(&(cur + rdx, row_y + rdy)));
+            if !collides {
+                new_x[idx] = cur;
+                break;
+            }
+            cur += 1;
+        }
+        if cur > board_max_x {
+            new_x[idx] = cur; // 装不下, 让 validate 报越界
+        }
 
-        x_positions[idx] = x;
-        // 下一个元件最左 pin col 下限 = 当前最右 pin col + 1 (贴邻) + 1 (gap)
-        next_leftmost.insert(row_y, x + max_rdx + 2);
+        for &(rdx, rdy) in &pin_offsets {
+            occupied.insert((new_x[idx] + rdx, row_y + rdy));
+        }
     }
-    x_positions
+
+    new_x
 }
 
 // ============================================================
@@ -260,7 +308,6 @@ mod tests {
         PinId, Position,
     };
     use crate::layout::Breadboard;
-    use crate::layout::cost::{derive_x, footprint_horizontal_width};
 
     /// 构造一个最简电路: 2 个 2-pin 元件, pin1=net0, pin2=net0 (都连一起)
     fn simple_circuit() -> Circuit {
@@ -335,16 +382,23 @@ mod tests {
     #[test]
     fn random_move_returns_valid_index() {
         let _circuit = simple_circuit();
-        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2);
+        let state = SAState::from_greedy(
+            vec![ComponentId(0), ComponentId(1)],
+            &simple_circuit(),
+            &board(),
+        );
         let mut rng = Lcg::new(0);
-        for _ in 0..100 {
+        for _ in 0..200 {
             let m = random_move(&state, &mut rng, &board());
             match m {
                 Move::Swap(i, j) => {
                     assert!(i < state.n() && j < state.n());
                     assert_ne!(i, j);
                 }
-                Move::Flip(i) | Move::ShiftY(i, _) | Move::Teleport(i, _) => {
+                Move::Flip(i)
+                | Move::ShiftX(i, _)
+                | Move::ShiftY(i, _)
+                | Move::Teleport(i, _, _) => {
                     assert!(i < state.n());
                 }
             }
@@ -352,15 +406,21 @@ mod tests {
     }
 
     #[test]
-    fn apply_swap_changes_order() {
-        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2);
+    fn apply_swap_swaps_all_fields() {
+        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
+        state.x = vec![5, 10];
+        state.y = vec![0, 3];
+        state.rotation = vec![Rotation::R0, Rotation::R180];
         apply_move(&mut state, Move::Swap(0, 1));
         assert_eq!(state.placeable, vec![ComponentId(1), ComponentId(0)]);
+        assert_eq!(state.x, vec![10, 5]);
+        assert_eq!(state.y, vec![3, 0]);
+        assert_eq!(state.rotation, vec![Rotation::R180, Rotation::R0]);
     }
 
     #[test]
     fn apply_flip_toggles_rotation() {
-        let mut state = SAState::from_order(vec![ComponentId(0)], 2);
+        let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
         apply_move(&mut state, Move::Flip(0));
         assert_eq!(state.rotation[0], Rotation::R180);
         apply_move(&mut state, Move::Flip(0));
@@ -368,124 +428,88 @@ mod tests {
     }
 
     #[test]
-    fn apply_shift_y_increments_row() {
-        let mut state = SAState::from_order(vec![ComponentId(0)], 2);
+    fn apply_shift_x_increments_x() {
+        let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
+        apply_move(&mut state, Move::ShiftX(0, 1));
+        assert_eq!(state.x[0], 1);
+        apply_move(&mut state, Move::ShiftX(0, -2));
+        assert_eq!(state.x[0], -1);
+    }
+
+    #[test]
+    fn apply_shift_y_increments_y() {
+        let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
         apply_move(&mut state, Move::ShiftY(0, 1));
-        assert_eq!(state.row[0], 3);
+        assert_eq!(state.y[0], 3);
         apply_move(&mut state, Move::ShiftY(0, -2));
-        assert_eq!(state.row[0], 1);
+        assert_eq!(state.y[0], 1);
     }
 
     #[test]
-    fn apply_teleport_sets_row() {
-        let mut state = SAState::from_order(vec![ComponentId(0)], 2);
-        apply_move(&mut state, Move::Teleport(0, 4));
-        assert_eq!(state.row[0], 4);
-    }
-
-    #[test]
-    fn derive_x_includes_gaps() {
-        let circuit = simple_circuit(); // 每个 footprint 2 列宽
-        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2);
-        let x = derive_x(&state, &circuit);
-        // C0 @ x=0, C1 @ x=0+2+1=3
-        assert_eq!(x, vec![0, 3]);
-    }
-
-    #[test]
-    fn footprint_width_simple() {
-        let circuit = simple_circuit();
-        let fp = &circuit.footprints[0];
-        assert_eq!(footprint_horizontal_width(fp), 2);
+    fn apply_teleport_sets_position() {
+        let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
+        apply_move(&mut state, Move::Teleport(0, 7, 3));
+        assert_eq!(state.x[0], 7);
+        assert_eq!(state.y[0], 3);
     }
 
     #[test]
     fn compact_pushes_left() {
-        // 2 个 footprint 2 列宽, 中间隔 1 列 → 期望 (0, 3)
+        // 2 个 2-col footprint 在同一行, compact 推 C0 到 x=0, C1 紧接着放 x=2 (不强制 1-col gap)
         let circuit = simple_circuit();
-        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2);
+        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
         let xs = compact(&state, &circuit, &board());
-        assert_eq!(xs, vec![0, 3]);
+        assert_eq!(xs, vec![0, 2]);
     }
 
     #[test]
-    fn compact_avoids_overlap() {
-        // 2 个 footprint 2 列宽, 挤到 row 不同, 但要保证 x 不撞
+    fn compact_respects_existing_y() {
+        // 两个 footprint 在不同 row, 第一个在 row 1, 第二个在 row 3
+        // compact 应保持 y 不变, C0 推到 x=0, C1 因为不同 row 也可以压到 x=0
         let circuit = simple_circuit();
-        // 强制让两个元件 "争夺" 同一个最左位置
         let state = SAState {
             placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![5, 10],
+            y: vec![1, 3],
             rotation: vec![Rotation::R0; 2],
-            row: vec![0, 0],
-        };
-        let xs = compact(&state, &circuit, &board());
-        // C0 占了 (0,0) (1,0); C1 必须 >= 3
-        assert_eq!(xs[0], 0);
-        assert!(xs[1] >= 3, "expected >= 3, got {}", xs[1]);
-    }
-
-    #[test]
-    fn compact_squeeze_through_gap() {
-        // 2 个 1-pin footprint 放不同行, 应该可以挤到同一列
-        let fp = Footprint {
-            id: FootprintId(0),
-            name: "single".into(),
-            pins: vec![PhysicalPin {
-                name: "1".into(),
-                offset: Position { x: 0, y: 0 },
-            }],
-        };
-        let comps = (0..2)
-            .map(|i| Component {
-                id: ComponentId(i),
-                ref_: format!("X{i}"),
-                kind: "X".into(),
-                value: None,
-                pins: vec![PinId(i)],
-                footprint: Some(FootprintId(0)),
-            })
-            .collect();
-        let pins = (0..2)
-            .map(|i| Pin {
-                id: PinId(i),
-                component: ComponentId(i),
-                num: "1".into(),
-                pinfunction: None,
-                net: None,
-            })
-            .collect();
-        let circuit = Circuit {
-            components: comps,
-            pins,
-            nets: vec![],
-            footprints: vec![fp],
-        };
-        // 两个不同行, 期望都能在 x=0
-        let state = SAState {
-            placeable: vec![ComponentId(0), ComponentId(1)],
-            rotation: vec![Rotation::R0; 2],
-            row: vec![0, 1],
         };
         let xs = compact(&state, &circuit, &board());
         assert_eq!(xs, vec![0, 0]);
     }
 
     #[test]
-    fn sa_converges_below_initial() {
+    fn compact_avoids_pin_collision_same_row() {
+        // 两个 footprint 强制都 row 0, 但 x 已有重叠
+        // compact 应当把第二个推到不撞为止
         let circuit = simple_circuit();
-        // 故意构造一个较差初始: 两元件都在不同行 → 退火应能找到 (0, 3) 共享行 2
         let state = SAState {
             placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 1], // 都会 pin 撞
+            y: vec![0, 0],
             rotation: vec![Rotation::R0; 2],
-            row: vec![0, 4],
         };
+        let xs = compact(&state, &circuit, &board());
+        assert_eq!(xs[0], 0);
+        // C1 footprint 2 cols 宽, 必须 >= 2 才能避开 C0
+        assert!(xs[1] >= 2, "应避开 pin, 期望 >= 2, got {}", xs[1]);
+    }
+
+    #[test]
+    fn sa_converges_below_initial() {
+        let circuit = simple_circuit();
+        // 故意构造差初始: C0 @ (0,0), C1 @ (3,4) — 都在不同 row 远距离
+        // 共享 net, HPWL 跨度 3
+        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
+        state.x = vec![0, 3];
+        state.y = vec![0, 4];
         let initial_cost = cost(&state, &circuit, &board(), &Weights::default());
         let config = SAConfig {
             max_iters: 2000,
             t0: 5.0,
             cool_rate: 0.95,
             weights: Weights::default(),
-            seed: 1,
+            seed: 0xCAFE_F00D,
+            ..SAConfig::default()
         };
         let best = simulate(
             vec![ComponentId(0), ComponentId(1)],
@@ -498,17 +522,14 @@ mod tests {
             best_cost <= initial_cost,
             "SA 应该不恶化: init={initial_cost} best={best_cost}"
         );
-        // 共享 net 的两个元件最终应在同一行 (让 HPWL = 0 或很小)
-        assert_eq!(best.row[0], best.row[1], "应合并到同一行");
     }
 
     #[test]
     fn sa_finds_valid_layout_on_simple_circuit() {
-        // 退火 + 压缩之后, validate 应过 (无 pin 碰撞)
         let circuit = simple_circuit();
         let config = SAConfig {
             max_iters: 1000,
-            seed: 7,
+            seed: 0xCAFE_F00D,
             ..SAConfig::default()
         };
         let best = simulate(
@@ -532,11 +553,9 @@ mod tests {
                     .find(|p| p.name() == pin.num())
                     .unwrap();
                 let r = rotate(pp.offset, rotation);
-                let hole = (xs[idx] + r.x, best.row[idx] + r.y);
+                let hole = (xs[idx] + r.x, best.y[idx] + r.y);
                 assert!(holes.insert(hole), "pin 撞了: {:?}", hole);
             }
         }
     }
-
-    // 暴露给外层 mod.rs 的测试用
 }

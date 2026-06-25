@@ -31,7 +31,9 @@ const CHANNEL_FRAC: f32 = 0.30; // 通道相对 row 中心的偏移 (向下)
 pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String {
     let w = board.cols() as f32 * CELL_X + MARGIN * 2.0;
     let h = board.rows() as f32 * CELL_Y + MARGIN * 2.0;
-    let occ = layout.occupancy(board).ok();
+    // 用 lossy 占用: 布局有冲突时, 仍能以“后覆盖先”填上 pin/wire,
+    // 至少能看出 pin 位租和走线意图。 严格版会 return Err 导致孔全白。
+    let occ = crate::layout::Occupancy::from_layout_lossy(layout, board);
 
     let mut out = String::new();
     let _ = writeln!(
@@ -82,7 +84,7 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
     // 3) 所有孔
     for hole in board.holes() {
         let (cx, cy) = hole_px_from_pos(hole.position);
-        let (fill, stroke) = match occ.as_ref().and_then(|o| o.occupant_at(hole.id)) {
+        let (fill, stroke) = match occ.occupant_at(hole.id) {
             Some(Occupant::Pin(_)) => ("#2563eb", "#1e3a8a"),
             Some(Occupant::Wire(_)) => ("#16a34a", "#14532d"),
             None => ("#ffffff", "#cbd5e1"),

@@ -33,9 +33,15 @@ fn main() {
     let circuit = netlist.into_circuit(&footprints);
 
     // 4. 布局: 模拟退火 + 压缩
-    let board = Breadboard::new(30, 5);
+    let board = Breadboard::new(60, 5);
     let mut layout = Layout::new(&circuit);
-    if let Err(errors) = layout.place_sa(&board, &SAConfig::default()) {
+    if let Err(errors) = layout.place_sa(
+        &board,
+        &SAConfig {
+            use_force_directed: true,
+            ..SAConfig::default()
+        },
+    ) {
         eprintln!("布局错误 ({} 个):", errors.len());
         for e in &errors {
             eprintln!("  - {e:?}");
@@ -69,21 +75,29 @@ fn main() {
         }
     }
 
-    // 5. 接线: PathFinder 把所有 net 串起来
-    let wires = match layout.occupancy(&board) {
+    // 5. 接线: PathFinder 把所有 net 串起来。
+    // 有冲突时, 不 return, 用 `from_layout_lossy` 尽力搭一个 occupancy 继续走。
+    let (wires, occ) = match layout.occupancy(&board) {
         Ok(occ) => {
             let router = PathFinderRouter {
                 max_iterations: 200,
                 history_increment: 1.0,
             };
-            router.route(&circuit, &board, &occ)
+            let wires = router.route(&circuit, &board, &occ);
+            (wires, occ)
         }
         Err(errs) => {
-            eprintln!("布局不合法, 跳过接线 ({} 个错误)", errs.len());
-            for e in &errs {
-                eprintln!("  - {e:?}");
-            }
-            return;
+            eprintln!(
+                "布局不合法, 仍画板子 ({} 个冲突, 见上); 用尽力 occupancy 接线",
+                errs.len()
+            );
+            let occ = knead_net::layout::Occupancy::from_layout_lossy(&layout, &board);
+            let router = PathFinderRouter {
+                max_iterations: 200,
+                history_increment: 1.0,
+            };
+            let wires = router.route(&circuit, &board, &occ);
+            (wires, occ)
         }
     };
     println!("=== 接线 ({} 根 wire) ===", wires.len());
@@ -106,37 +120,27 @@ fn main() {
     }
 
     // 6. 打完 wire 再打印一遍占用
-    println!("=== 最终占用 (含 wire) ===");
-    match layout.occupancy(&board) {
-        Ok(occ) => {
-            for hole in board.holes() {
-                let Some(occupant) = occ.occupant_at(hole.id) else {
-                    continue;
-                };
-                let pos = hole.position;
-                let desc = match occupant {
-                    Occupant::Pin(pin_id) => {
-                        let pin = &circuit.pins()[pin_id.raw()];
-                        let comp = &circuit.components()[pin.component().raw()];
-                        match pin.pinfunction() {
-                            Some(f) => format!("{} pad {} ({})", comp.ref_(), pin.num(), f),
-                            None => format!("{} pad {}", comp.ref_(), pin.num()),
-                        }
-                    }
-                    Occupant::Wire(wire_id) => format!("wire #{}", wire_id.raw()),
-                };
-                println!("  ({:>2}, {}): {}", pos.x, pos.y, desc);
+    println!("=== 最终占用 (含 wire, lossy) ===");
+    for hole in board.holes() {
+        let Some(occupant) = occ.occupant_at(hole.id) else {
+            continue;
+        };
+        let pos = hole.position;
+        let desc = match occupant {
+            Occupant::Pin(pin_id) => {
+                let pin = &circuit.pins()[pin_id.raw()];
+                let comp = &circuit.components()[pin.component().raw()];
+                match pin.pinfunction() {
+                    Some(f) => format!("{} pad {} ({})", comp.ref_(), pin.num(), f),
+                    None => format!("{} pad {}", comp.ref_(), pin.num()),
+                }
             }
-        }
-        Err(errs) => {
-            eprintln!("接线后布局不合法 ({} 个错误):", errs.len());
-            for e in &errs {
-                eprintln!("  - {e:?}");
-            }
-        }
+            Occupant::Wire(wire_id) => format!("wire #{}", wire_id.raw()),
+        };
+        println!("  ({:>2}, {}): {}", pos.x, pos.y, desc);
     }
 
-    // 7. 渲染 SVG
+    // 7. 渲染 SVG (总是画, 有冲突也画)
     let svg = knead_net::render::to_svg(&circuit, &board, &layout);
     let svg_path = format!("{kicad_dir}/layout.svg");
     fs::write(&svg_path, &svg).expect("写 SVG 失败");

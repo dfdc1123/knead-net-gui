@@ -2,7 +2,7 @@
 	(version "E")
 	(design
 		(source "/home/dfdc/Documents/Projects/bjt_led/bjt_led/bjt_led.kicad_sch")
-		(date "2026-06-25T15:56:07")
+		(date "2026-06-25T16:52:42")
 		(tool "Eeschema 10.0.4")
 		(sheet
 			(number "1")

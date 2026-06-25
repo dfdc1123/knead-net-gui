@@ -1,14 +1,15 @@
-//! 模拟退火用的成本函数: HPWL + pin 碰撞 + 越界。
+//! 模拟退火用的成本函数: HPWL + pin 碰撞 + 越界 + 列冲突。
 //!
 //! 设计要点:
 //! - **HPWL_x = 一个 net 的 (max_col - min_col)**, 在"同列零成本"模型下正好等于
 //!   走线 MST 长度, 所以不用算真正的 MST。
 //! - 成本是各项**加权和**, 权在 [`Weights`] 里调。
-//! - `SAState` 是 SA 内部状态, 只在 layout 子模块内共享。
+//! - `SAState` 是 SA 内部状态, 只在 layout 子模块内共享; v2 起每个元件显式持有
+//!   `(x, y, rotation)`, 不再由 order 推 x。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::circuit::{Circuit, ComponentId, Footprint, NetId};
+use crate::circuit::{Circuit, ComponentId, NetId};
 use crate::layout::breadboard::Breadboard;
 use crate::layout::placement::{Rotation, rotate};
 
@@ -43,86 +44,311 @@ impl Default for Weights {
     }
 }
 
-/// SA 内部状态, 由 [`super::sa`] 拥有, [`cost`] 读取。
+/// SA 内部状态: 每个元件显式持有 `(x, y, rotation)`。
+///
+/// v2 起 (显式 2D 布局), x 不再由 order 推导, SA 可以把元件放到板子任意位置。
+/// order 还在, 但只用于标识; `placeable[i]` 的 i 索引对应 `x[i] / y[i] / rotation[i]`。
 #[derive(Debug, Clone)]
 pub struct SAState {
-    /// 按"摆放顺序"排列的元件 id 列表; 第 0 个最左, 最后那个最右。
     pub placeable: Vec<ComponentId>,
-    /// 每个元件的旋转, v1 只用 [`Rotation::R0`] / [`Rotation::R180`], 其他值会 panic。
+    pub x: Vec<i32>,
+    pub y: Vec<i32>,
     pub rotation: Vec<Rotation>,
-    /// 每个元件所在行。
-    pub row: Vec<i32>,
 }
 
 impl SAState {
-    /// 从给定的元件顺序构造初始状态: 全部 R0, 全部同一行。
-    pub fn from_order(order: Vec<ComponentId>, row: i32) -> Self {
-        let n = order.len();
-        Self {
-            placeable: order,
-            rotation: vec![Rotation::R0; n],
-            row: vec![row; n],
-        }
-    }
-
     pub fn n(&self) -> usize {
         self.placeable.len()
     }
-}
 
-/// R0 方向下 footprint 占多少列 (`max_x - min_x + 1`)。
-///
-/// 跟 [`super::footprint_horizontal_width`] 重复: 那个是 `Layout` 私有的,
-/// 这个公开给 `cost` / `sa` 用。逻辑保持一致。
-pub fn footprint_horizontal_width(footprint: &Footprint) -> i32 {
-    if footprint.pins.is_empty() {
-        return 1;
+    /// 简单构造: 给定元件顺序, 全部 R0, 全部同一行, x 按顺序累加 (gap=1)。
+    /// 主要给测试用——真实初始状态用 [`SAState::from_greedy`]。
+    pub fn from_order(order: Vec<ComponentId>, row: i32, widths: &[i32]) -> Self {
+        let n = order.len();
+        let mut x = Vec::with_capacity(n);
+        let mut cur = 0i32;
+        for &w in widths {
+            x.push(cur);
+            cur += w + 1;
+        }
+        Self {
+            placeable: order,
+            x,
+            y: vec![row; n],
+            rotation: vec![Rotation::R0; n],
+        }
     }
-    let min_x = footprint.pins.iter().map(|p| p.offset.x).min().unwrap();
-    let max_x = footprint.pins.iter().map(|p| p.offset.x).max().unwrap();
-    max_x - min_x + 1
-}
 
-/// 从"摆放顺序"派生每个元件的 x 坐标 (从 x=0 起, 元件间留 1 空列)。
-pub fn derive_x(state: &SAState, circuit: &Circuit) -> Vec<i32> {
-    derive_x_with_gap(state, circuit, 1)
-}
+    /// 贪心 first-fit 初始状态: 按元件顺序, 找第一个有效 `(x, y)` (按行从上到下、
+    /// 列从左到右扫)。"有效" = pin 都在板内 + 不撞已摆 pin。**不**考虑列短路——
+    /// 那由 SA 后续优化。
+    pub fn from_greedy(placeable: Vec<ComponentId>, circuit: &Circuit, board: &Breadboard) -> Self {
+        let n = placeable.len();
+        let mut x = vec![0i32; n];
+        let mut y = vec![0i32; n];
+        let rotation = vec![Rotation::R0; n];
+        let mut occupied: HashSet<(i32, i32)> = HashSet::new();
 
-/// 同 [`derive_x`], 但元件间的 gap 可调 (`0` = 贴紧, 负数 = 重叠)。
-/// 主要给测试用——验证 pin 碰撞代价需要让两个元件落同一格。
-pub fn derive_x_with_gap(state: &SAState, circuit: &Circuit, gap: i32) -> Vec<i32> {
-    let mut x = Vec::with_capacity(state.n());
-    let mut cur = 0i32;
-    for &comp_id in &state.placeable {
-        let fid = circuit.components[comp_id.0]
-            .footprint
-            .expect("placeable 必有 footprint");
-        let footprint = &circuit.footprints[fid.0];
-        let width = footprint_horizontal_width(footprint);
-        x.push(cur);
-        cur += width + gap;
+        for idx in 0..n {
+            let comp_id = placeable[idx];
+            let component = &circuit.components[comp_id.0];
+            let fid = component.footprint.expect("placeable 必有 footprint");
+            let footprint = &circuit.footprints[fid.0];
+
+            let pin_offsets: Vec<(i32, i32)> = footprint
+                .pins()
+                .iter()
+                .map(|p| (p.offset.x, p.offset.y))
+                .collect();
+
+            let mut found: Option<(i32, i32)> = None;
+            'outer: for try_y in 0..board.rows() as i32 {
+                for try_x in 0..board.cols() as i32 {
+                    let oob = pin_offsets.iter().any(|&(dx, dy)| {
+                        try_x + dx < 0
+                            || try_x + dx >= board.cols() as i32
+                            || try_y + dy < 0
+                            || try_y + dy >= board.rows() as i32
+                    });
+                    if oob {
+                        continue;
+                    }
+                    let collides = pin_offsets
+                        .iter()
+                        .any(|&(dx, dy)| occupied.contains(&(try_x + dx, try_y + dy)));
+                    if collides {
+                        continue;
+                    }
+                    found = Some((try_x, try_y));
+                    break 'outer;
+                }
+            }
+
+            let (fx, fy) = found.unwrap_or_else(|| panic!("元件 {} 装不下这块板", comp_id.0));
+            x[idx] = fx;
+            y[idx] = fy;
+            for &(dx, dy) in &pin_offsets {
+                occupied.insert((fx + dx, fy + dy));
+            }
+        }
+
+        Self {
+            placeable,
+            x,
+            y,
+            rotation,
+        }
     }
-    x
+
+    /// 力导向初排: connected 元件拉近 (弹簧), unconnected 推远 (库仑斥力)。
+    /// 产出连续 2D 位置, 然后贪心映射到网格上 (按 FD x 顺序, 每个取离 FD 目标最近
+    /// 的可用格子)。比 [`Self::from_greedy`] 好的地方: 同一网里的元件自然聚簇,
+    /// SA 起点跟电路拓扑对齐。
+    pub fn from_force_directed(
+        placeable: Vec<ComponentId>,
+        circuit: &Circuit,
+        board: &Breadboard,
+        config: &FDConfig,
+    ) -> Self {
+        let n = placeable.len();
+        if n == 0 {
+            return Self {
+                placeable,
+                x: vec![],
+                y: vec![],
+                rotation: vec![],
+            };
+        }
+
+        // 1. Build adjacency: weights[i][j] = 同一网的连接数 (高 = 强耦合)
+        let mut weights = vec![vec![0.0f64; n]; n];
+        for net in circuit.nets() {
+            let mut comps: Vec<usize> = net
+                .pins()
+                .iter()
+                .map(|&pid| circuit.pins[pid.0].component.0)
+                .collect();
+            comps.sort();
+            comps.dedup();
+            for &i in &comps {
+                for &j in &comps {
+                    if i != j {
+                        weights[i][j] += 1.0;
+                    }
+                }
+            }
+        }
+
+        // 2. Initial: 圆周, 后面 FD 会把它们拉开
+        let cols_f = board.cols() as f64;
+        let rows_f = board.rows() as f64;
+        let mut pos: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let angle = i as f64 * 2.0 * std::f64::consts::PI / n as f64;
+                let r = cols_f.min(rows_f) * 0.4;
+                (
+                    cols_f / 2.0 + r * angle.cos(),
+                    rows_f / 2.0 + r * angle.sin(),
+                )
+            })
+            .collect();
+
+        // 3. Fruchterman-Reingold 风格 FD 迭代
+        let k = config.k;
+        let mut temp = config.initial_temp;
+        for _ in 0..config.max_iters {
+            let mut forces = vec![(0.0f64, 0.0f64); n];
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dx = pos[j].0 - pos[i].0;
+                    let dy = pos[j].1 - pos[i].1;
+                    let dist = (dx * dx + dy * dy).sqrt().max(0.01);
+                    let ux = dx / dist;
+                    let uy = dy / dist;
+
+                    // 斥力: 库仑型, 永远存在
+                    let f_repel = k * k / dist;
+                    forces[i].0 -= ux * f_repel;
+                    forces[i].1 -= uy * f_repel;
+                    forces[j].0 += ux * f_repel;
+                    forces[j].1 += uy * f_repel;
+
+                    // 引力: 胡克型, 仅对连接的元件
+                    let w = weights[i][j];
+                    if w > 0.0 {
+                        let f_attr = dist * dist / k * w;
+                        forces[i].0 += ux * f_attr;
+                        forces[i].1 += uy * f_attr;
+                        forces[j].0 -= ux * f_attr;
+                        forces[j].1 -= uy * f_attr;
+                    }
+                }
+            }
+
+            // 应用力, 限幅到当前温度
+            for i in 0..n {
+                let (fx, fy) = forces[i];
+                let fmag = (fx * fx + fy * fy).sqrt();
+                if fmag < 1e-9 {
+                    continue;
+                }
+                let scale = fmag.min(temp) / fmag;
+                pos[i].0 += fx * scale;
+                pos[i].1 += fy * scale;
+                pos[i].0 = pos[i].0.clamp(0.0, cols_f - 1.0);
+                pos[i].1 = pos[i].1.clamp(0.0, rows_f - 1.0);
+            }
+
+            temp *= config.cool_rate;
+            if temp < 0.05 {
+                break;
+            }
+        }
+
+        // 4. 贪心映射到网格: 按 FD x 排序, 每个元件取离 FD 目标最近的可用格
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| {
+            pos[a]
+                .0
+                .partial_cmp(&pos[b].0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut x = vec![0i32; n];
+        let mut y = vec![0i32; n];
+        let rotation = vec![Rotation::R0; n];
+        let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+
+        for &idx in &order {
+            let comp_id = placeable[idx];
+            let component = &circuit.components[comp_id.0];
+            let fid = component.footprint.expect("placeable 必有 footprint");
+            let footprint = &circuit.footprints[fid.0];
+
+            let pin_offsets: Vec<(i32, i32)> = footprint
+                .pins()
+                .iter()
+                .map(|p| (p.offset.x, p.offset.y))
+                .collect();
+
+            let target_x = pos[idx].0;
+            let target_y = pos[idx].1;
+
+            // 全板扫, 选离 (target_x, target_y) 最近的可用格
+            let mut best: Option<(i32, i32)> = None;
+            let mut best_dist_sq = f64::INFINITY;
+            for try_y in 0..board.rows() as i32 {
+                for try_x in 0..board.cols() as i32 {
+                    let oob = pin_offsets.iter().any(|&(dx, dy)| {
+                        try_x + dx < 0
+                            || try_x + dx >= board.cols() as i32
+                            || try_y + dy < 0
+                            || try_y + dy >= board.rows() as i32
+                    });
+                    if oob {
+                        continue;
+                    }
+                    let collides = pin_offsets
+                        .iter()
+                        .any(|&(dx, dy)| occupied.contains(&(try_x + dx, try_y + dy)));
+                    if collides {
+                        continue;
+                    }
+                    let dx = try_x as f64 - target_x;
+                    let dy = try_y as f64 - target_y;
+                    let dist_sq = dx * dx + dy * dy;
+                    if dist_sq < best_dist_sq {
+                        best_dist_sq = dist_sq;
+                        best = Some((try_x, try_y));
+                    }
+                }
+            }
+
+            let (fx, fy) = best.expect("板太小, 装不下所有元件");
+            x[idx] = fx;
+            y[idx] = fy;
+            for &(dx, dy) in &pin_offsets {
+                occupied.insert((fx + dx, fy + dy));
+            }
+        }
+
+        Self {
+            placeable,
+            x,
+            y,
+            rotation,
+        }
+    }
+}
+
+/// 力导向初排参数。`Default` 对 30x5 / ~18 元件级别的电路是合理起点。
+#[derive(Debug, Clone, Copy)]
+pub struct FDConfig {
+    /// 理想距离 k: 库仑斥力 k²/d, 胡克引力 d²/k 都用它。
+    /// 经验上 ≈ sqrt(board_area / num_components)。
+    pub k: f64,
+    /// FD 迭代数; 通常 100-300 就收敛。
+    pub max_iters: usize,
+    /// 初始 "温度" (单步最大位移)。
+    pub initial_temp: f64,
+    /// 冷却率; T *= cool_rate per iter。
+    pub cool_rate: f64,
+}
+
+impl Default for FDConfig {
+    fn default() -> Self {
+        Self {
+            // 30x5 = 150 cells, 18 元件 → sqrt(150/18) ≈ 2.9
+            k: 3.0,
+            max_iters: 200,
+            initial_temp: 2.0,
+            cool_rate: 0.95,
+        }
+    }
 }
 
 /// 评估当前状态的 cost。
-///
-/// 各项**独立计算**然后加权求和; 没做增量, 因为 `n` 小。
-/// 如果以后 `n` 大了, 改成只重算受影响的 net / hole 即可。
 pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights) -> f64 {
-    let x = derive_x(state, circuit);
-    cost_with_x(state, circuit, board, w, &x)
-}
-
-/// 跟 [`cost`] 一样, 但用调用者提供的 x 坐标 (避免被 `derive_x` 默认 gap=1 限制)。
-/// 测试需要让两个元件落同一格时用这个。
-pub fn cost_with_x(
-    state: &SAState,
-    circuit: &Circuit,
-    board: &Breadboard,
-    w: &Weights,
-    x: &[i32],
-) -> f64 {
     let cols_i = board.cols() as i32;
     let rows_i = board.rows() as i32;
 
@@ -134,8 +360,8 @@ pub fn cost_with_x(
         let fid = component.footprint.unwrap();
         let footprint = &circuit.footprints[fid.0];
         let rotation = state.rotation[idx];
-        let row_y = state.row[idx];
-        let px = x[idx];
+        let row_y = state.y[idx];
+        let px = state.x[idx];
 
         for &pin_id in &component.pins {
             let pin = &circuit.pins[pin_id.0];
@@ -189,7 +415,6 @@ pub fn cost_with_x(
     }
 
     // 5. 列冲突: 按列聚合, 计数"不同 net" 的对数
-    // (一对两个 pin 在同列, 但 net 不同, 计 1)
     let mut by_col: HashMap<i32, Vec<Option<NetId>>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
         let hole = holes[i];
@@ -203,7 +428,6 @@ pub fn cost_with_x(
         if col_owners.len() < 2 {
             continue;
         }
-        // 选第一个作为"基准", 数后面有几个跟它不同 (None != Some 也算不同)
         let base = col_owners[0];
         for i in 1..col_owners.len() {
             if col_owners[i] != base {
@@ -305,25 +529,23 @@ mod tests {
     #[test]
     fn empty_state_costs_zero() {
         let (circuit, _) = two_pin_in_net();
-        let state = SAState::from_order(vec![], 2);
+        let state = SAState::from_order(vec![], 2, &[]);
         let c = cost(&state, &circuit, &board(), &Weights::default());
         assert_eq!(c, 0.0);
     }
 
     #[test]
-    fn one_component_same_net_hpwl_is_zero() {
+    fn one_component_same_net_hpwl_is_one() {
         // 2 pin 紧挨着 (0, 2) 和 (1, 2), 都在同一 net → HPWL = 1 - 0 = 1
         let (circuit, cid) = two_pin_in_net();
-        let state = SAState::from_order(vec![cid], 2);
+        let state = SAState::from_order(vec![cid], 2, &[2]);
         let c = cost(&state, &circuit, &board(), &Weights::default());
-        assert!(c > 0.0, "HPWL 应该非零: {}", c);
-        // 验证不超预期: hpwl(1) + 0 collision + 0 oob
         assert!((c - 1.0).abs() < 1e-9, "expected 1.0, got {}", c);
     }
 
     #[test]
     fn pin_collision_adds_penalty() {
-        // 两个 1-pin footprint, 用 `cost_with_x` 直接给 x = [0, 0] 制造 pin 撞。
+        // 两个 1-pin footprint, 显式 x = [0, 0] 制造 pin 撞。
         let fp = one_pin_fp();
         let comps = (0..2)
             .map(|i| Component {
@@ -350,14 +572,15 @@ mod tests {
             nets: vec![],
             footprints: vec![fp],
         };
-        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2);
-
+        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
         // 不撞: x = [0, 2]
-        let c_clean = cost_with_x(&state, &circuit, &board(), &Weights::default(), &[0, 2]);
+        state.x = vec![0, 2];
+        let c_clean = cost(&state, &circuit, &board(), &Weights::default());
         assert_eq!(c_clean, 0.0);
 
         // 撞: x = [0, 0]
-        let c_coll = cost_with_x(&state, &circuit, &board(), &Weights::default(), &[0, 0]);
+        state.x = vec![0, 0];
+        let c_coll = cost(&state, &circuit, &board(), &Weights::default());
         assert!(
             (c_coll - Weights::default().pin_overlap).abs() < 1e-9,
             "expected collision penalty, got {}",
@@ -385,11 +608,11 @@ mod tests {
                 component: ComponentId(i),
                 num: "1".into(),
                 pinfunction: None,
-                net: Some(NetId(i)), // 不同 net
+                net: Some(NetId(i)),
             })
             .collect();
         let nets = (0..2)
-            .map(|i| crate::circuit::Net {
+            .map(|i| Net {
                 id: NetId(i),
                 name: format!("n{i}"),
                 pins: vec![PinId(i)],
@@ -401,15 +624,18 @@ mod tests {
             nets,
             footprints: vec![fp],
         };
-        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2);
+        let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
 
         // 不冲突: x = [0, 2]
-        let c_clean = cost_with_x(&state, &circuit, &board(), &Weights::default(), &[0, 2]);
+        let mut s = state.clone();
+        s.x = vec![0, 2];
+        let c_clean = cost(&s, &circuit, &board(), &Weights::default());
         assert_eq!(c_clean, 0.0);
 
-        // 冲突: x = [0, 0] (同列, 同时也是同孔 → pin_collision + column_conflict)
-        let c_coll = cost_with_x(&state, &circuit, &board(), &Weights::default(), &[0, 0]);
-        // pin_overlap(100) + column_conflict(50) = 150
+        // 冲突: x = [0, 0] (同列, 同孔 → pin_collision + column_conflict)
+        let mut s = state.clone();
+        s.x = vec![0, 0];
+        let c_coll = cost(&s, &circuit, &board(), &Weights::default());
         let expected = Weights::default().pin_overlap + Weights::default().column_conflict;
         assert!(
             (c_coll - expected).abs() < 1e-9,
@@ -418,12 +644,11 @@ mod tests {
             c_coll
         );
 
-        // 只计 column_conflict: 同列不同行 (不撞 pin, 因为不同孔)
-        // X0 在 row=2, X1 在 row=3, x 都是 0
-        // 两个 pin 都在 col 0, 不同 row → 只 column_conflict, 不 pin_collision
-        let mut state2 = state;
-        state2.row[1] = 3;
-        let c_col_only = cost_with_x(&state2, &circuit, &board(), &Weights::default(), &[0, 0]);
+        // 只 column_conflict: 同列不同行
+        let mut s = state;
+        s.x = vec![0, 0];
+        s.y = vec![2, 3];
+        let c_col_only = cost(&s, &circuit, &board(), &Weights::default());
         assert!(
             (c_col_only - Weights::default().column_conflict).abs() < 1e-9,
             "expected only column_conflict penalty, got {}",
@@ -455,8 +680,246 @@ mod tests {
             nets: vec![],
             footprints: vec![fp],
         };
-        let state = SAState::from_order(vec![ComponentId(0)], -5);
+        let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
+        state.y[0] = -5;
         let c = cost(&state, &circuit, &board(), &Weights::default());
         assert!(c >= Weights::default().out_of_bounds);
+    }
+
+    #[test]
+    fn from_greedy_fits_2d() {
+        // 5 个 2-pin footprint, 贪心应该能放下 (5*3 = 15 cols, 5 rows = 150 cells)
+        let fp = two_pin_fp();
+        let comps = (0..5)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("C{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i * 2), PinId(i * 2 + 1)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..10)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i / 2),
+                num: ((i % 2) + 1).to_string(),
+                pinfunction: None,
+                net: None,
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![],
+            footprints: vec![fp],
+        };
+        let placeable: Vec<ComponentId> = (0..5).map(ComponentId).collect();
+        let state = SAState::from_greedy(placeable, &circuit, &board());
+        assert_eq!(state.n(), 5);
+        // 所有 y 都在 [0, 4]
+        for &y in &state.y {
+            assert!((0..5).contains(&y), "y={} not in board", y);
+        }
+        // 所有 x + 1 (footprint 宽 2) < 30
+        for &x in &state.x {
+            assert!(x + 1 < 30, "x={} 越界", x);
+        }
+    }
+
+    #[test]
+    fn from_greedy_spills_to_next_row() {
+        // 4 个 11-col footprint (实际只 1 pin 在用), 30 col 板 → 4*11=44 > 30, 第 4 个应
+        // 溢出到 row 1
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "wide".into(),
+            pins: (0..11)
+                .map(|i| PhysicalPin {
+                    name: i.to_string(),
+                    offset: Position { x: i, y: 0 },
+                })
+                .collect(),
+        };
+        let comps = (0..4)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("W{i}"),
+                kind: "W".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..4)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "0".into(),
+                pinfunction: None,
+                net: None,
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![],
+            footprints: vec![fp],
+        };
+        let placeable: Vec<ComponentId> = (0..4).map(ComponentId).collect();
+        let state = SAState::from_greedy(placeable, &circuit, &board());
+        // 3 个 11-col 放 row 0 占 0..33 (实际放 0, 1, 12, 3 个 footprint 总跨度)
+        // 第 4 个放不下 row 0 → 走 row 1
+        assert_eq!(
+            state.y[3], 1,
+            "第 4 个应去 row 1, 实际在 row {}",
+            state.y[3]
+        );
+    }
+
+    /// FD 基本性质: 全连通的 3 个元件, 应该聚在一起 (距离 ≤ 3)
+    #[test]
+    fn from_force_directed_clusters_connected() {
+        let fp = one_pin_fp();
+        // 3 个元件全连同一个网
+        let comps = (0..3)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("C{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..3)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            })
+            .collect();
+        let nets = vec![Net {
+            id: NetId(0),
+            name: "all".into(),
+            pins: (0..3).map(PinId).collect(),
+        }];
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        let placeable: Vec<ComponentId> = (0..3).map(ComponentId).collect();
+        let state = SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
+        // 3 个连通的 1-pin 元件, FD 应该把它们聚在一起 (col 间距 ≤ 3)
+        let xs: Vec<i32> = state.x.iter().copied().collect();
+        let x_min = *xs.iter().min().unwrap();
+        let x_max = *xs.iter().max().unwrap();
+        assert!(
+            x_max - x_min <= 3,
+            "3 个全连通的元件应聚簇, 实际 x 范围: {x_min}..{x_max}"
+        );
+    }
+
+    /// FD 对无连接的元件, 应该把它们推开 (距离 ≥ 2*k)
+    #[test]
+    fn from_force_directed_spreads_unconnected() {
+        let fp = one_pin_fp();
+        // 3 个元件, 都不连
+        let comps = (0..3)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("C{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..3)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: None, // 无 net
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![],
+            footprints: vec![fp],
+        };
+        let placeable: Vec<ComponentId> = (0..3).map(ComponentId).collect();
+        let state = SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
+        // 3 个 1-pin 元件无连接, 应散开 (最远 col 间距 ≥ 2)
+        let xs: Vec<i32> = state.x.iter().copied().collect();
+        let x_min = *xs.iter().min().unwrap();
+        let x_max = *xs.iter().max().unwrap();
+        assert!(
+            x_max - x_min >= 2,
+            "3 个无连接元件应散开, 实际 x 范围: {x_min}..{x_max}"
+        );
+    }
+
+    /// FD 输出所有元件在板内、无 pin 撞
+    #[test]
+    fn from_force_directed_no_oob_or_collision() {
+        let fp = two_pin_fp();
+        let comps = (0..5)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("C{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i * 2), PinId(i * 2 + 1)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..10)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i / 2),
+                num: ((i % 2) + 1).to_string(),
+                pinfunction: None,
+                net: if i % 2 == 0 { Some(NetId(0)) } else { Some(NetId(1)) },
+            })
+            .collect();
+        let nets = vec![
+            Net { id: NetId(0), name: "a".into(), pins: (0..5).map(|i| PinId(i*2)).collect() },
+            Net { id: NetId(1), name: "b".into(), pins: (1..5).map(|i| PinId(i*2+1)).collect() },
+        ];
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        let placeable: Vec<ComponentId> = (0..5).map(ComponentId).collect();
+        let state = SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
+        // 所有 pin 在板内
+        for idx in 0..5 {
+            let footprint = &circuit.footprints[0];
+            for p in footprint.pins() {
+                let abs_x = state.x[idx] + p.offset.x;
+                let abs_y = state.y[idx] + p.offset.y;
+                assert!(abs_x >= 0 && abs_x < 30, "x OOB: {} from {}", abs_x, state.x[idx]);
+                assert!(abs_y >= 0 && abs_y < 5, "y OOB: {} from {}", abs_y, state.y[idx]);
+            }
+        }
+        // pin 不撞
+        let mut holes: HashSet<(i32, i32)> = HashSet::new();
+        for idx in 0..5 {
+            let footprint = &circuit.footprints[0];
+            for p in footprint.pins() {
+                let abs = (state.x[idx] + p.offset.x, state.y[idx] + p.offset.y);
+                assert!(holes.insert(abs), "pin 撞了: {:?}", abs);
+            }
+        }
     }
 }

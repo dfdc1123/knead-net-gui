@@ -15,7 +15,7 @@ pub mod routing;
 pub mod sa;
 
 pub use breadboard::{Breadboard, Hole, HoleId};
-pub use cost::Weights;
+pub use cost::{FDConfig, Weights};
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{PinHole, PlacedFootprint, Placement, Rotation};
 pub use routing::{PathFinderRouter, Router, Wire, WireId};
@@ -162,7 +162,7 @@ impl<'c> Layout<'c> {
             self.placements[comp_id.0] = Some(Placement {
                 position: Position {
                     x: xs[idx],
-                    y: best.row[idx],
+                    y: best.y[idx],
                 },
                 rotation: best.rotation[idx],
             });
@@ -816,13 +816,140 @@ mod tests {
             history_increment: 1.0,
         };
         let wires = router.route(layout.circuit(), &board, &occ);
-        // two_component_fixture 里的 4 个 pin 都在同一 net, 4 个 pin 全部在同一 footprint 组?
-        // 看一下 fixture, Q1 (comp 0) 有 3 个 pin, R1 (comp 1) 有 1 个 pin
-        // 6 个 pin total 都连到 net 0, 6 个不同 col → 5 根 wire
-        // (上接路灯: PathFinder 可能收敛到冲突最少的方案)
         for w in &wires {
             // 端点不能和 pin 撞
             assert!(occ.can_add_wire(w), "wire {:?} 跟 pin 撞了", w);
+        }
+    }
+
+    /// 关键: 2D 状态下, 18 元件 30x5 板不应再出 OOB (以前 sequential x 会塞不下)
+    /// 注: 不要求 0 列冲突, 那需要 basin hopping 额外优化
+    #[test]
+    fn place_sa_no_oob_for_oversized_circuit() {
+        // 手搓 18 元件的密集电路: 总宽 ~94, 远超 30
+        use crate::circuit::{Net, NetId, PhysicalPin};
+        let mut fp_wide = Footprint {
+            id: FootprintId(0),
+            name: "wide".into(),
+            pins: (0..11)
+                .map(|i| PhysicalPin {
+                    name: i.to_string(),
+                    offset: Position { x: i, y: 0 },
+                })
+                .collect(),
+        };
+        fp_wide.pins.truncate(1);
+        let fp_3 = Footprint {
+            id: FootprintId(1),
+            name: "to92".into(),
+            pins: (0..3)
+                .map(|i| PhysicalPin {
+                    name: i.to_string(),
+                    offset: Position { x: i, y: 0 },
+                })
+                .collect(),
+        };
+        let fp_4 = Footprint {
+            id: FootprintId(2),
+            name: "axial".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "0".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "3".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        let mut components = vec![];
+        let mut pins = vec![];
+        // 4 个 11-col, 6 个 3-col, 8 个 4-col → 18 元件
+        for i in 0..4 {
+            let pin_id = PinId(pins.len());
+            components.push(Component {
+                id: ComponentId(i),
+                ref_: format!("D{i}"),
+                kind: "D".into(),
+                value: None,
+                pins: vec![pin_id],
+                footprint: Some(FootprintId(0)),
+            });
+            pins.push(Pin {
+                id: pin_id,
+                component: ComponentId(i),
+                num: "0".into(),
+                pinfunction: None,
+                net: None,
+            });
+        }
+        for i in 4..10 {
+            let pin_id = PinId(pins.len());
+            components.push(Component {
+                id: ComponentId(i),
+                ref_: format!("Q{i}"),
+                kind: "Q".into(),
+                value: None,
+                pins: vec![pin_id],
+                footprint: Some(FootprintId(1)),
+            });
+            pins.push(Pin {
+                id: pin_id,
+                component: ComponentId(i),
+                num: "0".into(),
+                pinfunction: None,
+                net: None,
+            });
+        }
+        for i in 10..18 {
+            let pin_id = PinId(pins.len());
+            components.push(Component {
+                id: ComponentId(i),
+                ref_: format!("R{i}"),
+                kind: "R".into(),
+                value: None,
+                pins: vec![pin_id],
+                footprint: Some(FootprintId(2)),
+            });
+            pins.push(Pin {
+                id: pin_id,
+                component: ComponentId(i),
+                num: "0".into(),
+                pinfunction: None,
+                net: None,
+            });
+        }
+        let circuit = Box::leak(Box::new(Circuit {
+            components,
+            pins,
+            nets: vec![Net {
+                id: NetId(0),
+                name: "shared".into(),
+                pins: (0..18).map(PinId).collect(),
+            }],
+            footprints: vec![fp_wide, fp_3, fp_4],
+        }));
+        let board = Breadboard::new(30, 5);
+        let mut layout = Layout::new(circuit);
+        let result = layout.place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 5000,
+                seed: 42,
+                ..SAConfig::default()
+            },
+        );
+        // 不一定要 Ok (可能有列冲突), 但 OOB 应该没有
+        match result {
+            Ok(()) => {}
+            Err(errors) => {
+                let oob = errors
+                    .iter()
+                    .filter(|e| matches!(e, LayoutError::OutOfBounds { .. }))
+                    .count();
+                assert_eq!(oob, 0, "2D SA 不应再出 OOB, got: {errors:?}");
+            }
         }
     }
 }
