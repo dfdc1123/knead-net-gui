@@ -137,11 +137,11 @@ impl<'c> Layout<'c> {
         self.occupancy(board).map(|_| ())
     }
 
-    /// 用模拟退火 + 后续压缩布局。
+    /// 用模拟退火布局。
     ///
     /// 流程: 收集有 footprint 的 component → `sa::simulate` (跑 `config.n_seeds`
-    /// 次, 取最低 cost 的 best state) → `sa::compact` → 比较 compact 前后
-    /// cost, 退步则保留 SA 原 x → 写回 `placements` → `validate(board)`。
+    /// 次, 取最低 cost 的 best state) → 写回 `placements` → `validate(board)`。
+    /// 紧凑度已折进 [`cost::cost`], 不再需要单独的 post-pass。
     ///
     /// 没有 footprint 的 component 保持未摆放, `validate` 会报 `NoFootprint`。
     /// 调参见 [`SAConfig`], 默认参数适合 ~5 元件级别。
@@ -150,7 +150,7 @@ impl<'c> Layout<'c> {
         board: &Breadboard,
         config: &SAConfig,
     ) -> Result<(), Vec<LayoutError>> {
-        use crate::layout::cost::{SAState, cost};
+        use crate::layout::cost::SAState;
         use crate::layout::sa;
 
         let placeable: Vec<ComponentId> = self
@@ -175,7 +175,7 @@ impl<'c> Layout<'c> {
                 ..*config
             };
             let state_s = sa::simulate(placeable.clone(), self.circuit, board, &cfg_s);
-            let cost_s = cost(&state_s, self.circuit, board, &config.weights);
+            let cost_s = crate::layout::cost::cost(&state_s, self.circuit, board, &config.weights);
             if cost_s < best_cost {
                 best_cost = cost_s;
                 best_state = Some(state_s);
@@ -183,29 +183,10 @@ impl<'c> Layout<'c> {
         }
         let best = best_state.expect("至少跑了一次");
 
-        let compact_xs = sa::compact(&best, self.circuit, board);
-
-        // compact 是"贪心左推", 只看 pin 撞 / 列冲突, 不看 HPWL。
-        // 如果左推后某个元件的 pin 跨列连接 net 的另一端更远了, HPWL 会增大。
-        // 退步则保留 SA 原 x —— SA 已经全局优化过, 左推不一定更好。
-        let sa_cost = best_cost;
-        let compacted = SAState {
-            placeable: best.placeable.clone(),
-            x: compact_xs.clone(),
-            y: best.y.clone(),
-            rotation: best.rotation.clone(),
-        };
-        let compacted_cost = cost(&compacted, self.circuit, board, &config.weights);
-        let final_xs: Vec<i32> = if compacted_cost <= sa_cost {
-            compact_xs
-        } else {
-            best.x.clone()
-        };
-
         for (idx, &comp_id) in best.placeable.iter().enumerate() {
             self.placements[comp_id.0] = Some(Placement {
                 position: Position {
-                    x: final_xs[idx],
+                    x: best.x[idx],
                     y: best.y[idx],
                 },
                 rotation: best.rotation[idx],

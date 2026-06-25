@@ -1,4 +1,4 @@
-//! 模拟退火用的成本函数: MST 走线估算 + pin 碰撞 + 越界 + 列冲突。
+//! 模拟退火用的成本函数: MST 走线估算 + pin 碰撞 + bbox 碰撞 + 越界 + 列冲突 + 紧凑度。
 //!
 //! 设计要点:
 //! - **MST (Minimum Spanning Tree) on pin positions**: 每个 net 算一次 Kruskal
@@ -9,9 +9,11 @@
 //!   - **不同 col 不同 rail: |Δcol| + |Δrow|** (Manhattan)
 //!   比 2D HPWL 准 — HPWL 把 "同列不同 row 同 rail" 算成 Δrow, MST 直接 0, 推动
 //!   SA 主动寻找 rail 短接的零跳线布局。
+//! - **紧凑度**: 按 rail 分组算 union bbox 面积加和, 阻止 SA 停在"零冲突但留白大"的状态。
+//!   按 rail 切分避免中央通道把"实际占 1 行"的布局算成跨 2 行。
 //! - 成本是各项**加权和**, 权在 [`Weights`] 里调。
-//! - `SAState` 是 SA 内部状态, 只在 layout 子模块内共享; v2 起每个元件显式持有
-//!   `(x, y, rotation)`, 不再由 order 推 x。
+//! - `SAState` 是 SA 内部状态, 只在 layout 子模块内共享; v2 起每个元件显式
+//!   持有 `(x, y, rotation)`, 不再由 order 推 x。
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,10 +21,11 @@ use crate::circuit::{Circuit, ComponentId, NetId};
 use crate::layout::breadboard::Breadboard;
 use crate::layout::placement::{BBox, Rotation, rotate};
 
-/// SA 成本函数的四项权重。
+/// SA 成本函数的六项权重。
 ///
 /// 成本 = `hpwl * HPWL + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
-///       + column_conflict * 列短路对数 + out_of_bounds * 越界 pin 数`
+///       + column_conflict * 列短路对数 + out_of_bounds * 越界 pin 数
+///       + compactness * (按 rail 分组的 union bbox 面积之和) + rail_crossing (用 2+ rail 时)`
 ///
 /// 默认值见 [`Weights::default`], 经验起点; 真用时按板子拥挤程度调。
 #[derive(Debug, Clone, Copy)]
@@ -35,6 +38,13 @@ pub struct Weights {
     /// 同列不同 net 的 pin 对数 (N 个 pin 同列冲突就是 N-1 + N-2 + ... + 1 = N(N-1)/2)
     pub column_conflict: f64,
     pub out_of_bounds: f64,
+    /// 紧凑度: 按 rail 分组, 每组算 union bbox 面积 `(max_x - min_x + 1) * (max_y - min_y + 1)`,
+    /// 各 rail 加和。**按 rail 切分** 是为了避免中央通道把"实际只占 1 行"的布局算成 2 行高。
+    /// 推动 SA 把元件挤到 union bbox 最小处 (x 和 y 同等对待, 都从 area 项自然得到)。
+    pub compactness: f64,
+    /// 同时使用 2+ 个 rail 时的额外固定惩罚, 鼓励同 rail 排布。
+    /// 跨 rail 至少要一根 ~3 孔 jumper, 这项比单 cell 紧凑更贵。
+    pub rail_crossing: f64,
 }
 
 impl Default for Weights {
@@ -51,6 +61,12 @@ impl Default for Weights {
             column_conflict: 1_000_000.0,
             // 越界基本不允许; 巨大惩罚让 SA 直接拒绝
             out_of_bounds: 1_000_000.0,
+            // 紧凑度: 1 cell² ≈ 0.5 MST cell 的代价, 让 HPWL 仍有空间优化跨列 net,
+            // 但空隙会被这股力挤掉。
+            compactness: 0.5,
+            // 跨 rail = 多一根 jumper + 视觉割裂, 取约 5 cell MST, 比单 cell 紧凑贵
+            // 但比 column_conflict 软得多, 不会让 SA 为了"必须跨 rail 的电路"去撞列冲突。
+            rail_crossing: 5.0,
         }
     }
 }
@@ -531,11 +547,62 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         }
     }
 
+    // 7. 紧凑度: 按 rail 分组, 每组算 union bbox 面积, 加和; 跨 rail 再加一个固定惩罚。
+    //    阻止 SA 停在"cost=0 但留白大"的状态。
+    //    跳过 OOB / blocked row 的 bbox: 那些是被 OOB / state_y_valid 硬卡掉的, 进了 union
+    //    反而把面积算虚了; 反正 cost 会被 OOB 惩罚主导, 不影响 SA 走向。
+    let mut by_rail: HashMap<i32, Vec<BBox>> = HashMap::new();
+    for bbox in bboxes.iter().flatten() {
+        if bbox.min_x < 0
+            || bbox.max_x >= cols_i
+            || bbox.min_y < 0
+            || bbox.max_y >= rows_i
+            || board.is_blocked(bbox.min_y as usize)
+        {
+            continue;
+        }
+        // 拿 bbox 所在 rail 的"顶行"做 bucket key, 同 rail 的所有 row 都汇到一处。
+        let rail_top = board
+            .rail_rows(bbox.min_y)
+            .first()
+            .copied()
+            .unwrap_or(bbox.min_y);
+        by_rail.entry(rail_top).or_default().push(*bbox);
+    }
+    let mut area_sum = 0.0;
+    for cells in by_rail.values() {
+        let mut min_x = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        for b in cells {
+            min_x = min_x.min(b.min_x);
+            max_x = max_x.max(b.max_x);
+            min_y = min_y.min(b.min_y);
+            max_y = max_y.max(b.max_y);
+        }
+        if min_x <= max_x && min_y <= max_y {
+            // width × height 自然对待 x / y: 1 cell 宽 = 1 cell 高的"成本贡献"。
+            // (单 rail 内所有元件 1 行高时, height = 1, area 退化为 width。)
+            let width = (max_x - min_x + 1) as f64;
+            let height = (max_y - min_y + 1) as f64;
+            area_sum += width * height;
+        }
+    }
+    // 用 2+ rail: 固定惩罚一项, 不乘以 rail 数 (不是"跨得越多越贵", 是"跨就有成本")。
+    let rail_cross = if by_rail.len() >= 2 {
+        w.rail_crossing
+    } else {
+        0.0
+    };
+
     w.hpwl * mst_sum
         + w.pin_overlap * coll_count as f64
         + w.b_box_overlap * bbox_overlap_count as f64
         + w.column_conflict * col_conflict_pairs as f64
         + w.out_of_bounds * oob_count as f64
+        + w.compactness * area_sum
+        + rail_cross
 }
 
 /// 给一个 net 的 pin 位置算 MST (Kruskal) 总长度。
@@ -694,6 +761,16 @@ mod tests {
         Breadboard::new(30, 5)
     }
 
+    /// 只关心 HPWL / pin / bbox / column 各项的测试用, 屏蔽新加的紧凑度和跨 rail 惩罚。
+    /// 不想让"layout 跨几行" 之类的全局性质混入到孤立某项成本的断言里。
+    fn weights_legacy() -> Weights {
+        Weights {
+            compactness: 0.0,
+            rail_crossing: 0.0,
+            ..Weights::default()
+        }
+    }
+
     #[test]
     fn empty_state_costs_zero() {
         let (circuit, _) = two_pin_in_net();
@@ -707,7 +784,7 @@ mod tests {
         // 2 pin 紧挨着 (0, 2) 和 (1, 2), 都在同一 net → HPWL = 1 - 0 = 1
         let (circuit, cid) = two_pin_in_net();
         let state = SAState::from_order(vec![cid], 2, &[2]);
-        let c = cost(&state, &circuit, &board(), &Weights::default());
+        let c = cost(&state, &circuit, &board(), &weights_legacy());
         assert!((c - 1.0).abs() < 1e-9, "expected 1.0, got {}", c);
     }
 
@@ -743,13 +820,13 @@ mod tests {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
         // 不撞: x = [0, 2]
         state.x = vec![0, 2];
-        let c_clean = cost(&state, &circuit, &board(), &Weights::default());
+        let c_clean = cost(&state, &circuit, &board(), &weights_legacy());
         assert_eq!(c_clean, 0.0);
 
         // 撞: x = [0, 0]
         state.x = vec![0, 0];
-        let c_coll = cost(&state, &circuit, &board(), &Weights::default());
-        let expected = Weights::default().pin_overlap + Weights::default().b_box_overlap;
+        let c_coll = cost(&state, &circuit, &board(), &weights_legacy());
+        let expected = weights_legacy().pin_overlap + weights_legacy().b_box_overlap;
         assert!(
             (c_coll - expected).abs() < 1e-9,
             "expected pin_overlap + b_box_overlap = {}, got {}",
@@ -799,16 +876,16 @@ mod tests {
         // 不冲突: x = [0, 2]
         let mut s = state.clone();
         s.x = vec![0, 2];
-        let c_clean = cost(&s, &circuit, &board(), &Weights::default());
+        let c_clean = cost(&s, &circuit, &board(), &weights_legacy());
         assert_eq!(c_clean, 0.0);
 
         // 冲突: x = [0, 0] (同列, 同孔 → pin_collision + bbox_collision + column_conflict)
         let mut s = state.clone();
         s.x = vec![0, 0];
-        let c_coll = cost(&s, &circuit, &board(), &Weights::default());
-        let expected = Weights::default().pin_overlap
-            + Weights::default().b_box_overlap
-            + Weights::default().column_conflict;
+        let c_coll = cost(&s, &circuit, &board(), &weights_legacy());
+        let expected = weights_legacy().pin_overlap
+            + weights_legacy().b_box_overlap
+            + weights_legacy().column_conflict;
         assert!(
             (c_coll - expected).abs() < 1e-9,
             "expected pin_overlap + b_box_overlap + column_conflict = {}, got {}",
@@ -820,9 +897,9 @@ mod tests {
         let mut s = state;
         s.x = vec![0, 0];
         s.y = vec![2, 3];
-        let c_col_only = cost(&s, &circuit, &board(), &Weights::default());
+        let c_col_only = cost(&s, &circuit, &board(), &weights_legacy());
         assert!(
-            (c_col_only - Weights::default().column_conflict).abs() < 1e-9,
+            (c_col_only - weights_legacy().column_conflict).abs() < 1e-9,
             "expected only column_conflict penalty, got {}",
             c_col_only
         );
@@ -869,7 +946,7 @@ mod tests {
         // 同 col 0, C0 在上 rail (y=2), C1 在下 rail (y=10) — 物理不连通
         state.x = vec![0, 0];
         state.y = vec![2, 10];
-        let c = cost(&state, &circuit, &board, &Weights::default());
+        let c = cost(&state, &circuit, &board, &weights_legacy());
         assert_eq!(
             c, 0.0,
             "上下 rail 同列不同 net 不该被 cost 记为冲突, got {c}"
@@ -1258,7 +1335,274 @@ mod tests {
             y: vec![0, 1],
             rotation: vec![Rotation::R0, Rotation::R0],
         };
-        let c = cost(&state, &circuit, &board(), &Weights::default());
+        let c = cost(&state, &circuit, &board(), &weights_legacy());
         assert!(c.abs() < 1e-9, "零跳线布局应该 cost = 0, got {}", c);
+    }
+
+    // ============================================================
+    //  紧凑度 + 跨 rail 惩罚
+    // ============================================================
+
+    /// 同样 2 个 1-pin 元件, 都同 rail 单行: cost 应随水平跨度线性增长, 垂直 y 不变不增加
+    /// (x 和 y 等同计入, 但仅以 1 个 dimension 变化时只有那一项 +1)。
+    #[test]
+    fn compactness_penalizes_horizontal_spread() {
+        let fp = one_pin_fp();
+        let comps = (0..2)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..2)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: None,
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![],
+            footprints: vec![fp],
+        };
+        // 屏蔽 HPWL / pin / bbox / column, 只看 compactness
+        let w = Weights {
+            hpwl: 0.0,
+            pin_overlap: 0.0,
+            b_box_overlap: 0.0,
+            column_conflict: 0.0,
+            ..Weights::default()
+        };
+        // 都同 row 2, x 贴在一起 (但不同 col, 不撞 pin)
+        let s_tight = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 1],
+            y: vec![2, 2],
+            rotation: vec![Rotation::R0; 2],
+        };
+        let c_tight = cost(&s_tight, &circuit, &board(), &w);
+        // 同 row 2, x 拉开 (0, 5) → bbox 6 × 1 = 6 → cost 3.0
+        let s_wide = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 5],
+            y: vec![2, 2],
+            rotation: vec![Rotation::R0; 2],
+        };
+        let c_wide = cost(&s_wide, &circuit, &board(), &w);
+        // 贴一起: bbox 2×1 = 2 → 1.0
+        // 拉开 5 列: bbox 6×1 = 6 → 3.0
+        assert!(
+            (c_tight - 1.0).abs() < 1e-9,
+            "贴一起 (x 0..1) 应 cost = 0.5 * 2 = 1.0, got {c_tight}"
+        );
+        assert!(
+            (c_wide - 3.0).abs() < 1e-9,
+            "拉开 5 列 (x 0..5) 应 cost = 0.5 * 6 = 3.0, got {c_wide}"
+        );
+        assert!(c_wide > c_tight);
+    }
+
+    /// 同样 2 个 1-pin 元件, 同列: cost 随垂直跨度增长, 跟水平等价 (x / y 平等)。
+    #[test]
+    fn compactness_treats_xy_equally() {
+        let fp = one_pin_fp();
+        let comps = (0..2)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..2)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: None,
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![],
+            footprints: vec![fp],
+        };
+        let w = Weights {
+            hpwl: 0.0,
+            pin_overlap: 0.0,
+            b_box_overlap: 0.0,
+            column_conflict: 0.0,
+            ..Weights::default()
+        };
+
+        // 拉开 5 cells (x 0..4, width 5) → cost = 0.5 * 5 * 1 = 2.5 (同 row)
+        let s_horiz = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 4],
+            y: vec![2, 2],
+            rotation: vec![Rotation::R0; 2],
+        };
+        let c_horiz = cost(&s_horiz, &circuit, &board(), &w);
+
+        // 拉开 5 cells (y 0..4, height 5) → cost = 0.5 * 1 * 5 = 2.5 (同 col)
+        let s_vert = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 0],
+            y: vec![0, 4],
+            rotation: vec![Rotation::R0; 2],
+        };
+        let c_vert = cost(&s_vert, &circuit, &board(), &w);
+
+        assert!(
+            (c_horiz - c_vert).abs() < 1e-9,
+            "x / y 应同代价: 水平={c_horiz}, 垂直={c_vert}"
+        );
+    }
+
+    /// 跨 rail (中央通道上下都放) 应该加一个 rail_crossing 固定项。
+    #[test]
+    fn compactness_rail_crossing_penalty() {
+        let board = crate::layout::Breadboard::standard();
+        let fp = one_pin_fp();
+        let comps = (0..2)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..2)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: None,
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![],
+            footprints: vec![fp],
+        };
+        let w = Weights {
+            hpwl: 0.0,
+            pin_overlap: 0.0,
+            b_box_overlap: 0.0,
+            column_conflict: 0.0,
+            ..Weights::default()
+        };
+
+        // 同 rail: 无 rail_crossing
+        let s_same = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 0],
+            y: vec![0, 1], // 都是上 rail
+            rotation: vec![Rotation::R0; 2],
+        };
+        let c_same = cost(&s_same, &circuit, &board, &w);
+
+        // 跨 rail (中央通道两侧): 加 rail_crossing
+        let s_cross = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 0],
+            y: vec![0, 10], // 上 + 下
+            rotation: vec![Rotation::R0; 2],
+        };
+        let c_cross = cost(&s_cross, &circuit, &board, &w);
+
+        let delta = c_cross - c_same;
+        assert!(
+            (delta - w.rail_crossing).abs() < 1e-9,
+            "跨 rail 多出的 cost 应 = rail_crossing ({}) , 实际多 {delta}",
+            w.rail_crossing
+        );
+    }
+
+    /// 按 rail 分组: 跨中央通道不应被算成"垂直跨度 7 行"让 area 虚胖。
+    /// 也就是说, 上 rail 内 bbox 和下 rail 内 bbox 各自算, 不拼接。
+    #[test]
+    fn compactness_rail_split_avoids_central_channel_inflation() {
+        let board = crate::layout::Breadboard::standard();
+        let fp = one_pin_fp();
+        // 3 个 1-pin 元件: 2 个上 rail (y=0, 1), 1 个下 rail (y=10)
+        let comps = (0..3)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..3)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: None,
+            })
+            .collect();
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![],
+            footprints: vec![fp],
+        };
+        let w = Weights {
+            hpwl: 0.0,
+            pin_overlap: 0.0,
+            b_box_overlap: 0.0,
+            column_conflict: 0.0,
+            ..Weights::default()
+        };
+
+        // 同样 3 个元件, 都堆在上 rail, x 拉开避免 pin 撞
+        let s_all_upper = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+            x: vec![0, 1, 2],
+            y: vec![0, 1, 2],
+            rotation: vec![Rotation::R0; 3],
+        };
+        let c_all_upper = cost(&s_all_upper, &circuit, &board, &w);
+
+        // 1 个下 rail (y=10), 2 个上 rail (y=0, 1)
+        let s_split = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+            x: vec![0, 1, 2],
+            y: vec![0, 1, 10],
+            rotation: vec![Rotation::R0; 3],
+        };
+        let c_split = cost(&s_split, &circuit, &board, &w);
+
+        // 都上 rail: x=0..2, y=0..2, bbox = 3×3 = 9 → cost 4.5
+        assert!(
+            (c_all_upper - 4.5).abs() < 1e-9,
+            "全上 rail 应 cost = 0.5 * 9 = 4.5, got {c_all_upper}"
+        );
+        // split: 上 rail bbox 0..1 × 0..1 = 2×2 = 4; 下 rail bbox 2..2 × 10..10 = 1×1 = 1;
+        //        总 area = 5, cost = 2.5; 加 rail_crossing 5 = 7.5
+        assert!(
+            (c_split - (0.5 * (2.0 * 2.0 + 1.0 * 1.0) + w.rail_crossing)).abs() < 1e-9,
+            "split 布局应 cost = 0.5 * 5 + 5.0 = 7.5, got {c_split}"
+        );
     }
 }
