@@ -11,7 +11,7 @@
 //!
 //! **不**用 R90/R270 (会改变 footprint 的水平宽度, 破坏"显式 2D 状态"假设)。
 //!
-//! Rng: 自己写的 [`Lcg`] (SplitMix64), 不引外部依赖。
+//! Rng: [`fastrand::Rng`] (WyRand), 不密码学安全但统计性质足够 SA 用。
 
 use std::collections::{HashMap, HashSet};
 
@@ -58,46 +58,6 @@ impl Default for SAConfig {
 }
 
 // ============================================================
-//  随机数 (SplitMix64)
-// ============================================================
-
-/// 轻量 PRNG, 不用引外部依赖。统计性质够 SA 用, **不**是密码学安全。
-pub(super) struct Lcg(u64);
-
-impl Lcg {
-    pub fn new(seed: u64) -> Self {
-        // 0 是 SplitMix64 的不动点, 给个最低保证
-        Self(seed.max(1))
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// `[lo, hi)` 上的均匀整数; `hi <= lo` 时返回 `lo`。
-    pub fn gen_range(&mut self, lo: usize, hi: usize) -> usize {
-        if hi <= lo {
-            return lo;
-        }
-        lo + (self.next_u64() as usize) % (hi - lo)
-    }
-
-    /// `[0, 1)` 上的均匀浮点。
-    pub fn gen_unit(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    /// 以概率 `p` 返回 true; `p` 被夹到 `[0, 1]`。
-    pub fn gen_bool_p(&mut self, p: f64) -> bool {
-        self.gen_unit() < p.clamp(0.0, 1.0)
-    }
-}
-
-// ============================================================
 //  扰动
 // ============================================================
 
@@ -115,15 +75,15 @@ enum Move {
     Teleport(usize, i32, i32),
 }
 
-fn random_move(state: &SAState, rng: &mut Lcg, board: &Breadboard) -> Move {
+fn random_move(state: &SAState, rng: &mut fastrand::Rng, board: &Breadboard) -> Move {
     let n = state.n();
     if n == 0 {
         return Move::Flip(0);
     }
-    let p = rng.gen_range(0, n);
-    let r = rng.gen_unit();
-    let dx = if rng.gen_bool_p(0.5) { -1 } else { 1 };
-    let dy = if rng.gen_bool_p(0.5) { -1 } else { 1 };
+    let p = rng.usize(0..n);
+    let r = rng.f64();
+    let dx = if rng.f64() < 0.5 { -1 } else { 1 };
+    let dy = if rng.f64() < 0.5 { -1 } else { 1 };
 
     if n < 2 {
         if r < 0.20 {
@@ -137,14 +97,14 @@ fn random_move(state: &SAState, rng: &mut Lcg, board: &Breadboard) -> Move {
         }
         return Move::Teleport(
             p,
-            rng.gen_range(0, board.cols()) as i32,
-            rng.gen_range(0, board.rows()) as i32,
+            rng.usize(0..board.cols()) as i32,
+            rng.usize(0..board.rows()) as i32,
         );
     }
 
     if r < 0.30 {
         let q = loop {
-            let q = rng.gen_range(0, n);
+            let q = rng.usize(0..n);
             if q != p {
                 break q;
             }
@@ -159,8 +119,8 @@ fn random_move(state: &SAState, rng: &mut Lcg, board: &Breadboard) -> Move {
     } else {
         Move::Teleport(
             p,
-            rng.gen_range(0, board.cols()) as i32,
-            rng.gen_range(0, board.rows()) as i32,
+            rng.usize(0..board.cols()) as i32,
+            rng.usize(0..board.rows()) as i32,
         )
     }
 }
@@ -203,7 +163,7 @@ pub(super) fn simulate(
     board: &Breadboard,
     config: &SAConfig,
 ) -> SAState {
-    let mut rng = Lcg::new(config.seed);
+    let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_force_directed {
         SAState::from_force_directed(placeable, circuit, board, &config.fd_config)
     } else {
@@ -227,7 +187,7 @@ pub(super) fn simulate(
         let new_cost = cost(&candidate, circuit, board, &config.weights);
         let delta = new_cost - current_cost;
 
-        let accept = delta <= 0.0 || rng.gen_unit() < (-delta / t).exp();
+        let accept = delta <= 0.0 || rng.f64() < (-delta / t).exp();
         if accept {
             state = candidate;
             current_cost = new_cost;
@@ -445,21 +405,21 @@ mod tests {
     }
 
     #[test]
-    fn lcg_deterministic() {
-        let mut a = Lcg::new(42);
-        let mut b = Lcg::new(42);
+    fn rng_deterministic() {
+        let mut a = fastrand::Rng::with_seed(42);
+        let mut b = fastrand::Rng::with_seed(42);
         for _ in 0..100 {
-            assert_eq!(a.next_u64(), b.next_u64());
+            assert_eq!(a.u64(..), b.u64(..));
         }
     }
 
     #[test]
-    fn lcg_different_seeds_differ() {
-        let mut a = Lcg::new(1);
-        let mut b = Lcg::new(2);
+    fn rng_different_seeds_differ() {
+        let mut a = fastrand::Rng::with_seed(1);
+        let mut b = fastrand::Rng::with_seed(2);
         let mut same = 0;
         for _ in 0..100 {
-            if a.next_u64() == b.next_u64() {
+            if a.u64(..) == b.u64(..) {
                 same += 1;
             }
         }
@@ -474,7 +434,7 @@ mod tests {
             &simple_circuit(),
             &board(),
         );
-        let mut rng = Lcg::new(0);
+        let mut rng = fastrand::Rng::with_seed(0);
         for _ in 0..200 {
             let m = random_move(&state, &mut rng, &board());
             match m {
