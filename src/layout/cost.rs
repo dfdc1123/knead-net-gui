@@ -34,10 +34,9 @@ impl Default for Weights {
             hpwl: 1.0,
             // 一次 pin 碰撞 = 让 SA 宁愿多绕 50-100 孔也不撞
             pin_overlap: 100.0,
-            // 一次列短路对: 比 pin_overlap 略低, 因为"退而求其次"允许少量列冲突
-            // (后期能靠走线 + 列上的同 net pin "治愈"——不是真正的电气短路, 只是
-            // 跳线要迂回)
-            column_conflict: 50.0,
+            // 同列不同 net 的 pin 会被面包板竖向 rail 短接, 这是物理电气短路,
+            // 不能让走线"治愈"。惩罚拉到 out_of_bounds 同级, 让 SA 当作硬约束。
+            column_conflict: 1_000_000.0,
             // 越界基本不允许; 巨大惩罚让 SA 直接拒绝
             out_of_bounds: 1_000_000.0,
         }
@@ -814,7 +813,8 @@ mod tests {
             footprints: vec![fp],
         };
         let placeable: Vec<ComponentId> = (0..3).map(ComponentId).collect();
-        let state = SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
+        let state =
+            SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
         // 3 个连通的 1-pin 元件, FD 应该把它们聚在一起 (col 间距 ≤ 3)
         let xs: Vec<i32> = state.x.iter().copied().collect();
         let x_min = *xs.iter().min().unwrap();
@@ -856,7 +856,8 @@ mod tests {
             footprints: vec![fp],
         };
         let placeable: Vec<ComponentId> = (0..3).map(ComponentId).collect();
-        let state = SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
+        let state =
+            SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
         // 3 个 1-pin 元件无连接, 应散开 (最远 col 间距 ≥ 2)
         let xs: Vec<i32> = state.x.iter().copied().collect();
         let x_min = *xs.iter().min().unwrap();
@@ -887,12 +888,24 @@ mod tests {
                 component: ComponentId(i / 2),
                 num: ((i % 2) + 1).to_string(),
                 pinfunction: None,
-                net: if i % 2 == 0 { Some(NetId(0)) } else { Some(NetId(1)) },
+                net: if i % 2 == 0 {
+                    Some(NetId(0))
+                } else {
+                    Some(NetId(1))
+                },
             })
             .collect();
         let nets = vec![
-            Net { id: NetId(0), name: "a".into(), pins: (0..5).map(|i| PinId(i*2)).collect() },
-            Net { id: NetId(1), name: "b".into(), pins: (1..5).map(|i| PinId(i*2+1)).collect() },
+            Net {
+                id: NetId(0),
+                name: "a".into(),
+                pins: (0..5).map(|i| PinId(i * 2)).collect(),
+            },
+            Net {
+                id: NetId(1),
+                name: "b".into(),
+                pins: (1..5).map(|i| PinId(i * 2 + 1)).collect(),
+            },
         ];
         let circuit = Circuit {
             components: comps,
@@ -901,15 +914,26 @@ mod tests {
             footprints: vec![fp],
         };
         let placeable: Vec<ComponentId> = (0..5).map(ComponentId).collect();
-        let state = SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
+        let state =
+            SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
         // 所有 pin 在板内
         for idx in 0..5 {
             let footprint = &circuit.footprints[0];
             for p in footprint.pins() {
                 let abs_x = state.x[idx] + p.offset.x;
                 let abs_y = state.y[idx] + p.offset.y;
-                assert!(abs_x >= 0 && abs_x < 30, "x OOB: {} from {}", abs_x, state.x[idx]);
-                assert!(abs_y >= 0 && abs_y < 5, "y OOB: {} from {}", abs_y, state.y[idx]);
+                assert!(
+                    abs_x >= 0 && abs_x < 30,
+                    "x OOB: {} from {}",
+                    abs_x,
+                    state.x[idx]
+                );
+                assert!(
+                    abs_y >= 0 && abs_y < 5,
+                    "y OOB: {} from {}",
+                    abs_y,
+                    state.y[idx]
+                );
             }
         }
         // pin 不撞

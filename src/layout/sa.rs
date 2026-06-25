@@ -13,7 +13,7 @@
 //!
 //! Rng: 自己写的 [`Lcg`] (SplitMix64), 不引外部依赖。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::circuit::{Circuit, ComponentId};
 use crate::layout::breadboard::Breadboard;
@@ -240,14 +240,22 @@ pub(super) fn simulate(
 //  退火后的位置压缩
 // ============================================================
 
-/// 把 SA 结果里每个元件的 x 推到"再左就会撞 pin"为止, y / rotation 保持不变。
+/// 把 SA 结果里每个元件的 x 推到"再左就会撞 pin/列短路"为止, y / rotation 保持不变。
 ///
-/// **不**扫整行找缝, **不**考虑列短路——SA 的 cost penalty 已经管了。
+/// **不**扫整行找缝——只考虑"再左就会出问题"的位置, 一步内就停。
+/// 既检查 pin 碰撞也检查列冲突 (面包板同列的孔已由 rail 连通, 不能让不同 net 的
+/// pin 落在同列)。如果某列上没有任何 pin, 该列可以放任意 net 的 pin (这里
+/// `col_nets` 里查不到视为 "空")。
 /// 如果 SA 找到了 0 冲突的布局, compact 应当是几乎无操作 (只把可以左推的推一下)。
+/// 找不到合法新 x 时, 保留 SA 原来的 x, 避免把合法布局搞坏。
 pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) -> Vec<i32> {
     let n = state.n();
     let mut new_x = vec![0i32; n];
     let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+    // 列 → 该列上第一个放下的 pin 的 net (与 `cost` 里 "col_owners[0] == base" 的语义一致)。
+    // 后续 pin 落到该列时, 如果 net != first_net 且双方都 Some 就视为冲突;
+    // 任何一边是 None 也算冲突, 与 SA 成本函数保持一致。
+    let mut col_first_net: HashMap<i32, Option<crate::circuit::NetId>> = HashMap::new();
 
     for idx in 0..n {
         let comp_id = state.placeable[idx];
@@ -257,39 +265,61 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) ->
         let rotation = state.rotation[idx];
         let row_y = state.y[idx];
 
-        let pin_offsets: Vec<(i32, i32)> = footprint
+        // (相对偏移, 该 pin 的 net) —— 用 pin.num 查 component.pins 里的 net,
+        // 与 `cost` 函数同源, 避免 footprint pad 顺序跟 netlist pin 顺序错位。
+        let pin_info: Vec<((i32, i32), Option<crate::circuit::NetId>)> = footprint
             .pins()
             .iter()
-            .map(|p| {
+            .filter_map(|p| {
+                let comp_pin = component.pins.iter().find_map(|pid| {
+                    let pin = &circuit.pins[pid.0];
+                    if pin.num() == p.name() {
+                        Some(pid)
+                    } else {
+                        None
+                    }
+                })?;
+                let net = circuit.pins[comp_pin.0].net;
                 let r = rotate(p.offset, rotation);
-                (r.x, r.y)
+                Some(((r.x, r.y), net))
             })
             .collect();
+
+        let pin_offsets: Vec<(i32, i32)> = pin_info.iter().map(|&(o, _)| o).collect();
 
         let board_min_x = pin_offsets.iter().map(|&(rdx, _)| -rdx).max().unwrap_or(0);
         let board_max_x =
             board.cols() as i32 - 1 - pin_offsets.iter().map(|&(rdx, _)| rdx).max().unwrap_or(0);
 
+        let mut chosen: Option<i32> = None;
         let mut cur = board_min_x;
-        loop {
-            if cur > board_max_x {
-                break;
-            }
+        while cur <= board_max_x {
             let collides = pin_offsets
                 .iter()
                 .any(|&(rdx, rdy)| occupied.contains(&(cur + rdx, row_y + rdy)));
             if !collides {
-                new_x[idx] = cur;
-                break;
+                // 列冲突: 该候选位置下, 任一 pin 落在 col_first_net 已记录且 net 不一致的列
+                let col_conflict = pin_info.iter().any(|&((rdx, _), net)| {
+                    let col = cur + rdx;
+                    match col_first_net.get(&col) {
+                        None => false,
+                        Some(existing) => existing != &net,
+                    }
+                });
+                if !col_conflict {
+                    chosen = Some(cur);
+                    break;
+                }
             }
             cur += 1;
         }
-        if cur > board_max_x {
-            new_x[idx] = cur; // 装不下, 让 validate 报越界
-        }
 
-        for &(rdx, rdy) in &pin_offsets {
-            occupied.insert((new_x[idx] + rdx, row_y + rdy));
+        new_x[idx] = chosen.unwrap_or(state.x[idx]);
+
+        for &((rdx, rdy), net) in &pin_info {
+            let abs = (new_x[idx] + rdx, row_y + rdy);
+            occupied.insert(abs);
+            col_first_net.entry(abs.0).or_insert(net);
         }
     }
 
@@ -492,6 +522,62 @@ mod tests {
         assert_eq!(xs[0], 0);
         // C1 footprint 2 cols 宽, 必须 >= 2 才能避开 C0
         assert!(xs[1] >= 2, "应避开 pin, 期望 >= 2, got {}", xs[1]);
+    }
+
+    /// 2 个 1-pin 元件不同 net: C0 row 0, C1 row 1, 都 col 5。
+    /// compact 推 C0 到 col 0 后, C1 不能再压到 col 0 (同列不同 net) →
+    /// 下一个不冲突的位置是 col 1。
+    #[test]
+    fn compact_avoids_column_conflict_different_nets() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "one".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let components = (0..2)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("C{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins = (0..2)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(i)), // 不同 net
+            })
+            .collect();
+        let nets = (0..2)
+            .map(|i| Net {
+                id: NetId(i),
+                name: format!("n{i}"),
+                pins: vec![PinId(i)],
+            })
+            .collect();
+        let circuit = Circuit {
+            components,
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        let state = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![5, 5],
+            y: vec![0, 1],
+            rotation: vec![Rotation::R0; 2],
+        };
+        let xs = compact(&state, &circuit, &board());
+        assert_eq!(xs[0], 0, "C0 应当压到 0");
+        assert_eq!(xs[1], 1, "C1 应跳到 col 1 避免同列不同 net, got {}", xs[1]);
     }
 
     #[test]

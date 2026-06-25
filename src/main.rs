@@ -33,7 +33,7 @@ fn main() {
     let circuit = netlist.into_circuit(&footprints);
 
     // 4. 布局: 模拟退火 + 压缩
-    let board = Breadboard::new(60, 5);
+    let board = Breadboard::new(30, 5);
     let mut layout = Layout::new(&circuit);
     if let Err(errors) = layout.place_sa(
         &board,
