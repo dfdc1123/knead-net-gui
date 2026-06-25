@@ -25,7 +25,7 @@ fn main() {
     let footprints = parse_footprints(footprint_texts).unwrap();
 
     // 2. 读 .net 文件
-    let netlist_path = format!("{kicad_dir}/bjt_led.net");
+    let netlist_path = format!("{kicad_dir}/h-bridge-short.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 
@@ -33,14 +33,19 @@ fn main() {
     let circuit = netlist.into_circuit(&footprints);
 
     // 4. 布局: 模拟退火 + 压缩
-    // 用标准全尺寸板: 30 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
+    // 标准板: 30 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
     // 上下半各自独立 rail, 同列不同 rail 互不连通。
     let board = Breadboard::standard();
     let mut layout = Layout::new(&circuit);
+    // SA 是随机算法; 跑 10 次取最低 cost (MST cost 下大部分能找到 cost=0 的零跳线布局)
     if let Err(errors) = layout.place_sa(
         &board,
         &SAConfig {
             use_force_directed: true,
+            max_iters: 50000,
+            t0: 30.0,
+            cool_rate: 0.97,
+            n_seeds: 10,
             ..SAConfig::default()
         },
     ) {

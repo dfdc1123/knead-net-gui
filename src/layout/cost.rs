@@ -1,8 +1,14 @@
-//! 模拟退火用的成本函数: HPWL + pin 碰撞 + 越界 + 列冲突。
+//! 模拟退火用的成本函数: MST 走线估算 + pin 碰撞 + 越界 + 列冲突。
 //!
 //! 设计要点:
-//! - **HPWL_x = 一个 net 的 (max_col - min_col)**, 在"同列零成本"模型下正好等于
-//!   走线 MST 长度, 所以不用算真正的 MST。
+//! - **MST (Minimum Spanning Tree) on pin positions**: 每个 net 算一次 Kruskal
+//!   MST, 边长按 breadboard 物理距离计算:
+//!   - **同列同 rail: 0** (rail 短接, 无需 wire)
+//!   - **同 rail 不同 col: |Δcol|** (走 jumper wire 在同一行)
+//!   - **同 col 不同 rail: |Δrow|** (跨中央通道)
+//!   - **不同 col 不同 rail: |Δcol| + |Δrow|** (Manhattan)
+//!   比 2D HPWL 准 — HPWL 把 "同列不同 row 同 rail" 算成 Δrow, MST 直接 0, 推动
+//!   SA 主动寻找 rail 短接的零跳线布局。
 //! - 成本是各项**加权和**, 权在 [`Weights`] 里调。
 //! - `SAState` 是 SA 内部状态, 只在 layout 子模块内共享; v2 起每个元件显式持有
 //!   `(x, y, rotation)`, 不再由 order 推 x。
@@ -257,7 +263,27 @@ impl SAState {
                 pos[i].0 += fx * scale;
                 pos[i].1 += fy * scale;
                 pos[i].0 = pos[i].0.clamp(0.0, cols_f - 1.0);
-                pos[i].1 = pos[i].1.clamp(0.0, rows_f - 1.0);
+                // clamp 到 [0, rows-1] 之后, 如果 y 落在 blocked row
+                // (面包板中央通道), 推到最近的非 blocked row。中央通道不是元件
+                // 能用的空间; 不推开的话 FD 会把元件目标持续累积在 row 5/6
+                // 附近, 后续贪心映射把这些目标"撕"到上下两半, 出现无意义的跨 rail 布局。
+                let mut y = pos[i].1.clamp(0.0, rows_f - 1.0);
+                if board.is_blocked(y as usize) {
+                    let mut best_y = y as i32;
+                    let mut best_dist = f64::INFINITY;
+                    for r in 0..board.rows() {
+                        if board.is_blocked(r) {
+                            continue;
+                        }
+                        let d = (r as f64 - y).abs();
+                        if d < best_dist {
+                            best_dist = d;
+                            best_y = r as i32;
+                        }
+                    }
+                    y = best_y as f64;
+                }
+                pos[i].1 = y;
             }
 
             temp *= config.cool_rate;
@@ -461,25 +487,23 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         }
     }
 
-    // 5. HPWL_x: 按 net 聚合, 取 (max_col - min_col) 累加
+    // 5. MST 走线估算: 按 net 聚合, 每个 net 算一次 Kruskal 最小生成树。
+    //    边长按 breadboard 物理距离计算 — 同列同 rail 短接 = 0。
+    //    比 2D HPWL 更准: HPWL 会把 "同列同 rail 但不同 row" 算成 Δrow,
+    //    MST 直接 = 0, 推动 SA 主动寻找 rail 短接 (零跳线) 布局。
     let mut by_net: HashMap<NetId, Vec<(i32, i32)>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
         let hole = holes[i];
         if !in_board(hole, cols_i, rows_i) || board.is_blocked(hole.1 as usize) {
-            continue; // OOB / blocked-row pin 不参与 HPWL (会被压到板内, 没意义)
+            continue; // OOB / blocked-row pin 不参与 MST (会被压到板内, 没意义)
         }
         if let Some(net) = net_opt {
             by_net.entry(net).or_default().push(hole);
         }
     }
-    let mut hpwl_sum = 0.0;
+    let mut mst_sum = 0.0;
     for pins in by_net.values() {
-        if pins.len() < 2 {
-            continue;
-        }
-        let min_col = pins.iter().map(|p| p.0).min().unwrap();
-        let max_col = pins.iter().map(|p| p.0).max().unwrap();
-        hpwl_sum += (max_col - min_col) as f64;
+        mst_sum += mst_wire_length(pins, board);
     }
 
     // 6. 列冲突: 按 (col, rail) 聚合, 计数"不同 net" 的对数。
@@ -507,11 +531,83 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         }
     }
 
-    w.hpwl * hpwl_sum
+    w.hpwl * mst_sum
         + w.pin_overlap * coll_count as f64
         + w.b_box_overlap * bbox_overlap_count as f64
         + w.column_conflict * col_conflict_pairs as f64
         + w.out_of_bounds * oob_count as f64
+}
+
+/// 给一个 net 的 pin 位置算 MST (Kruskal) 总长度。
+///
+/// breadboard 物理距离:
+/// - 同列同 rail: **0** (rail 短接)
+/// - 同 rail 不同 col: |Δcol| (走 jumper)
+/// - 同 col 不同 rail: |Δrow| (跨中央通道)
+/// - 不同 col 不同 rail: Manhattan |Δcol| + |Δrow|
+///
+/// 这是 wire 长度的下界 — 实际走线可能更长 (绕障碍), 但 SA 用它做优化目标。
+fn mst_wire_length(pins: &[(i32, i32)], board: &Breadboard) -> f64 {
+    let n = pins.len();
+    if n < 2 {
+        return 0.0;
+    }
+
+    let dist = |a: (i32, i32), b: (i32, i32)| -> i32 {
+        let same_col = a.0 == b.0;
+        if same_col {
+            let rail_top_a = board.rail_rows(a.1).first().copied().unwrap_or(a.1);
+            let rail_top_b = board.rail_rows(b.1).first().copied().unwrap_or(b.1);
+            if rail_top_a == rail_top_b {
+                0 // rail 短接
+            } else {
+                (a.1 - b.1).abs() // 同列跨 rail = 跨中央通道
+            }
+        } else {
+            let rail_top_a = board.rail_rows(a.1).first().copied().unwrap_or(a.1);
+            let rail_top_b = board.rail_rows(b.1).first().copied().unwrap_or(b.1);
+            if rail_top_a == rail_top_b {
+                (a.0 - b.0).abs() // 同 rail 不同 col = jumper
+            } else {
+                // 不同 col 不同 rail: Manhattan
+                (a.0 - b.0).abs() + (a.1 - b.1).abs()
+            }
+        }
+    };
+
+    // Kruskal: 列所有候选边 → 排序 → 贪心加边 (union-find 判环)
+    let mut edges: Vec<(i32, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
+    for i in 0..n {
+        for j in (i + 1)..n {
+            edges.push((dist(pins[i], pins[j]), i, j));
+        }
+    }
+    edges.sort_by_key(|e| e.0);
+
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    };
+
+    let mut total: i32 = 0;
+    let mut edges_used = 0;
+    for (d, i, j) in edges {
+        let ri = find(&mut parent, i);
+        let rj = find(&mut parent, j);
+        if ri != rj {
+            parent[ri] = rj;
+            total += d;
+            edges_used += 1;
+            if edges_used == n - 1 {
+                break;
+            }
+        }
+    }
+    total as f64
 }
 
 fn in_board(hole: (i32, i32), cols: i32, rows: i32) -> bool {
@@ -1070,5 +1166,99 @@ mod tests {
                 assert!(holes.insert(abs), "pin 撞了: {:?}", abs);
             }
         }
+    }
+
+    // ============================================================
+    //  MST cost 测试
+    // ============================================================
+
+    /// MST 边距: 同列同 rail = 0 (rail 短接)
+    #[test]
+    fn mst_same_col_same_rail_is_zero() {
+        let b = Breadboard::new(30, 5);
+        let len = mst_wire_length(&[(0, 0), (0, 2)], &b);
+        assert_eq!(len, 0.0, "同列同 rail 应该 rail 短接, MST = 0");
+    }
+
+    /// MST 边距: 同 rail 不同 col = |Δcol| (jumper)
+    #[test]
+    fn mst_same_rail_different_col_is_abs_col_delta() {
+        let b = Breadboard::new(30, 5);
+        let len = mst_wire_length(&[(0, 2), (3, 2)], &b);
+        assert_eq!(len, 3.0, "同 rail 不同 col = |Δcol| = 3");
+    }
+
+    /// MST 边距: 同 col 不同 rail = |Δrow| (跨中央通道)
+    #[test]
+    fn mst_same_col_different_rail_is_abs_row_delta() {
+        let b = Breadboard::standard(); // rows 5, 6 blocked
+        let len = mst_wire_length(&[(5, 0), (5, 8)], &b);
+        assert_eq!(len, 8.0, "同 col 跨 rail = |Δrow| = 8");
+    }
+
+    /// MST 边距: 不同 col 不同 rail = Manhattan
+    #[test]
+    fn mst_different_col_different_rail_is_manhattan() {
+        // row 2 blocked → (0, 0) 在 rail 0 (row 0..1), (3, 4) 在 rail 1 (row 3..11)
+        let b = Breadboard::with_blocked_rows(30, 12, [2]);
+        let len = mst_wire_length(&[(0, 0), (3, 4)], &b);
+        assert_eq!(len, 7.0, "不同 col 不同 rail = 3 + 4 = 7");
+    }
+
+    /// MST: 3 pin 的 net, 三角形走最短 (2 条边)
+    #[test]
+    fn mst_three_pins_picks_two_shortest_edges() {
+        let b = Breadboard::new(30, 5);
+        // 3 pin: (0,0), (1,0), (5,0) — 都在同一 rail
+        // 边: 0-1 (1), 0-5 (5), 1-5 (4) → MST 取 0-1 + 1-5 = 5
+        let len = mst_wire_length(&[(0, 0), (1, 0), (5, 0)], &b);
+        assert_eq!(len, 5.0);
+    }
+
+    /// 成本函数走 MST 而非 HPWL:
+    /// 同列不同 row (同 rail) → cost = 0 (零跳线); 而 2D HPWL 会算 = Δrow
+    #[test]
+    fn cost_zero_jumper_layout_costs_zero() {
+        // 2 个 1-pin 元件, 都在 col 0, 不同 row, 同 net
+        // → MST 距离 = 0 (rail 短接)
+        let fp = one_pin_fp();
+        let comps: Vec<Component> = (0..2)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins: Vec<Pin> = (0..2)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            })
+            .collect();
+        let nets = vec![Net {
+            id: NetId(0),
+            name: "n".into(),
+            pins: vec![PinId(0), PinId(1)],
+        }];
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        let state = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            x: vec![0, 0],
+            y: vec![0, 1],
+            rotation: vec![Rotation::R0, Rotation::R0],
+        };
+        let c = cost(&state, &circuit, &board(), &Weights::default());
+        assert!(c.abs() < 1e-9, "零跳线布局应该 cost = 0, got {}", c);
     }
 }

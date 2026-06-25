@@ -32,6 +32,9 @@ pub struct SAConfig {
     pub weights: Weights,
     /// 决定随机扰动序列; 改 seed 可重新跑一遍出不同结果。
     pub seed: u64,
+    /// 跑多少次取最低 cost 的解。SA 是随机算法, 单次可能卡在 local optimum;
+    /// MST cost 下多 seed 跑出来大部分能找到 cost=0 (零跳线)。默认 1。
+    pub n_seeds: usize,
     /// `true` 用 [`SAState::from_force_directed`] 做初排 (比 `from_greedy` 慢,
     /// 但对强耦合电路起点好得多); `false` 用贪心 first-fit。
     pub use_force_directed: bool,
@@ -47,6 +50,7 @@ impl Default for SAConfig {
             cool_rate: 0.95,
             weights: Weights::default(),
             seed: 0xCAFE_F00D,
+            n_seeds: 1,
             use_force_directed: false,
             fd_config: FDConfig::default(),
         }
