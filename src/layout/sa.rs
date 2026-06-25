@@ -240,12 +240,12 @@ pub(super) fn simulate(
 //  退火后的位置压缩
 // ============================================================
 
-/// 把 SA 结果里每个元件的 x 推到"再左就会撞 pin/列短路"为止, y / rotation 保持不变。
+/// 把 SA 结果里每个元件的 x 推到"再左就会撞 bbox/列短路"为止, y / rotation 保持不变。
 ///
 /// **不**扫整行找缝——只考虑"再左就会出问题"的位置, 一步内就停。
-/// 既检查 pin 碰撞也检查列冲突 (面包板同列的孔已由 rail 连通, 不能让不同 net 的
-/// pin 落在同列)。如果某列上没有任何 pin, 该列可以放任意 net 的 pin (这里
-/// `col_nets` 里查不到视为 "空")。
+/// 既检查 bbox 碰撞 (含 pin 撞 pin) 也检查列冲突 (面包板同列的孔已由 rail 连通,
+/// 不能让不同 net 的 pin 落在同列)。如果某列上没有任何 pin, 该列可以放任意 net 的
+/// pin (这里 `col_nets` 里查不到视为 "空")。
 /// 如果 SA 找到了 0 冲突的布局, compact 应当是几乎无操作 (只把可以左推的推一下)。
 /// 找不到合法新 x 时, 保留 SA 原来的 x, 避免把合法布局搞坏。
 pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) -> Vec<i32> {
@@ -285,16 +285,33 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) ->
             })
             .collect();
 
+        // footprint 本地 bbox (旋转后的 pin 偏移的 min/max 矩形),
+        // 不包含 pin (只表示本体覆盖的网格, 跟 render / occupancy 里一致)。
         let pin_offsets: Vec<(i32, i32)> = pin_info.iter().map(|&(o, _)| o).collect();
+        let (mut min_rx, mut max_rx, mut min_ry, mut max_ry) =
+            (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for &(rx, ry) in &pin_offsets {
+            min_rx = min_rx.min(rx);
+            max_rx = max_rx.max(rx);
+            min_ry = min_ry.min(ry);
+            max_ry = max_ry.max(ry);
+        }
+        let bbox_offsets: Vec<(i32, i32)> = if pin_offsets.is_empty() {
+            Vec::new()
+        } else {
+            (min_ry..=max_ry)
+                .flat_map(|yy| (min_rx..=max_rx).map(move |xx| (xx, yy)))
+                .collect()
+        };
 
-        let board_min_x = pin_offsets.iter().map(|&(rdx, _)| -rdx).max().unwrap_or(0);
+        let board_min_x = bbox_offsets.iter().map(|&(rdx, _)| -rdx).max().unwrap_or(0);
         let board_max_x =
-            board.cols() as i32 - 1 - pin_offsets.iter().map(|&(rdx, _)| rdx).max().unwrap_or(0);
+            board.cols() as i32 - 1 - bbox_offsets.iter().map(|&(rdx, _)| rdx).max().unwrap_or(0);
 
         let mut chosen: Option<i32> = None;
         let mut cur = board_min_x;
         while cur <= board_max_x {
-            let collides = pin_offsets
+            let collides = bbox_offsets
                 .iter()
                 .any(|&(rdx, rdy)| occupied.contains(&(cur + rdx, row_y + rdy)));
             if !collides {
@@ -316,9 +333,13 @@ pub(super) fn compact(state: &SAState, circuit: &Circuit, board: &Breadboard) ->
 
         new_x[idx] = chosen.unwrap_or(state.x[idx]);
 
+        // 把整块 bbox (含 pin) 加入已占, 这样后续元件看得到本体。
+        for &(rdx, rdy) in &bbox_offsets {
+            occupied.insert((new_x[idx] + rdx, row_y + rdy));
+        }
+        // pin 单独记列上的 net (只有 pin 决定该列的"owner net", blocked 不影响)。
         for &((rdx, rdy), net) in &pin_info {
             let abs = (new_x[idx] + rdx, row_y + rdy);
-            occupied.insert(abs);
             col_first_net.entry(abs.0).or_insert(net);
         }
     }

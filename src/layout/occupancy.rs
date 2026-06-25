@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::circuit::PinId;
+use crate::circuit::{ComponentId, PinId};
 
 use super::Layout;
 use super::LayoutError;
@@ -17,6 +17,9 @@ pub enum Occupant {
     Pin(PinId),
     /// 线插在此孔。`Wire` 只有 `from` 和 `to` 两个接触点 (没有中间点)。
     Wire(super::routing::WireId),
+    /// 被元件本体占据的孔 (在元件包围盒内, 但不是 pin)。
+    /// 线不能插在 Blocked 孔上 (没有物理空间), 别的元件也不能把本体伸进来。
+    Blocked(ComponentId),
 }
 
 #[derive(Debug)]
@@ -35,8 +38,14 @@ impl Occupancy {
 
     /// 从 layout 派生 occupancy, 同时检查 layout 的合法性。
     ///
-    /// **严格**: 任何非法状态 (no footprint / 越界 / pin 碰撞 / wire 冲突 / 列短路) 都返回 `Err`,
-    /// 不返回部分 occupancy。错误列表里包含所有发现的问题。
+    /// **严格**: 任何非法状态 (no footprint / 越界 / pin 碰撞 / bbox 重叠 /
+    /// wire 冲突 / 列短路) 都返回 `Err`, 不返回部分 occupancy。
+    /// 错误列表里包含所有发现的问题。
+    ///
+    /// 对于每个已摆元件:
+    /// - 它所有 pin 落到的孔标为 `Occupant::Pin`
+    /// - 包围盒 (跟渲染里一样, 用 pin 范围算) 内除 pin 外的孔标为 `Occupant::Blocked`
+    /// - pin 跟其它元件的 pin/blocked 重叠 → `PinCollision` 或 `BBoxOverlap`
     pub fn from_layout(layout: &Layout, board: &Breadboard) -> Result<Self, Vec<LayoutError>> {
         let mut occ = Self::empty(board);
         let mut errors = Vec::new();
@@ -65,47 +74,127 @@ impl Occupancy {
                     continue;
                 }
             };
-            for pin_hole in placed.pin_holes {
-                if !occupied.insert(pin_hole.hole) {
-                    errors.push(LayoutError::PinCollision {
-                        component: component.id,
-                        pin: pin_hole.pin,
-                        hole: pin_hole.hole,
+
+            // 这个元件自己的 pin 集合, 区分"这个孔是它的 pin" vs "这个孔只是被它的本体遮挡"。
+            let pin_hole_set: HashSet<HoleId> = placed.pin_holes.iter().map(|ph| ph.hole).collect();
+
+            // 走遍包围盒的所有孔 (含 pin), 给每个填上 Pin / Blocked / 报错。
+            // pin 优先于 Blocked; 先看 pin, 再处理 bbox 内的"非 pin"格。
+            for ph in &placed.pin_holes {
+                let hole = ph.hole;
+                if let Some(prev) = occ.at[hole.0] {
+                    errors.push(match prev {
+                        Occupant::Pin(_) => LayoutError::PinCollision {
+                            component: component.id,
+                            pin: ph.pin,
+                            hole,
+                        },
+                        Occupant::Blocked(other) => LayoutError::BBoxOverlap {
+                            a: component.id,
+                            b: other,
+                            hole,
+                        },
+                        Occupant::Wire(_) => LayoutError::PinCollision {
+                            component: component.id,
+                            pin: ph.pin,
+                            hole,
+                        },
                     });
-                } else {
-                    occ.at[pin_hole.hole.0] = Some(Occupant::Pin(pin_hole.pin));
-                    // 收集到按列索引, 供后面短路检查
-                    let pin = &layout.circuit().pins[pin_hole.pin.0];
-                    let col = board.hole(pin_hole.hole).position.x;
-                    by_column
-                        .entry(col)
-                        .or_default()
-                        .push(super::ColumnEndpoint::Pin {
-                            pin: pin_hole.pin,
-                            net: pin.net,
+                    continue;
+                }
+                occupied.insert(hole);
+                occ.at[hole.0] = Some(Occupant::Pin(ph.pin));
+                let pin = &layout.circuit().pins[ph.pin.0];
+                let col = board.hole(hole).position.x;
+                by_column
+                    .entry(col)
+                    .or_default()
+                    .push(super::ColumnEndpoint::Pin {
+                        pin: ph.pin,
+                        net: pin.net,
+                    });
+            }
+
+            if let Some(bbox) = placed.bbox {
+                for pos in bbox.iter_cells() {
+                    let Some(hole) = board.at(pos.x, pos.y) else {
+                        continue;
+                    };
+                    if pin_hole_set.contains(&hole) {
+                        // 已经处理过 pin
+                        continue;
+                    }
+                    if let Some(prev) = occ.at[hole.0] {
+                        errors.push(match prev {
+                            Occupant::Pin(_) => {
+                                // pin_owner 靠 occ.at[hole.0] 反查不出, 但 Pin 单元的
+                                // owner 就是它自己的 PinId (没有 pin id → component id
+                                // 的映射)。直接用占的孔反向查一下。
+                                let owner = occ.at[hole.0]
+                                    .and_then(|o| match o {
+                                        Occupant::Pin(pid) => {
+                                            Some(layout.circuit().pins[pid.0].component)
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or(component.id);
+                                LayoutError::BBoxOverlap {
+                                    a: component.id,
+                                    b: owner,
+                                    hole,
+                                }
+                            }
+                            Occupant::Blocked(other) => LayoutError::BBoxOverlap {
+                                a: component.id,
+                                b: other,
+                                hole,
+                            },
+                            Occupant::Wire(_) => LayoutError::WireConflict {
+                                wire: super::routing::WireId(0), // wire id 查不到, 占位
+                                hole,
+                            },
                         });
+                        continue;
+                    }
+                    occupied.insert(hole);
+                    occ.at[hole.0] = Some(Occupant::Blocked(component.id));
                 }
             }
         }
 
         for wire in layout.wires() {
             for hole in wire.contacts() {
-                if !occupied.insert(hole) {
-                    errors.push(LayoutError::WireConflict {
-                        wire: wire.id,
-                        hole,
-                    });
-                } else {
-                    occ.at[hole.0] = Some(Occupant::Wire(wire.id));
-                    let col = board.hole(hole).position.x;
-                    by_column
-                        .entry(col)
-                        .or_default()
-                        .push(super::ColumnEndpoint::Wire {
+                if let Some(prev) = occ.at[hole.0] {
+                    errors.push(match prev {
+                        Occupant::Pin(_) => {
+                            // wire 端点落在某个元件的 pin 上 — pin 本来就被
+                            // 占用, 但 wire 是后来加的, 这种是 wire 的问题。
+                            LayoutError::WireConflict {
+                                wire: wire.id,
+                                hole,
+                            }
+                        }
+                        Occupant::Wire(_) => LayoutError::WireConflict {
                             wire: wire.id,
-                            net: wire.net,
-                        });
+                            hole,
+                        },
+                        Occupant::Blocked(_) => LayoutError::WireConflict {
+                            wire: wire.id,
+                            hole,
+                        },
+                    });
+                    continue;
                 }
+                occupied.insert(hole);
+                occ.at[hole.0] = Some(Occupant::Wire(wire.id));
+                let col = board.hole(hole).position.x;
+                by_column
+                    .entry(col)
+                    .or_default()
+                    .push(super::ColumnEndpoint::Wire {
+                        wire: wire.id,
+                        net: wire.net,
+                    });
             }
         }
 
@@ -148,6 +237,9 @@ impl Occupancy {
 
     /// 从 layout 构造 occupancy, **忽略所有错误**。 有冲突/OOB 的孔要么不填, 要么
     /// 后到的 pin 覆盖先到的。 主程序在 `validate` 报错时用它来 "尽力跑接线 + 画 SVG"。
+    ///
+    /// pin 优先于 Blocked: 同一个孔既在 bbox 内又是 pin, 最后保存为 Pin;
+    /// 后到的元件会覆盖先到的 (保持原 lossy 语义)。
     pub fn from_layout_lossy(layout: &Layout, board: &Breadboard) -> Self {
         let mut occ = Self::empty(board);
         for (idx, slot) in layout.placements().iter().enumerate() {
@@ -161,6 +253,15 @@ impl Occupancy {
             else {
                 continue;
             };
+            // 先把 Blocked 填上, 再让 Pin 覆盖。
+            if let Some(bbox) = placed.bbox {
+                for pos in bbox.iter_cells() {
+                    let Some(hole) = board.at(pos.x, pos.y) else {
+                        continue;
+                    };
+                    occ.at[hole.0] = Some(Occupant::Blocked(component.id));
+                }
+            }
             for ph in placed.pin_holes {
                 occ.at[ph.hole.0] = Some(Occupant::Pin(ph.pin));
             }
@@ -179,6 +280,309 @@ impl Occupancy {
 
     pub fn can_add_wire(&self, wire: &Wire) -> bool {
         self.at[wire.from.0].is_none() && self.at[wire.to.0].is_none()
+    }
+}
+
+// ============================================================
+//  BBox / Blocked 专项测试
+// ============================================================
+
+#[cfg(test)]
+mod bbox_tests {
+    use super::*;
+    use crate::circuit::{
+        Circuit, Component, ComponentId, Footprint, FootprintId, NetId, PhysicalPin, Pin, PinId,
+        Position,
+    };
+    use crate::layout::placement::{Placement, Rotation};
+    use crate::layout::routing::{Wire, WireId};
+
+    fn board() -> Breadboard {
+        Breadboard::new(30, 5)
+    }
+
+    /// 2 pin footprint, pins at (0,0) and (3,0) → 跨度 4 cols, (1,0) (2,0) 是本体。
+    fn axial_footprint() -> Footprint {
+        Footprint {
+            id: FootprintId(0),
+            name: "axial".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        }
+    }
+
+    fn axial_circuit() -> &'static Circuit {
+        Box::leak(Box::new(Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "R1".into(),
+                kind: "R".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+            }],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: None,
+                },
+            ],
+            nets: vec![],
+            footprints: vec![axial_footprint()],
+        }))
+    }
+
+    /// 单独 axial 摆放后: pin = Pin, 中间两个孔 = Blocked
+    #[test]
+    fn axial_marks_pins_and_body() {
+        let b = board();
+        let mut layout = Layout::new(axial_circuit());
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 5, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        let occ = layout.occupancy(&b).unwrap();
+        // 端点
+        assert_eq!(
+            occ.occupant_at(b.at(5, 2).unwrap()),
+            Some(Occupant::Pin(PinId(0)))
+        );
+        assert_eq!(
+            occ.occupant_at(b.at(8, 2).unwrap()),
+            Some(Occupant::Pin(PinId(1)))
+        );
+        // 本体跨过的中间两个孔
+        assert_eq!(
+            occ.occupant_at(b.at(6, 2).unwrap()),
+            Some(Occupant::Blocked(ComponentId(0)))
+        );
+        assert_eq!(
+            occ.occupant_at(b.at(7, 2).unwrap()),
+            Some(Occupant::Blocked(ComponentId(0)))
+        );
+        // 外面仍然是空
+        assert_eq!(occ.occupant_at(b.at(4, 2).unwrap()), None);
+        assert_eq!(occ.occupant_at(b.at(9, 2).unwrap()), None);
+    }
+
+    /// can_place_pin / can_add_wire 返回 false, 表示 线不能穿过本体
+    #[test]
+    fn blocked_holes_reject_pins_and_wires() {
+        let b = board();
+        let mut layout = Layout::new(axial_circuit());
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 5, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        let occ = layout.occupancy(&b).unwrap();
+        // pin 孔不能上放
+        assert!(!occ.can_place_pin(b.at(5, 2).unwrap()));
+        assert!(!occ.can_place_pin(b.at(8, 2).unwrap()));
+        // 本体孔也不能
+        assert!(!occ.can_place_pin(b.at(6, 2).unwrap()));
+        assert!(!occ.can_place_pin(b.at(7, 2).unwrap()));
+        // 线穿过也不行
+        let wire = Wire {
+            id: WireId(0),
+            net: NetId(0),
+            from: b.at(6, 2).unwrap(),
+            to: b.at(10, 0).unwrap(),
+        };
+        assert!(!occ.can_add_wire(&wire));
+        // 旁边仍然是空, 能上放
+        assert!(occ.can_place_pin(b.at(4, 2).unwrap()));
+        let wire_ok = Wire {
+            id: WireId(0),
+            net: NetId(0),
+            from: b.at(4, 2).unwrap(),
+            to: b.at(10, 0).unwrap(),
+        };
+        assert!(occ.can_add_wire(&wire_ok));
+    }
+
+    /// 另一个元件的 pin 落在已有元件的 bbox 里 → BBoxOverlap
+    #[test]
+    fn bbox_overlap_pin_under_body_reported() {
+        let b = board();
+        // 2 个 axial footprint
+        let fp = axial_footprint();
+        let make_comp = |id: usize| Component {
+            id: ComponentId(id),
+            ref_: format!("R{id}"),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(id * 2), PinId(id * 2 + 1)],
+            footprint: Some(FootprintId(0)),
+        };
+        let make_pin = |id: usize, comp_id: usize| Pin {
+            id: PinId(id),
+            component: ComponentId(comp_id),
+            num: if id % 2 == 0 { "1" } else { "2" }.into(),
+            pinfunction: None,
+            net: None,
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![make_comp(0), make_comp(1)],
+            pins: vec![
+                make_pin(0, 0),
+                make_pin(1, 0),
+                make_pin(2, 1),
+                make_pin(3, 1),
+            ],
+            nets: vec![],
+            footprints: vec![fp],
+        }));
+        let mut layout = Layout::new(circuit);
+        // R1 摆在 (5, 2): bbox (5..=8, 2..=2), pin 在 (5,2) (8,2)
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 5, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        // R2 摆在 (7, 2): bbox (7..=10, 2..=2), pin (7,2) 落在 R1 本体上
+        layout.place(
+            ComponentId(1),
+            Placement {
+                position: Position { x: 7, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        let errs = layout.occupancy(&b).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, LayoutError::BBoxOverlap { .. })),
+            "应当报 BBoxOverlap, got {errs:?}"
+        );
+    }
+
+    /// 两个元件本体互撞 (都没有 pin 落在重叠区) 也要报 BBoxOverlap。
+    #[test]
+    fn bbox_overlap_body_under_body_reported() {
+        let b = board();
+        // 两个 footprint: pin 跨度 3, 中间 1 个本体格
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "axial_wide".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 2, y: 0 },
+                },
+            ],
+        };
+        let make_comp = |id: usize| Component {
+            id: ComponentId(id),
+            ref_: format!("R{id}"),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(id * 2), PinId(id * 2 + 1)],
+            footprint: Some(FootprintId(0)),
+        };
+        let make_pin = |id: usize, comp: usize, num: &str| Pin {
+            id: PinId(id),
+            component: ComponentId(comp),
+            num: num.into(),
+            pinfunction: None,
+            net: None,
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![make_comp(0), make_comp(1)],
+            pins: vec![
+                make_pin(0, 0, "1"),
+                make_pin(1, 0, "2"),
+                make_pin(2, 1, "1"),
+                make_pin(3, 1, "2"),
+            ],
+            nets: vec![],
+            footprints: vec![fp],
+        }));
+        let mut layout = Layout::new(circuit);
+        // R1 bbox (5..=7, 2); pin 在 (5,2) (7,2)
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 5, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        // R2 bbox (6..=8, 2); pin 在 (6,2) (8,2)。重叠在 (6,2) (7,2)。
+        // (6,2) 是 R1 本体; (7,2) 是 R1 pin。
+        layout.place(
+            ComponentId(1),
+            Placement {
+                position: Position { x: 6, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        let errs = layout.occupancy(&b).unwrap_err();
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, LayoutError::BBoxOverlap { .. })),
+            "应报 BBoxOverlap, got {errs:?}"
+        );
+    }
+
+    /// R180: pin 反转, bbox 也跟着翻。
+    #[test]
+    fn bbox_handles_r180() {
+        let b = board();
+        let mut layout = Layout::new(&axial_circuit());
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 8, y: 2 },
+                rotation: Rotation::R180,
+            },
+        );
+        let occ = layout.occupancy(&b).unwrap();
+        // R180: pin offset (0,0) → (0,0); pin offset (3,0) → (-3,0).
+        // placement (8,2): pin 在 (8,2) 和 (5,2). bbox = (5..=8, 2..=2).
+        assert_eq!(
+            occ.occupant_at(b.at(8, 2).unwrap()),
+            Some(Occupant::Pin(PinId(0)))
+        );
+        assert_eq!(
+            occ.occupant_at(b.at(5, 2).unwrap()),
+            Some(Occupant::Pin(PinId(1)))
+        );
+        assert_eq!(
+            occ.occupant_at(b.at(6, 2).unwrap()),
+            Some(Occupant::Blocked(ComponentId(0)))
+        );
+        assert_eq!(
+            occ.occupant_at(b.at(7, 2).unwrap()),
+            Some(Occupant::Blocked(ComponentId(0)))
+        );
     }
 }
 

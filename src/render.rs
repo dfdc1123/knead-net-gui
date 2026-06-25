@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
 use crate::circuit::{Circuit, ComponentId, Position};
+use crate::layout::placement::BBox;
 use crate::layout::{Breadboard, HoleId, Layout, Occupant, Placement, Wire};
 
 const CELL_X: f32 = 28.0; // 每列像素
@@ -84,9 +85,16 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
     // 3) 所有孔
     for hole in board.holes() {
         let (cx, cy) = hole_px_from_pos(hole.position);
-        let (fill, stroke) = match occ.occupant_at(hole.id) {
+        let blocked_color;
+        let (fill, stroke): (&str, &str) = match occ.occupant_at(hole.id) {
             Some(Occupant::Pin(_)) => ("#2563eb", "#1e3a8a"),
             Some(Occupant::Wire(_)) => ("#16a34a", "#14532d"),
+            // 被元件本体占据 — 画成元件色 (同 bbox 填充色) 但深一些,
+            // 让“本体覆盖区”一眼能看出来。
+            Some(Occupant::Blocked(cid)) => {
+                blocked_color = component_color(cid.raw());
+                (blocked_color.as_str(), "#374151")
+            }
             None => ("#ffffff", "#cbd5e1"),
         };
         let _ = writeln!(
@@ -278,15 +286,8 @@ fn html_escape(s: &str) -> String {
 
 // ---------- 元件包围盒 ----------
 
-struct BBox {
-    min_x: i32,
-    max_x: i32,
-    min_y: i32,
-    max_y: i32,
-}
-
-/// 算出该 placement 下, 元件所有 pin 在板上的最小包围盒。
-/// 调 `Placement::apply`, 即使是旋转的 footprint 也能算对。
+/// 算出该 placement 下, 元件在板上的包围盒。调 `Placement::apply`,
+/// 由 `PlacedFootprint::bbox` 返回 (同一种检查路径, 跟 occupancy 保持一致)。
 fn component_bbox(
     circuit: &Circuit,
     board: &Breadboard,
@@ -297,19 +298,5 @@ fn component_bbox(
     let fid = comp.footprint()?;
     let fp = &circuit.footprints()[fid.raw()];
     let placed = p.apply(comp, fp, board, circuit.pins()).ok()?;
-    let (mut min_x, mut max_x) = (i32::MAX, i32::MIN);
-    let (mut min_y, mut max_y) = (i32::MAX, i32::MIN);
-    for ph in &placed.pin_holes {
-        let pos = board.hole(ph.hole).position;
-        min_x = min_x.min(pos.x);
-        max_x = max_x.max(pos.x);
-        min_y = min_y.min(pos.y);
-        max_y = max_y.max(pos.y);
-    }
-    Some(BBox {
-        min_x,
-        max_x,
-        min_y,
-        max_y,
-    })
+    placed.bbox
 }

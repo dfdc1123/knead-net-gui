@@ -11,17 +11,21 @@ use std::collections::{HashMap, HashSet};
 
 use crate::circuit::{Circuit, ComponentId, NetId};
 use crate::layout::breadboard::Breadboard;
-use crate::layout::placement::{Rotation, rotate};
+use crate::layout::placement::{BBox, Rotation, rotate};
 
 /// SA 成本函数的四项权重。
 ///
-/// 成本 = `hpwl * HPWL + pin_overlap * 碰撞数 + column_conflict * 列短路对数 + out_of_bounds * 越界 pin 数`
+/// 成本 = `hpwl * HPWL + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
+///       + column_conflict * 列短路对数 + out_of_bounds * 越界 pin 数`
 ///
 /// 默认值见 [`Weights::default`], 经验起点; 真用时按板子拥挤程度调。
 #[derive(Debug, Clone, Copy)]
 pub struct Weights {
     pub hpwl: f64,
     pub pin_overlap: f64,
+    /// bbox 碰撞总格数 (本体撞 pin 也算)。一般比 pin_overlap 略高 — 本体挤到
+    /// 其它元件身体上比 pin 互相碰还要糟糕 (后面 wire 还会避开本体)。
+    pub b_box_overlap: f64,
     /// 同列不同 net 的 pin 对数 (N 个 pin 同列冲突就是 N-1 + N-2 + ... + 1 = N(N-1)/2)
     pub column_conflict: f64,
     pub out_of_bounds: f64,
@@ -34,6 +38,8 @@ impl Default for Weights {
             hpwl: 1.0,
             // 一次 pin 碰撞 = 让 SA 宁愿多绕 50-100 孔也不撞
             pin_overlap: 100.0,
+            // bbox 重叠基本也当硬约束, 跟 pin 碰撞同量级 (一个孔算 1)。
+            b_box_overlap: 100.0,
             // 同列不同 net 的 pin 会被面包板竖向 rail 短接, 这是物理电气短路,
             // 不能让走线"治愈"。惩罚拉到 out_of_bounds 同级, 让 SA 当作硬约束。
             column_conflict: 1_000_000.0,
@@ -79,8 +85,8 @@ impl SAState {
     }
 
     /// 贪心 first-fit 初始状态: 按元件顺序, 找第一个有效 `(x, y)` (按行从上到下、
-    /// 列从左到右扫)。"有效" = pin 都在板内 + 不撞已摆 pin。**不**考虑列短路——
-    /// 那由 SA 后续优化。
+    /// 列从左到右扫)。"有效" = 所有 pin 都在板内 + 包围盒不撞已摆元件的 bbox。
+    /// **不**考虑列短路——那由 SA 后续优化。
     pub fn from_greedy(placeable: Vec<ComponentId>, circuit: &Circuit, board: &Breadboard) -> Self {
         let n = placeable.len();
         let mut x = vec![0i32; n];
@@ -99,11 +105,21 @@ impl SAState {
                 .iter()
                 .map(|p| (p.offset.x, p.offset.y))
                 .collect();
+            // 用 pin 偏移算 footprint 本地 bbox (R0, 不旋转)。
+            let bbox_cells_local: Vec<(i32, i32)> =
+                pin_offsets.iter().map(|&(dx, dy)| (dx, dy)).collect();
+            let (min_x, max_x, min_y, max_y) = bbox_cells_local.iter().fold(
+                (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
+                |(lx, rx, ly, ry), &(dx, dy)| (lx.min(dx), rx.max(dx), ly.min(dy), ry.max(dy)),
+            );
+            let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
+                .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
+                .collect();
 
             let mut found: Option<(i32, i32)> = None;
             'outer: for try_y in 0..board.rows() as i32 {
                 for try_x in 0..board.cols() as i32 {
-                    let oob = pin_offsets.iter().any(|&(dx, dy)| {
+                    let oob = bbox_cells.iter().any(|&(dx, dy)| {
                         try_x + dx < 0
                             || try_x + dx >= board.cols() as i32
                             || try_y + dy < 0
@@ -112,7 +128,7 @@ impl SAState {
                     if oob {
                         continue;
                     }
-                    let collides = pin_offsets
+                    let collides = bbox_cells
                         .iter()
                         .any(|&(dx, dy)| occupied.contains(&(try_x + dx, try_y + dy)));
                     if collides {
@@ -126,7 +142,7 @@ impl SAState {
             let (fx, fy) = found.unwrap_or_else(|| panic!("元件 {} 装不下这块板", comp_id.0));
             x[idx] = fx;
             y[idx] = fy;
-            for &(dx, dy) in &pin_offsets {
+            for &(dx, dy) in &bbox_cells {
                 occupied.insert((fx + dx, fy + dy));
             }
         }
@@ -269,6 +285,14 @@ impl SAState {
                 .iter()
                 .map(|p| (p.offset.x, p.offset.y))
                 .collect();
+            // 用 pin 偏移算 footprint 本地 bbox (R0, 不旋转)。
+            let (min_x, max_x, min_y, max_y) = pin_offsets.iter().fold(
+                (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
+                |(lx, rx, ly, ry), &(dx, dy)| (lx.min(dx), rx.max(dx), ly.min(dy), ry.max(dy)),
+            );
+            let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
+                .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
+                .collect();
 
             let target_x = pos[idx].0;
             let target_y = pos[idx].1;
@@ -278,7 +302,7 @@ impl SAState {
             let mut best_dist_sq = f64::INFINITY;
             for try_y in 0..board.rows() as i32 {
                 for try_x in 0..board.cols() as i32 {
-                    let oob = pin_offsets.iter().any(|&(dx, dy)| {
+                    let oob = bbox_cells.iter().any(|&(dx, dy)| {
                         try_x + dx < 0
                             || try_x + dx >= board.cols() as i32
                             || try_y + dy < 0
@@ -287,7 +311,7 @@ impl SAState {
                     if oob {
                         continue;
                     }
-                    let collides = pin_offsets
+                    let collides = bbox_cells
                         .iter()
                         .any(|&(dx, dy)| occupied.contains(&(try_x + dx, try_y + dy)));
                     if collides {
@@ -306,7 +330,7 @@ impl SAState {
             let (fx, fy) = best.expect("板太小, 装不下所有元件");
             x[idx] = fx;
             y[idx] = fy;
-            for &(dx, dy) in &pin_offsets {
+            for &(dx, dy) in &bbox_cells {
                 occupied.insert((fx + dx, fy + dy));
             }
         }
@@ -351,9 +375,10 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
     let cols_i = board.cols() as i32;
     let rows_i = board.rows() as i32;
 
-    // 1. 收集所有 pin 的 (col, row) 和所属 net
+    // 1. 收集所有 pin 的 (col, row) 和所属 net, 以及每个元件的 bbox。
     let mut holes: Vec<(i32, i32)> = Vec::new();
     let mut nets: Vec<Option<NetId>> = Vec::new();
+    let mut bboxes: Vec<Option<BBox>> = Vec::with_capacity(state.placeable.len());
     for (idx, &comp_id) in state.placeable.iter().enumerate() {
         let component = &circuit.components[comp_id.0];
         let fid = component.footprint.unwrap();
@@ -362,6 +387,8 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         let row_y = state.y[idx];
         let px = state.x[idx];
 
+        let mut world_positions: Vec<crate::circuit::Position> =
+            Vec::with_capacity(component.pins.len());
         for &pin_id in &component.pins {
             let pin = &circuit.pins[pin_id.0];
             let physical = footprint
@@ -372,7 +399,12 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
             let r = rotate(physical.offset, rotation);
             holes.push((px + r.x, row_y + r.y));
             nets.push(pin.net);
+            world_positions.push(crate::circuit::Position {
+                x: px + r.x,
+                y: row_y + r.y,
+            });
         }
+        bboxes.push(BBox::from_points(world_positions));
     }
 
     // 2. OOB
@@ -392,7 +424,26 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         }
     }
 
-    // 4. HPWL_x: 按 net 聚合, 取 (max_col - min_col) 累加
+    // 4. bbox 碰撞: 任意两个元件的 bbox 重叠的孔数 (含 pin-pin 重叠, 会和上面
+    //    pin 碰撞重叠计入, 但这是两个独立的成本来源, 让 SA 同时压低两者)。
+    let mut bbox_overlap_count = 0;
+    for i in 0..bboxes.len() {
+        let Some(bi) = bboxes[i] else { continue };
+        for j in (i + 1)..bboxes.len() {
+            let Some(bj) = bboxes[j] else { continue };
+            if !bi.overlaps(&bj) {
+                continue;
+            }
+            for pos in bi.iter_cells() {
+                if pos.x >= bj.min_x && pos.x <= bj.max_x && pos.y >= bj.min_y && pos.y <= bj.max_y
+                {
+                    bbox_overlap_count += 1;
+                }
+            }
+        }
+    }
+
+    // 5. HPWL_x: 按 net 聚合, 取 (max_col - min_col) 累加
     let mut by_net: HashMap<NetId, Vec<(i32, i32)>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
         let hole = holes[i];
@@ -413,7 +464,7 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         hpwl_sum += (max_col - min_col) as f64;
     }
 
-    // 5. 列冲突: 按列聚合, 计数"不同 net" 的对数
+    // 6. 列冲突: 按列聚合, 计数"不同 net" 的对数
     let mut by_col: HashMap<i32, Vec<Option<NetId>>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
         let hole = holes[i];
@@ -437,6 +488,7 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
 
     w.hpwl * hpwl_sum
         + w.pin_overlap * coll_count as f64
+        + w.b_box_overlap * bbox_overlap_count as f64
         + w.column_conflict * col_conflict_pairs as f64
         + w.out_of_bounds * oob_count as f64
 }
@@ -580,9 +632,11 @@ mod tests {
         // 撞: x = [0, 0]
         state.x = vec![0, 0];
         let c_coll = cost(&state, &circuit, &board(), &Weights::default());
+        let expected = Weights::default().pin_overlap + Weights::default().b_box_overlap;
         assert!(
-            (c_coll - Weights::default().pin_overlap).abs() < 1e-9,
-            "expected collision penalty, got {}",
+            (c_coll - expected).abs() < 1e-9,
+            "expected pin_overlap + b_box_overlap = {}, got {}",
+            expected,
             c_coll
         );
     }
@@ -631,14 +685,16 @@ mod tests {
         let c_clean = cost(&s, &circuit, &board(), &Weights::default());
         assert_eq!(c_clean, 0.0);
 
-        // 冲突: x = [0, 0] (同列, 同孔 → pin_collision + column_conflict)
+        // 冲突: x = [0, 0] (同列, 同孔 → pin_collision + bbox_collision + column_conflict)
         let mut s = state.clone();
         s.x = vec![0, 0];
         let c_coll = cost(&s, &circuit, &board(), &Weights::default());
-        let expected = Weights::default().pin_overlap + Weights::default().column_conflict;
+        let expected = Weights::default().pin_overlap
+            + Weights::default().b_box_overlap
+            + Weights::default().column_conflict;
         assert!(
             (c_coll - expected).abs() < 1e-9,
-            "expected pin_overlap + column_conflict = {}, got {}",
+            "expected pin_overlap + b_box_overlap + column_conflict = {}, got {}",
             expected,
             c_coll
         );

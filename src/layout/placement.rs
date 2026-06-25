@@ -1,6 +1,6 @@
-//! 元件摆放: position + rotation → 每个 pin 落在哪个孔上。
+//! 元件摆放: position + rotation → 每个 pin 落在哪个孔上 + 元件包围盒。
 
-use crate::circuit::{Component, Footprint};
+use crate::circuit::{Component, Footprint, Position};
 
 use super::LayoutError;
 use super::breadboard::{Breadboard, HoleId};
@@ -20,6 +20,63 @@ pub enum Rotation {
     R270,
 }
 
+/// 元件的轴对齐包围盒 (单位: 面包板孔)。
+///
+/// 既用于渲染 (画 reference 框), 也用于 occupancy: bbox 内部的孔除了 pin
+/// 之外都属于"被元件本体占据" (`Occupant::Blocked`), wire 不能进, 别的元件
+/// 的 bbox 也不能跨进来。
+///
+/// `min_* <= max_*`, 跟面包板网格对齐 (整数坐标)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BBox {
+    pub min_x: i32,
+    pub max_x: i32,
+    pub min_y: i32,
+    pub max_y: i32,
+}
+
+impl BBox {
+    /// 用一组 (x, y) 点构造包围盒; 空集返回 None。
+    pub fn from_points(points: impl IntoIterator<Item = Position>) -> Option<Self> {
+        let mut it = points.into_iter();
+        let first = it.next()?;
+        let mut min_x = first.x;
+        let mut max_x = first.x;
+        let mut min_y = first.y;
+        let mut max_y = first.y;
+        for p in it {
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_y = min_y.min(p.y);
+            max_y = max_y.max(p.y);
+        }
+        Some(Self {
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        })
+    }
+
+    /// 两个 bbox 在至少一个 cell 上重叠 (含边界相等)。
+    /// 边界刚好相切 (A.max_x == B.min_x) 不算重叠。
+    pub fn overlaps(&self, other: &BBox) -> bool {
+        self.min_x <= other.max_x
+            && self.max_x >= other.min_x
+            && self.min_y <= other.max_y
+            && self.max_y >= other.min_y
+    }
+
+    /// 枚举 bbox 内部所有 (x, y) 整数格点。
+    pub fn iter_cells(&self) -> impl Iterator<Item = Position> + '_ {
+        let min_x = self.min_x;
+        let max_x = self.max_x;
+        let min_y = self.min_y;
+        let max_y = self.max_y;
+        (min_y..=max_y).flat_map(move |y| (min_x..=max_x).map(move |x| Position { x, y }))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Placement {
     /// 摆放点, 板内坐标
@@ -36,6 +93,9 @@ pub struct PinHole {
 #[derive(Debug)]
 pub struct PlacedFootprint {
     pub pin_holes: Vec<PinHole>,
+    /// 元件本体在板上的轴对齐包围盒 (旋转 + 平移后)。没有 pin 时为 None
+    /// (例如纯 silk 元件) — 这种元件不算占据任何网格。
+    pub bbox: Option<BBox>,
 }
 
 impl PlacedFootprint {
@@ -65,6 +125,7 @@ impl Placement {
         use crate::circuit::Position;
 
         let mut pin_holes = Vec::with_capacity(component.pins.len());
+        let mut world_positions: Vec<Position> = Vec::with_capacity(component.pins.len());
 
         for pin_id in &component.pins {
             let pin = &pins[pin_id.0];
@@ -91,9 +152,15 @@ impl Placement {
                     hole: absolute,
                 })?;
             pin_holes.push(PinHole { pin: *pin_id, hole });
+            world_positions.push(absolute);
         }
 
-        Ok(PlacedFootprint { pin_holes })
+        // 用所有 pin 的世界坐标构 bbox。footprint 暂时没有 "body extent" 字段,
+        // 这里就跟渲染里一样, 用 pin 的范围代表元件占据的网格范围。
+        // 后续如果从 .kicad_mod 解析了 body silk, 可以替换这个 bbox。
+        let bbox = BBox::from_points(world_positions);
+
+        Ok(PlacedFootprint { pin_holes, bbox })
     }
 }
 

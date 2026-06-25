@@ -25,7 +25,7 @@ fn main() {
     let footprints = parse_footprints(footprint_texts).unwrap();
 
     // 2. 读 .net 文件
-    let netlist_path = format!("{kicad_dir}/h-bridge.net");
+    let netlist_path = format!("{kicad_dir}/h-bridge-short.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 
@@ -33,7 +33,7 @@ fn main() {
     let circuit = netlist.into_circuit(&footprints);
 
     // 4. 布局: 模拟退火 + 压缩
-    let board = Breadboard::new(30, 5);
+    let board = Breadboard::new(60, 5);
     let mut layout = Layout::new(&circuit);
     if let Err(errors) = layout.place_sa(
         &board,
@@ -136,6 +136,10 @@ fn main() {
                 }
             }
             Occupant::Wire(wire_id) => format!("wire #{}", wire_id.raw()),
+            Occupant::Blocked(cid) => {
+                let comp = &circuit.components()[cid.raw()];
+                format!("body of {}", comp.ref_())
+            }
         };
         println!("  ({:>2}, {}): {}", pos.x, pos.y, desc);
     }

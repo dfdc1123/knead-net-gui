@@ -17,7 +17,7 @@ pub mod sa;
 pub use breadboard::{Breadboard, Hole, HoleId};
 pub use cost::{FDConfig, Weights};
 pub use occupancy::{Occupancy, Occupant};
-pub use placement::{PinHole, PlacedFootprint, Placement, Rotation};
+pub use placement::{BBox, PinHole, PlacedFootprint, Placement, Rotation};
 pub use routing::{PathFinderRouter, Router, Wire, WireId};
 pub use sa::SAConfig;
 
@@ -70,6 +70,13 @@ pub enum LayoutError {
         column: i32,
         a: ColumnEndpoint,
         b: ColumnEndpoint,
+    },
+    /// 两个元件的包围盒在板上重叠 — 元件本体互相碰撞 (不论是 pin 撞本体、
+    /// 本体撞 pin 还是本体撞本体都报这个)。报告发生冲突的第一个孔。
+    BBoxOverlap {
+        a: ComponentId,
+        b: ComponentId,
+        hole: HoleId,
     },
 }
 
@@ -619,9 +626,15 @@ mod tests {
             occ.occupant_at(board.at(7, 2).unwrap()),
             Some(Occupant::Pin(PinId(4)))
         );
-        // (5,2) (6,2) R1 跨度内但无 pin, 应该空
-        assert_eq!(occ.occupant_at(board.at(5, 2).unwrap()), None);
-        assert_eq!(occ.occupant_at(board.at(6, 2).unwrap()), None);
+        // (5,2) (6,2) R1 跨度内但无 pin, 现在算作被 R1 本体占据 (Blocked)
+        assert_eq!(
+            occ.occupant_at(board.at(5, 2).unwrap()),
+            Some(Occupant::Blocked(ComponentId(1)))
+        );
+        assert_eq!(
+            occ.occupant_at(board.at(6, 2).unwrap()),
+            Some(Occupant::Blocked(ComponentId(1)))
+        );
     }
 
     /// 关键: 没有 footprint 的 component 跳过, 不写 placement

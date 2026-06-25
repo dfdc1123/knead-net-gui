@@ -621,4 +621,99 @@ mod tests {
             .occupancy(&b)
             .expect("layout with routed wires must be valid");
     }
+
+    /// 验证: routing 不会把 wire 端点掉进 Blocked 单元 (被元件本体占据的格子)。
+    /// 用一个跨 4 col 的 axial footprint (pin at 0 和 3, 中间 (1,0)(2,0) 是本体)。
+    /// 另一元件摆在 (5, 2) 与它 pin 同列且要求连到远处的另一脚。
+    #[test]
+    fn router_avoids_blocked_holes() {
+        let b = board();
+        let axial = Footprint {
+            id: FootprintId(0),
+            name: "axial".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        let make_pin = |id: usize, comp: usize, num: &str, net: NetId| Pin {
+            id: PinId(id),
+            component: ComponentId(comp),
+            num: num.into(),
+            pinfunction: None,
+            net: Some(net),
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "R1".into(),
+                    kind: "R".into(),
+                    value: None,
+                    pins: vec![PinId(0), PinId(1)],
+                    footprint: Some(FootprintId(0)),
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "R2".into(),
+                    kind: "R".into(),
+                    value: None,
+                    pins: vec![PinId(2)],
+                    footprint: Some(FootprintId(0)),
+                },
+            ],
+            pins: vec![
+                make_pin(0, 0, "1", NetId(0)),
+                make_pin(1, 0, "2", NetId(0)),
+                make_pin(2, 1, "1", NetId(0)),
+            ],
+            nets: vec![Net {
+                id: NetId(0),
+                name: "N".into(),
+                pins: vec![PinId(0), PinId(1), PinId(2)],
+            }],
+            footprints: vec![axial],
+        }));
+        let mut layout = Layout::new(circuit);
+        // R1 摆在 (5, 2): bbox (5..=8, 2..=2), pin 在 (5,2)(8,2). blocked: (6,2)(7,2).
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 5, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        // R2 摆在 (10, 2) R0: bbox (10..=13, 2..=2), pin 在 (10,2)(13,2). blocked: (11,2)(12,2).
+        layout.place(
+            ComponentId(1),
+            Placement {
+                position: Position { x: 10, y: 2 },
+                rotation: Rotation::R0,
+            },
+        );
+        let occ = layout.occupancy(&b).unwrap();
+        let wires = PathFinderRouter::default().route(circuit, &b, &occ);
+        // wire 端点 必须在空孔上, 不能落在 (6,2)(7,2)(11,2)(12,2) 这些 Blocked 孔上
+        for w in &wires {
+            for h in w.contacts() {
+                let pos = b.hole(h).position;
+                for blocked_pos in [(6, 2), (7, 2), (11, 2), (12, 2)] {
+                    assert_ne!(
+                        (pos.x, pos.y),
+                        blocked_pos,
+                        "wire 端点落在 Blocked 孔 {}",
+                        blocked_pos.0
+                    );
+                }
+            }
+        }
+        // 至少走出一根 wire (三个 pin 跨 3 个 column)
+        assert!(!wires.is_empty(), "应能走出一根线");
+    }
 }
