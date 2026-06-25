@@ -97,7 +97,7 @@ impl Placement {
     }
 }
 
-fn rotate(pos: crate::circuit::Position, rot: Rotation) -> crate::circuit::Position {
+pub(crate) fn rotate(pos: crate::circuit::Position, rot: Rotation) -> crate::circuit::Position {
     match rot {
         Rotation::R0 => pos,
         Rotation::R90 => crate::circuit::Position {

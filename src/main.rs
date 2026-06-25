@@ -2,7 +2,7 @@ use std::fs;
 
 use knead_net::input::footprint::parse_many as parse_footprints;
 use knead_net::input::netlist::parse_netlist;
-use knead_net::{Breadboard, Layout, Occupant, PathFinderRouter, Router};
+use knead_net::{Breadboard, Layout, Occupant, PathFinderRouter, Router, SAConfig};
 
 fn main() {
     let kicad_dir = "examples/kicad";
@@ -25,24 +25,24 @@ fn main() {
     let footprints = parse_footprints(footprint_texts).unwrap();
 
     // 2. 读 .net 文件
-    let netlist_path = format!("{kicad_dir}/random.net");
+    let netlist_path = format!("{kicad_dir}/h-bridge.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 
     // 3. 组合成 Circuit (footprint ref 在这一步自动连到 FootprintId)
     let circuit = netlist.into_circuit(&footprints);
 
-    // 4. 布局: 把所有元件横着排在 row=2
+    // 4. 布局: 模拟退火 + 压缩
     let board = Breadboard::new(30, 5);
     let mut layout = Layout::new(&circuit);
-    if let Err(errors) = layout.place_row(&board, 2) {
+    if let Err(errors) = layout.place_sa(&board, &SAConfig::default()) {
         eprintln!("布局错误 ({} 个):", errors.len());
         for e in &errors {
             eprintln!("  - {e:?}");
         }
     }
 
-    println!("=== 摆放 (row=2, R0) ===");
+    println!("=== 摆放 (SA + 压缩) ===");
     for c in circuit.components() {
         // Component.footprint 是 FootprintId, 查一下拿名字
         let footprint_name = c

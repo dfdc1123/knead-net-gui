@@ -521,11 +521,11 @@ mod tests {
         //   R1                 R1           (net 0, col 3)
         //   R2                       R2     (net 0, col 5)
         //   R3        R3                    (net 1, col 2)
-        //   R4                       R4     (net 1, col 5)
+        //   R4                          R4  (net 1, col 6)
         //
         // net 0 跨 col 0, 3, 5 → 2 wires
-        // net 1 跨 col 2, 5   → 1 wire
-        // col 5 被 2 个 net 都需要, 谈判后分到不同行
+        // net 1 跨 col 2, 6   → 1 wire
+        // 原本 col 5 被 2 个 net 都需要, 后改 R4 到 col 6 避免列短路
         let b = Breadboard::new(30, 10);
         let mut components = Vec::new();
         let mut pins = Vec::new();
@@ -583,14 +583,15 @@ mod tests {
 
         let mut layout = Layout::new(&circuit);
         // 3 个 net 0 component 在 (0,1), (3,1), (5,1) R90
-        // 2 个 net 1 component 在 (2,1), (5,4) R90
+        // 2 个 net 1 component 在 (2,1), (6,4) R90
         // R90: pin1 @ (x, y), pin2 @ (x, y+1)
+        // (原本 R4 在 (5,4) 跟 R2 同列不同 row, 被 col 5 rail 短路, 改 6 隔开)
         let positions = [
             (0, 1), // R0
             (3, 1), // R1
             (5, 1), // R2
             (2, 1), // R3
-            (5, 4), // R4
+            (6, 4), // R4
         ];
         for (i, &(x, y)) in positions.iter().enumerate() {
             layout.place(

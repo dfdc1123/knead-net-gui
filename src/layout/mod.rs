@@ -8,22 +8,38 @@
 //! - [`Layout`]: 顶层容器, 持有 Circuit 引用 + placements + wires
 
 pub mod breadboard;
+pub mod cost;
 pub mod occupancy;
 pub mod placement;
 pub mod routing;
+pub mod sa;
 
 pub use breadboard::{Breadboard, Hole, HoleId};
+pub use cost::Weights;
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{PinHole, PlacedFootprint, Placement, Rotation};
 pub use routing::{PathFinderRouter, Router, Wire, WireId};
+pub use sa::SAConfig;
 
-use crate::circuit::{Circuit, ComponentId, Footprint, PinId, Position};
+use crate::circuit::{Circuit, ComponentId, Footprint, NetId, PinId, Position};
+
+/// 一列上的某个 pin / wire 端点, 捎带它的 net 信息。
+///
+/// [`LayoutError::ColumnConflict`] 用这个告诉你 "col X 的 a 和 b 被纵向 rail 连起来了,
+/// 它们不在同一 net, 算短路" —— 拿这个 net 信息能直接看出是哪个 net 被连到了哪里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnEndpoint {
+    /// pin + 所属 net (`None` = 未连接, e.g. unconnected-pad)
+    Pin { pin: PinId, net: Option<NetId> },
+    /// wire 端点, 必有 net
+    Wire { wire: WireId, net: NetId },
+}
 
 /// 布局错误。`apply` / `validate` / `from_layout` 都会返回这个。
 ///
 /// `apply` 只产生 `OutOfBounds` (单个 placement 内的检查);
 /// `validate` / `from_layout` 还会产生 `NoFootprint` / `PinCollision` / `WireConflict`
-/// (跨 placement 的检查)。
+/// / `ColumnConflict` (跨 placement 的检查)。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutError {
     /// Component 没有 footprint
@@ -47,6 +63,13 @@ pub enum LayoutError {
         component: ComponentId,
         pin: PinId,
         pad_name: String,
+    },
+    /// 同列上两个不同 net 的 pin / wire 被面包板纵向 rail 短路。
+    /// 面包板的每列内部连通, 所以同列不同 row 上的 pin 也会被连起来。
+    ColumnConflict {
+        column: i32,
+        a: ColumnEndpoint,
+        b: ColumnEndpoint,
     },
 }
 
@@ -107,6 +130,47 @@ impl<'c> Layout<'c> {
         self.occupancy(board).map(|_| ())
     }
 
+    /// 用模拟退火 + 后续压缩布局。
+    ///
+    /// 流程: 收集有 footprint 的 component → `sa::simulate` → `sa::compact`
+    /// → 把结果写回 `placements` → `validate(board)`。
+    ///
+    /// 没有 footprint 的 component 保持未摆放, `validate` 会报 `NoFootprint`。
+    /// 调参见 [`SAConfig`], 默认参数适合 ~5 元件级别。
+    pub fn place_sa(
+        &mut self,
+        board: &Breadboard,
+        config: &SAConfig,
+    ) -> Result<(), Vec<LayoutError>> {
+        use crate::layout::sa;
+
+        let placeable: Vec<ComponentId> = self
+            .circuit
+            .components
+            .iter()
+            .filter_map(|c| c.footprint.map(|_| c.id))
+            .collect();
+
+        if placeable.is_empty() {
+            return self.validate(board);
+        }
+
+        let best = sa::simulate(placeable, self.circuit, board, config);
+        let xs = sa::compact(&best, self.circuit, board);
+
+        for (idx, &comp_id) in best.placeable.iter().enumerate() {
+            self.placements[comp_id.0] = Some(Placement {
+                position: Position {
+                    x: xs[idx],
+                    y: best.row[idx],
+                },
+                rotation: best.rotation[idx],
+            });
+        }
+
+        self.validate(board)
+    }
+
     /// 把所有有 footprint 的 component 横向摆在指定行, R0 方向, 元件之间留 1 空列。
     ///
     /// 最简单的"排成一排"策略: 按 component 顺序, 算出 footprint 水平跨度,
@@ -145,7 +209,7 @@ impl<'c> Layout<'c> {
 /// R0 方向下 footprint 占多少个列 (= `max_x - min_x + 1`)。
 ///
 /// 空 footprint 当作 1 列, 防止减法下溢。
-fn footprint_horizontal_width(footprint: &Footprint) -> i32 {
+pub(crate) fn footprint_horizontal_width(footprint: &Footprint) -> i32 {
     if footprint.pins.is_empty() {
         return 1;
     }
@@ -407,7 +471,7 @@ mod tests {
     }
 
     /// 两个 component + 两个 footprint, Q1(宽 3) + R(宽 4), 用来测列间隔。
-    fn two_component_fixture() -> &'static Circuit {
+    pub(crate) fn two_component_fixture() -> &'static Circuit {
         Box::leak(Box::new(Circuit {
             components: vec![
                 Component {
@@ -637,5 +701,128 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, LayoutError::OutOfBounds { .. }))
         );
+    }
+
+    // ============================================================
+    //  place_sa 集成测试
+    // ============================================================
+
+    /// 退火后 validate() 应过: 无 pin 碰撞, 无越界, 全部有 footprint 的 component 都摆放。
+    #[test]
+    fn place_sa_produces_valid_layout() {
+        let board = board();
+        let mut layout = Layout::new(two_component_fixture());
+        let result = layout.place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 2000,
+                seed: 42,
+                ..SAConfig::default()
+            },
+        );
+        assert!(result.is_ok(), "place_sa 应成功, got {result:?}");
+        assert!(layout.placement(ComponentId(0)).is_some());
+        assert!(layout.placement(ComponentId(1)).is_some());
+    }
+
+    /// 退火在固定 seed 下应可重现。
+    #[test]
+    fn place_sa_is_deterministic_with_seed() {
+        let board = board();
+        let config = SAConfig {
+            max_iters: 1000,
+            seed: 1234,
+            ..SAConfig::default()
+        };
+        let mut a = Layout::new(two_component_fixture());
+        let mut b = Layout::new(two_component_fixture());
+        a.place_sa(&board, &config).unwrap();
+        b.place_sa(&board, &config).unwrap();
+        for cid in [ComponentId(0), ComponentId(1)] {
+            assert_eq!(a.placement(cid), b.placement(cid));
+        }
+    }
+
+    /// 不同 seed 都应能跑出有效布局 (不强求不同——HPWL 在 1D 顺序布局下是
+    /// permutation-invariant, swap 沿 HPWL 是平的, 不同 seed 可能收敛到同解)。
+    /// 这个测试主要确保"没因为换个 seed 就崩"。
+    #[test]
+    fn place_sa_handles_various_seeds() {
+        let board = board();
+        for seed in [1, 7, 42, 1234, 9999] {
+            let mut layout = Layout::new(two_component_fixture());
+            layout
+                .place_sa(
+                    &board,
+                    &SAConfig {
+                        seed,
+                        max_iters: 1000,
+                        ..SAConfig::default()
+                    },
+                )
+                .unwrap_or_else(|e| panic!("seed {seed} 失败: {e:?}"));
+            assert!(layout.placement(ComponentId(0)).is_some());
+            assert!(layout.placement(ComponentId(1)).is_some());
+        }
+    }
+
+    /// SA 结果不包含 R90/R270 (v1 限制)。
+    #[test]
+    fn place_sa_never_uses_r90_or_r270() {
+        let board = board();
+        let mut layout = Layout::new(two_component_fixture());
+        for seed in 0..5 {
+            layout
+                .place_sa(
+                    &board,
+                    &SAConfig {
+                        seed,
+                        max_iters: 500,
+                        ..SAConfig::default()
+                    },
+                )
+                .unwrap();
+            for cid in [ComponentId(0), ComponentId(1)] {
+                let p = layout.placement(cid).unwrap();
+                assert!(
+                    matches!(p.rotation, Rotation::R0 | Rotation::R180),
+                    "seed {seed}: cid {:?} 出现了 {:?}",
+                    cid,
+                    p.rotation
+                );
+            }
+        }
+    }
+
+    /// 走线和退火能联调出有效路线: SA 布局后, PathFinder 跑出来 wires 不冲突 pin。
+    #[test]
+    fn place_sa_then_pathfinder_routes_cleanly() {
+        use crate::Router;
+        let board = board();
+        let mut layout = Layout::new(two_component_fixture());
+        layout
+            .place_sa(
+                &board,
+                &SAConfig {
+                    max_iters: 2000,
+                    seed: 17,
+                    ..SAConfig::default()
+                },
+            )
+            .unwrap();
+        let occ = layout.occupancy(&board).unwrap();
+        let router = PathFinderRouter {
+            max_iterations: 50,
+            history_increment: 1.0,
+        };
+        let wires = router.route(layout.circuit(), &board, &occ);
+        // two_component_fixture 里的 4 个 pin 都在同一 net, 4 个 pin 全部在同一 footprint 组?
+        // 看一下 fixture, Q1 (comp 0) 有 3 个 pin, R1 (comp 1) 有 1 个 pin
+        // 6 个 pin total 都连到 net 0, 6 个不同 col → 5 根 wire
+        // (上接路灯: PathFinder 可能收敛到冲突最少的方案)
+        for w in &wires {
+            // 端点不能和 pin 撞
+            assert!(occ.can_add_wire(w), "wire {:?} 跟 pin 撞了", w);
+        }
     }
 }
