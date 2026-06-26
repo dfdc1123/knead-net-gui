@@ -1359,7 +1359,7 @@ mod tests {
         }
     }
 
-    /// FD 输出同列同 rail 不应存在不同 net 的 pin (避免造成 1M cost 跌入难赯出)。
+    /// FD 输出同列同 rail 不应存在不同 net 的 pin (避免造成 1M cost 跌入难跳出)。
     /// 5 个 2-pin 元件,  pin 1 连 net A,  pin 2 连 net B。
     fn two_pin_two_net_fp() -> Footprint {
         Footprint {
