@@ -232,10 +232,20 @@ impl Placement {
                         hole: placed[1].hole,
                     });
                 }
-                // Bridged 没有 body, 不算占据任何网格
+                // Bridged body 占空间: 两 pin 之间的轴对齐包围盒 (跟 OnBoard 一样)。
+                // **不**保留为 None —— body 实际占据了连接两 pin 那条线周围的格
+                // (e.g. 垂直桥接的电阻 body 是 col=C, rows=-3..1, 中间的 main board
+                // 那些格在物理上不能走线也不能播其他元件)。返回 Some(bbox) 让
+                // `Occupancy::from_layout` 把 body 内部除 pin 外的格标成 Blocked,
+                // router (`empty_holes_in_rail`) 跟成本函数 (`cost()`) 都会自动避开。
+                let positions: Vec<Position> = placed
+                    .iter()
+                    .map(|ph| board.hole(ph.hole).position)
+                    .collect();
+                let bbox = BBox::from_points(positions);
                 Ok(PlacedFootprint {
                     pin_holes: placed,
-                    bbox: None,
+                    bbox,
                 })
             }
         }
@@ -309,7 +319,7 @@ mod tests {
             value: Some("BC547".to_string()),
             pins: vec![PinId(0), PinId(1), PinId(2)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         }
     }
 
@@ -558,7 +568,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0), PinId(1)],
             footprint: Some(FootprintId(1)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let pins = vec![
             Pin {
@@ -593,7 +603,13 @@ mod tests {
             .apply(&comp, &fp, &b, &pins)
             .expect("bridged apply should succeed");
         assert_eq!(placed.pin_holes.len(), 2);
-        assert!(placed.bbox.is_none(), "bridged 没有 body, bbox = None");
+        // Bridged 现在也有 bbox (两 pin 间的 AABB), 让 occupancy 把 body 格标 Blocked
+        let bbox = placed.bbox.expect("bridged 也该有 bbox (body 不能走线)");
+        // pin 1 在 (3, 0), pin 2 在 (0, -4) → bbox 含 (0..=3, -4..=0)
+        assert_eq!(bbox.min_x, 0);
+        assert_eq!(bbox.max_x, 3);
+        assert_eq!(bbox.min_y, -4);
+        assert_eq!(bbox.max_y, 0);
         let ph0 = placed.pin_holes.iter().find(|p| p.pin == PinId(0)).unwrap();
         let ph1 = placed.pin_holes.iter().find(|p| p.pin == PinId(1)).unwrap();
         assert_eq!(ph0.hole, h_main);

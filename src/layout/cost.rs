@@ -17,8 +17,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::circuit::{Circuit, ComponentId, NetId};
-use crate::layout::breadboard::Breadboard;
+use crate::circuit::{Circuit, Component, ComponentId, NetId, PinId, Position};
+use crate::layout::breadboard::{Breadboard, HoleId, Polarity, Region};
 use crate::layout::placement::{BBox, Rotation, rotate};
 
 /// SA 成本函数的六项权重。
@@ -75,9 +75,24 @@ impl Default for Weights {
 ///
 /// v2 起 (显式 2D 布局), x 不再由 order 推导, SA 可以把元件放到板子任意位置。
 /// order 还在, 但只用于标识; `placeable[i]` 的 i 索引对应 `x[i] / y[i] / rotation[i]`。
+///
+/// `is_bridgeable[i] / bridged[i] / bridged_pin_pair[i]` 是桥接探索的三个字段,
+/// 长度都 == `placeable.len()`。`is_bridgeable` 由 `place_sa` 在 SA 启动前根据
+/// `Component.bridgeable` + 启发式是否找到合法桥接位决定; `bridged` 初始全 false
+/// (默认 OnBoard), SA 通过 `Move::ToggleBridging` 翻成 true; `bridged_pin_pair`
+/// 缓存启发式算出的 `(HoleId, PinId)` 对, bridged=true 时由 `cost()` 用它替代
+/// OnBoard 的 `(x, y, rotation)` 计算 pin 位置。
 #[derive(Debug, Clone)]
 pub struct SAState {
     pub placeable: Vec<ComponentId>,
+    /// `i` 是否允许 Toggle 进 Bridged 模式 (启发式 + 桥接规则双满足)。
+    /// 非桥接元件此处恒为 false; 即使 `Component.bridgeable = true`,
+    /// 启发式找不到合法 (hole, rotation) 时也是 false。
+    pub is_bridgeable: Vec<bool>,
+    /// `i` 当前是否处于 Bridged 模式; 初始 false, 由 `Move::ToggleBridging` 翻转。
+    pub bridged: Vec<bool>,
+    /// `i` 的预计算桥接 pin 对 (`Some` 仅当 `is_bridgeable[i] = true`)。
+    pub bridged_pin_pair: Vec<Option<[(HoleId, PinId); 2]>>,
     pub x: Vec<i32>,
     pub y: Vec<i32>,
     pub rotation: Vec<Rotation>,
@@ -88,8 +103,26 @@ impl SAState {
         self.placeable.len()
     }
 
+    /// 拼装辅助: 默认“所有元件不可桥接”的桥接字段。
+    /// 给测试用 struct update 语法 `..SAState::no_bridging(n)`,
+    /// 其中 n = placeable.len()。`placeable / x / y / rotation` 留空,
+    /// 上面覆盖。
+    pub fn no_bridging(n: usize) -> Self {
+        Self {
+            placeable: Vec::new(),
+            is_bridgeable: vec![false; n],
+            bridged: vec![false; n],
+            bridged_pin_pair: vec![None; n],
+            x: Vec::new(),
+            y: Vec::new(),
+            rotation: Vec::new(),
+        }
+    }
+
     /// 简单构造: 给定元件顺序, 全部 R0, 全部同一行, x 按顺序累加 (gap=1)。
-    /// 主要给测试用——真实初始状态用 [`SAState::from_greedy`]。
+    /// 主要给测试用——真实初始状态用 [`SAState::from_greedy`]。不填桥接信息:
+    /// 桥接字段 (is_bridgeable / bridged / bridged_pin_pair) 默认全 false / None,
+    /// 调用方若需要探索桥接, 走 [`Self::from_greedy`] + [`populate_bridgeable_info`]。
     pub fn from_order(order: Vec<ComponentId>, row: i32, widths: &[i32]) -> Self {
         let n = order.len();
         let mut x = Vec::with_capacity(n);
@@ -100,6 +133,9 @@ impl SAState {
         }
         Self {
             placeable: order,
+            is_bridgeable: vec![false; n],
+            bridged: vec![false; n],
+            bridged_pin_pair: vec![None; n],
             x,
             y: vec![row; n],
             rotation: vec![Rotation::R0; n],
@@ -233,6 +269,9 @@ impl SAState {
 
         Self {
             placeable,
+            is_bridgeable: vec![false; n],
+            bridged: vec![false; n],
+            bridged_pin_pair: vec![None; n],
             x,
             y,
             rotation,
@@ -253,6 +292,9 @@ impl SAState {
         if n == 0 {
             return Self {
                 placeable,
+                is_bridgeable: vec![],
+                bridged: vec![],
+                bridged_pin_pair: vec![],
                 x: vec![],
                 y: vec![],
                 rotation: vec![],
@@ -505,10 +547,161 @@ impl SAState {
 
         Self {
             placeable,
+            is_bridgeable: vec![false; n],
+            bridged: vec![false; n],
+            bridged_pin_pair: vec![None; n],
             x,
             y,
             rotation,
         }
+    }
+}
+
+/// 为 bridgeable 元件计算唯一确定的桥接 pin 对 (启发式)。
+///
+/// **输入**: 一个 bridgeable 元件 (必有 2 pin, 一腿 power net, 一腿 signal net)。
+/// **输出**: 第一个让 signal 落在主区合法孔的 `(power hole, signal hole)` 对,
+///          按 `HoleId` 升序 × 旋转 `[R0, R90, R180, R270]` 顺序扫; 都失败则 `None`。
+///
+/// **为什么需要 4 种旋转**: Bridged 路径下 body 浮在板外, 允许 R90/R270。
+/// 对水平 footprint 的电阻 (pin offset Δx = L, Δy = 0), R0/R180 让 signal
+/// pin 仍落在同一条 rail 上 (无意义), 只有 R90/R270 让 body 垂直于 rail
+/// 插进主区。这是 Bridged 必须支持 R90/R270 的根因。
+///
+/// **为什么不存 rotation**: `Placement::Bridged` 只存 `(HoleId, PinId)` 对,
+/// body 朝向是隐式的 (选哪两个孔就决定了 body 朝哪)。SA 的 `Move::Flip` 继续
+/// 只作用于 OnBoard 路径, 不跟桥接路径争用。
+pub(crate) fn propose_bridged_pair(
+    comp: &Component,
+    circuit: &Circuit,
+    board: &Breadboard,
+    power_net_ids: &[NetId],
+) -> Option<[(HoleId, PinId); 2]> {
+    debug_assert_eq!(comp.pins.len(), 2, "bridgeable 必有 2 pin");
+
+    // 1. 分 power / signal pin
+    let power_pin_id = comp
+        .pins
+        .iter()
+        .find(|&&pid| {
+            circuit.pins[pid.0]
+                .net
+                .map(|n| power_net_ids.contains(&n))
+                .unwrap_or(false)
+        })
+        .copied()?;
+    let signal_pin_id = comp
+        .pins
+        .iter()
+        .find(|&&pid| pid != power_pin_id)
+        .copied()?;
+    let power_net = circuit.pins[power_pin_id.0].net;
+
+    // 2. 查 footprint pad offsets
+    let fp_id = comp.footprint?;
+    let fp = &circuit.footprints[fp_id.0];
+    let power_off = fp
+        .pins()
+        .iter()
+        .find(|p| p.name() == circuit.pins[power_pin_id.0].num())
+        .map(|p| p.offset)?;
+    let signal_off = fp
+        .pins()
+        .iter()
+        .find(|p| p.name() == circuit.pins[signal_pin_id.0].num())
+        .map(|p| p.offset)?;
+
+    let delta = Position {
+        x: signal_off.x - power_off.x,
+        y: signal_off.y - power_off.y,
+    };
+
+    // 3. 优先扫: 那些 rail 的 bound net == power_net 的 power rail 孔。
+    //    power pin 落在这种孔上后, pin 跟同 rail 的虚拟 pin 同 net,
+    //    列冲突代价 = 0。如果 pin 的 net 未绑定或只绑到一种极性, 此集合可能为空。
+    let matching_rail_ids = collect_matching_rail_ids(board, power_net);
+
+    // 4. 两轮扫描: 先 matching, 后 fallback (任意 power rail)。
+    //    fallback 代价高 (列冲突) 但优于 "启发式返 None, 走 OnBoard"。
+    let all_power_holes: Vec<HoleId> = (0..board.holes().len())
+        .map(HoleId)
+        .filter(|h| board.region_of(*h) == Region::PowerRail)
+        .collect();
+    let (matching, other): (Vec<HoleId>, Vec<HoleId>) = all_power_holes
+        .iter()
+        .partition(|h| matching_rail_ids.contains(&board.rail_id_of(**h)));
+
+    for &h in matching.iter().chain(other.iter()) {
+        let h_pos = board.hole(h).position;
+        for &rot in &[Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
+            let rotated = rotate(delta, rot);
+            let signal_pos = Position {
+                x: h_pos.x + rotated.x,
+                y: h_pos.y + rotated.y,
+            };
+            if let Some(signal_h) = board.at(signal_pos.x, signal_pos.y) {
+                if board.region_of(signal_h) == Region::MainRail {
+                    return Some([(h, power_pin_id), (signal_h, signal_pin_id)]);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 收集 rail_id 集合: 这些 power rail 被 bound 到 `pin_net`。
+/// `pin_net == None` 返空集 (用户不绑 → 没有 "net 匹配" 的 rail, 启发式走 fallback 扫所有 rail)。
+fn collect_matching_rail_ids(
+    board: &Breadboard,
+    pin_net: Option<NetId>,
+) -> std::collections::HashSet<u32> {
+    let mut ids = std::collections::HashSet::new();
+    let Some(pin_net) = pin_net else { return ids };
+    let Some(binding) = board.power_rail_binding() else {
+        return ids;
+    };
+    for (polarity, net_id) in [
+        (Polarity::Negative, binding.negative),
+        (Polarity::Positive, binding.positive),
+    ] {
+        if net_id != pin_net {
+            continue;
+        }
+        if let Some(anchor) = board.power_rail_anchor(polarity) {
+            ids.insert(board.rail_id_of(anchor));
+        }
+    }
+    ids
+}
+
+/// 对 state 中所有 `Component.bridgeable = true` 的元件跑启发式, 填充
+/// `is_bridgeable` / `bridged_pin_pair`。`bridged` 字段不动 (默认 false = OnBoard)。
+///
+/// 调用时机: `from_greedy` / `from_force_directed` 构造完 state 之后,
+/// SA 启动前 (在 `sa::simulate` 内部)。`Component.bridgeable = false` 的元件
+/// `is_bridgeable` 恒为 false, `bridged_pin_pair` 为 None —— `Move::ToggleBridging`
+/// 不会命中它们。
+pub(crate) fn populate_bridgeable_info(
+    state: &mut SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    power_net_ids: &[NetId],
+) {
+    let n = state.placeable.len();
+    debug_assert_eq!(state.is_bridgeable.len(), n);
+    debug_assert_eq!(state.bridged.len(), n);
+    debug_assert_eq!(state.bridged_pin_pair.len(), n);
+    for (idx, &comp_id) in state.placeable.iter().enumerate() {
+        let comp = &circuit.components[comp_id.0];
+        if !comp.bridgeable {
+            continue;
+        }
+        if let Some(pair) = propose_bridged_pair(comp, circuit, board, power_net_ids) {
+            state.is_bridgeable[idx] = true;
+            state.bridged_pin_pair[idx] = Some(pair);
+        }
+        // 启发式返回 None: 该元件本轮无法桥接, is_bridgeable 保持 false,
+        // Toggle 不会命中它 (随机退回其他 move, 不污染 seed 序列)。
     }
 }
 
@@ -551,10 +744,46 @@ pub fn cost(
     // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
     //    rail_id = u32::MAX 表示"该位置没有 HoleId" (越界 / blocked / 电源轨 gap)
     //    — 这些 pin 不参与 MST / 列冲突, 但算 OOB。
+    //
+    //    `state.bridged[idx] = true` 的元件走桥接路径: 不计 bbox (body 浮在板外),
+    //    pin 由 state.bridged_pin_pair 提供 (见 1b 之后 的 1b')。
+    //
+    //    `is_virtual[i] = true` 标记该 pin 是 power rail 虚拟节点 (1c 注入的)。
+    //    **虚拟 pin 不参与 pin 碰撞检查** —— 它是逻辑节点, 不是物理插针。
+    //    但保留在 MST / rail 冲突计算中 (它代表 "rail 在此 net 上")。
     let mut holes: Vec<(i32, i32, u32)> = Vec::new();
     let mut nets: Vec<Option<NetId>> = Vec::new();
+    let mut is_virtual: Vec<bool> = Vec::new();
     let mut bboxes: Vec<Option<BBox>> = Vec::with_capacity(state.placeable.len());
     for (idx, &comp_id) in state.placeable.iter().enumerate() {
+        if state.bridged[idx] {
+            // Bridged 元件 body 占空间: 两 pin 间的轴对齐包围盒 (启发式 pair 给定)。
+            // 推入 `bboxes` 让 SA 跟 OnBoard 元件一起走 bbox 碰撞检查, 避免
+            // OnBoard 摆在 bridged body 上面造成物理重叠 (D1 桥接 col 0 时 R2 的
+            // bbox 越界就报)。“body 在板外”那个早期判断只适用于“连信号 net 都不在板上”
+            // 的情形；本启发式选的两孔一腿在 rail、一腿在主区, body 横跨 gap 行和
+            // 主区, 主区那段必须在 bbox 里。pin 注入见下面 1b'。
+            let bridged_bbox = state
+                .bridged_pin_pair
+                .get(idx)
+                .and_then(|opt| opt.as_ref())
+                .map(|pair| {
+                    let p0 = board.hole(pair[0].0).position;
+                    let p1 = board.hole(pair[1].0).position;
+                    let min_x = p0.x.min(p1.x);
+                    let max_x = p0.x.max(p1.x);
+                    let min_y = p0.y.min(p1.y);
+                    let max_y = p0.y.max(p1.y);
+                    BBox {
+                        min_x,
+                        max_x,
+                        min_y,
+                        max_y,
+                    }
+                });
+            bboxes.push(bridged_bbox);
+            continue;
+        }
         let component = &circuit.components[comp_id.0];
         let fid = component.footprint.unwrap();
         let footprint = &circuit.footprints[fid.0];
@@ -582,34 +811,61 @@ pub fn cost(
                 .unwrap_or(u32::MAX);
             holes.push((x, y, rail_id));
             nets.push(pin.net);
+            is_virtual.push(false);
             world_positions.push(crate::circuit::Position { x, y });
         }
         bboxes.push(BBox::from_points(world_positions));
     }
 
-    // 1b. 注入 bridged 元件的 pin (Bridged 不进 SA, 但它的 pin 仍要进 MST / rail 冲突)
+    // 1b. 注入用户预摆的 bridged 元件的 pin (Bridged 不进 SA, 但 pin 仍要进 MST / rail 冲突)
     for &(pin_id, hole_id) in bridged_pins {
         let pin = &circuit.pins[pin_id.0];
         let pos = board.hole(hole_id).position;
         let rail_id = board.rail_id_of(hole_id);
         holes.push((pos.x, pos.y, rail_id));
         nets.push(pin.net);
+        is_virtual.push(false);
+    }
+
+    // 1b'. 注入 SA Toggle 后的 bridged 元件的 pin。来源: `state.bridged_pin_pair`。
+    //      `is_bridgeable[i] = true` 才能被 Toggle 命中, 所以这里 `Some(pair)` 总是有效。
+    for (idx, opt) in state.bridged_pin_pair.iter().enumerate() {
+        if !state.bridged[idx] {
+            continue;
+        }
+        if let Some(pair) = opt {
+            for &(h, pin_id) in pair {
+                let pin = &circuit.pins[pin_id.0];
+                let pos = board.hole(h).position;
+                let rail_id = board.rail_id_of(h);
+                holes.push((pos.x, pos.y, rail_id));
+                nets.push(pin.net);
+                is_virtual.push(false);
+            }
+        }
+        // bridged=true 但 bridged_pin_pair[idx] = None: 不该发生
+        // (is_bridgeable=false 时 Toggle 不会命中), debug_assert 防守即可。
+        debug_assert!(opt.is_some(), "bridged=true 必有 pin pair");
     }
 
     // 1c. 注入 power rail 虚拟 pin (如果用户绑定了 net)
     //    虚拟 pin 落在 rail 的 anchor 位置, 挂在绑定的 net 上。
     //    后续步骤会自然处理: 算 OOB 时它是有效 rail, 算 MST 时它跟同 net 的
     //    真实 pin 连边, 算 rail 冲突时它跟同 rail 的别 net pin 冲突。
+    //
+    //    **虚拟 pin 不算 pin 碰撞** (见 is_virtual 与 collision check)——
+    //    否则 bridged power pin 落 在 rail anchor 上会与虚拟 pin "撞", 错误报碰撞。
     if let Some(binding) = board.power_rail_binding() {
         for (polarity, net_id) in [
-            (crate::layout::Polarity::Negative, binding.negative),
-            (crate::layout::Polarity::Positive, binding.positive),
+            (Polarity::Negative, binding.negative),
+            (Polarity::Positive, binding.positive),
         ] {
             if let Some(anchor) = board.power_rail_anchor(polarity) {
                 let pos = board.hole(anchor).position;
                 let rail_id = board.rail_id_of(anchor);
                 holes.push((pos.x, pos.y, rail_id));
                 nets.push(Some(net_id));
+                is_virtual.push(true);
             }
         }
     }
@@ -622,12 +878,16 @@ pub fn cost(
         }
     }
 
-    // 3. Pin 碰撞: 每个被多个 pin 占用的孔, 算 N-1 次 (SA 关心 Δcost, 系数 1 vs 系数 N 等价)
+    // 3. Pin 碰撞: 每个被多个 pin 占用的孔, 算 N-1 次 (SA 关心 Δcost, 系数 1 vs 系数 N 等价)。
+    //    **跳过虚拟 pin** (1c 注入)——它是逻辑节点, 不算物理插针。
     let mut coll_count = 0;
     let mut seen: HashMap<(i32, i32, u32), ()> = HashMap::new();
-    for &hole in &holes {
+    for (i, &hole) in holes.iter().enumerate() {
         if hole.2 == u32::MAX {
             continue; // OOB pin 不参与碰撞检查
+        }
+        if is_virtual[i] {
+            continue; // 虚拟 pin 不参与碰撞
         }
         if seen.insert(hole, ()).is_some() {
             coll_count += 1;
@@ -856,7 +1116,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0), PinId(1)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let pins = vec![
             Pin {
@@ -1097,7 +1357,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let pins = vec![Pin {
             id: PinId(0),
@@ -1611,7 +1871,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let pin = crate::circuit::Pin {
             id: PinId(0),
@@ -1684,7 +1944,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0), PinId(1)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let pins = vec![
             crate::circuit::Pin {
@@ -1773,6 +2033,7 @@ mod tests {
             x: vec![0, 0],
             y: vec![0, 1],
             rotation: vec![Rotation::R0, Rotation::R0],
+            ..SAState::no_bridging(2)
         };
         let c = cost(&state, &circuit, &board(), &[], &weights_legacy());
         assert!(c.abs() < 1e-9, "零跳线布局应该 cost = 0, got {}", c);
@@ -1827,6 +2088,7 @@ mod tests {
             x: vec![0, 1],
             y: vec![2, 2],
             rotation: vec![Rotation::R0; 2],
+            ..SAState::no_bridging(2)
         };
         let c_tight = cost(&s_tight, &circuit, &board(), &[], &w);
         // 同 row 2, x 拉开 (0, 5) → bbox 6 × 1 = 6 → cost 3.0
@@ -1835,6 +2097,7 @@ mod tests {
             x: vec![0, 5],
             y: vec![2, 2],
             rotation: vec![Rotation::R0; 2],
+            ..SAState::no_bridging(2)
         };
         let c_wide = cost(&s_wide, &circuit, &board(), &[], &w);
         // 贴一起: bbox 2×1 = 2 → 1.0
@@ -1894,6 +2157,7 @@ mod tests {
             x: vec![0, 4],
             y: vec![2, 2],
             rotation: vec![Rotation::R0; 2],
+            ..SAState::no_bridging(2)
         };
         let c_horiz = cost(&s_horiz, &circuit, &board(), &[], &w);
 
@@ -1903,6 +2167,7 @@ mod tests {
             x: vec![0, 0],
             y: vec![0, 4],
             rotation: vec![Rotation::R0; 2],
+            ..SAState::no_bridging(2)
         };
         let c_vert = cost(&s_vert, &circuit, &board(), &[], &w);
 
@@ -1957,6 +2222,7 @@ mod tests {
             x: vec![0, 0],
             y: vec![0, 1], // 都是上 rail
             rotation: vec![Rotation::R0; 2],
+            ..SAState::no_bridging(2)
         };
         let c_same = cost(&s_same, &circuit, &board, &[], &w);
 
@@ -1966,6 +2232,7 @@ mod tests {
             x: vec![0, 0],
             y: vec![0, 10], // 上 + 下
             rotation: vec![Rotation::R0; 2],
+            ..SAState::no_bridging(2)
         };
         let c_cross = cost(&s_cross, &circuit, &board, &[], &w);
 
@@ -2024,6 +2291,7 @@ mod tests {
             x: vec![0, 1, 2],
             y: vec![0, 1, 2],
             rotation: vec![Rotation::R0; 3],
+            ..SAState::no_bridging(3)
         };
         let c_all_upper = cost(&s_all_upper, &circuit, &board, &[], &w);
 
@@ -2033,6 +2301,7 @@ mod tests {
             x: vec![0, 1, 2],
             y: vec![0, 1, 10],
             rotation: vec![Rotation::R0; 3],
+            ..SAState::no_bridging(3)
         };
         let c_split = cost(&s_split, &circuit, &board, &[], &w);
 
@@ -2046,6 +2315,421 @@ mod tests {
         assert!(
             (c_split - (0.5 * (2.0 * 2.0 + 1.0 * 1.0) + w.rail_crossing)).abs() < 1e-9,
             "split 布局应 cost = 0.5 * 5 + 5.0 = 7.5, got {c_split}"
+        );
+    }
+
+    // ============================================================
+    //  桥接路径
+    // ============================================================
+
+    /// 1 个 2-pin 水平电阻 (pin offset Δ=(3,0)) + power net 绑定到 top positive rail。
+    /// 启发式应该: power pin 落 top positive rail 第一个 hole, signal pin 经 R90
+    /// 旋转后落 (col, row 0) main rail。返回 Some 且结构合法。
+    #[test]
+    fn propose_bridged_pair_uses_r90_for_horizontal_resistor() {
+        use crate::circuit::{Footprint, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        // pin 0 走 +12V (power), pin 1 走 SIG (signal)
+        let circuit = crate::circuit::Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "R1".into(),
+                kind: "R".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: true,
+            }],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                crate::circuit::Net {
+                    id: NetId(0),
+                    name: "+12V".into(),
+                    pins: vec![PinId(0)],
+                },
+                crate::circuit::Net {
+                    id: NetId(1),
+                    name: "SIG".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        };
+        // 绑定: top/bottom positive rail  ← +12V, top/bottom negative rail ← SIG
+        // (信号名号无所谓, 只曹 power_net_ids 包含 NetId(0) 即可)
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        });
+        let comp = &circuit.components[0];
+        let pair = propose_bridged_pair(comp, &circuit, &board, &[NetId(0), NetId(1)]);
+        let pair = pair.expect("启发式应该能找一对合法桥接");
+        let (h_power, pin_power) = pair[0];
+        let (h_signal, pin_signal) = pair[1];
+        // power 必须是 power rail
+        assert_eq!(
+            board.region_of(h_power),
+            Region::PowerRail,
+            "power 腿应落 power rail"
+        );
+        // signal 必须是 main rail
+        assert_eq!(
+            board.region_of(h_signal),
+            Region::MainRail,
+            "signal 腿应落 main rail"
+        );
+        // pin 标识要反映 power / signal 分工
+        assert_eq!(pin_power, PinId(0), "pin 0 (net=+12V) 应是 power");
+        assert_eq!(pin_signal, PinId(1), "pin 1 (net=SIG) 应是 signal");
+        // body 方向: 两孔 x 差 == 0 (R90 后), y 差 == 3。证实是 R90 不是 R0 / R180。
+        let p_p = board.hole(h_power).position;
+        let p_s = board.hole(h_signal).position;
+        assert_eq!(
+            p_s.x - p_p.x,
+            0,
+            "R90 后 Δx 应 = 0 (body 竖直), got Δx = {}",
+            p_s.x - p_p.x
+        );
+        assert_eq!(
+            p_s.y - p_p.y,
+            3,
+            "R90 后 Δy 应 = 3 (footprint 跨度), got Δy = {}",
+            p_s.y - p_p.y
+        );
+    }
+
+    /// 没绑 power rail → power_net_ids 为空 → 启发式返 None。
+    #[test]
+    fn propose_bridged_pair_returns_none_without_power_rail_binding() {
+        use crate::circuit::{Footprint, PhysicalPin};
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        let circuit = crate::circuit::Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "R1".into(),
+                kind: "R".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: true,
+            }],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                crate::circuit::Net {
+                    id: NetId(0),
+                    name: "P".into(),
+                    pins: vec![PinId(0)],
+                },
+                crate::circuit::Net {
+                    id: NetId(1),
+                    name: "S".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        };
+        let board = Breadboard::standard(); // 不绑 power rail
+        let comp = &circuit.components[0];
+        // power_net_ids 为空 → power 腿找不到匹配 → 返 None
+        let pair = propose_bridged_pair(comp, &circuit, &board, &[]);
+        assert!(pair.is_none(), "无 power rail 时启发式应返 None");
+    }
+
+    /// bridged 状态的 2-pin 元件: 算 cost 时 pin 走 bridged_pin_pair, 不走 (x, y, rotation),
+    /// 不计 bbox, 不计 OOB (因为启发式保证两个孔都是合法的)。
+    /// 对比: 同一 bridgeable 元件, OnBoard 走 OOB 区域 vs Bridged 走启发式合法位,
+    /// 后者的 cost 远低于前者 (无 OOB 巨罚, 也无越界让 cost 龲起)。
+    #[test]
+    fn cost_bridged_uses_heuristic_pair_and_skips_bbox() {
+        use crate::circuit::{Footprint, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        let circuit = crate::circuit::Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "R1".into(),
+                kind: "R".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: true,
+            }],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                crate::circuit::Net {
+                    id: NetId(0),
+                    name: "P".into(),
+                    pins: vec![PinId(0)],
+                },
+                crate::circuit::Net {
+                    id: NetId(1),
+                    name: "S".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        };
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        });
+
+        // OnBoard 状态: (0, 0) 放, 令 pin 1 跨进 gap (y=-1) → OOB 龲高 cost
+        let on_board = SAState {
+            placeable: vec![ComponentId(0)],
+            x: vec![0],
+            y: vec![0],
+            rotation: vec![Rotation::R0],
+            ..SAState::no_bridging(1)
+        };
+        let w = Weights::default();
+        let c_on = cost(&on_board, &circuit, &board, &[], &w);
+
+        // Bridged 状态: 走启发式合法对
+        let pair = propose_bridged_pair(
+            &circuit.components[0],
+            &circuit,
+            &board,
+            &[NetId(0), NetId(1)],
+        )
+        .unwrap();
+        let mut bridged = on_board.clone();
+        bridged.is_bridgeable = vec![true];
+        bridged.bridged = vec![true];
+        bridged.bridged_pin_pair = vec![Some(pair)];
+        let c_bridge = cost(&bridged, &circuit, &board, &[], &w);
+
+        // Bridged cost 应远小于 OnBoard (启发式选中两孔都在板上 + 有 rail, MST = 0)
+        assert!(
+            c_bridge < c_on,
+            "Bridged 走启发式合法位应比 OnBoard 跨 gap OOB 便宜: on={c_on} bridge={c_bridge}"
+        );
+    }
+
+    /// 验证 bridged 元件的 body bbox 参与碰撞检查:
+    /// 一个 2-pin 电阻的启发式把 power 落在 top positive rail (col=0, y=-3),
+    /// signal 落在 main rail (col=0, y=0) (R90 旋转)。body 走 col 0 rows -3..0。
+    /// 另外一个 1-pin 元件放在 col 0, row 0 (在 bridged body 上), 成本应包含 bbox 碰撞。
+    /// 同一个 1-pin 元件放在 col 5, row 0 (避开 body), 成本应不含 bbox 碰撞。
+    #[test]
+    fn cost_bridged_body_bbox_blocks_on_board_components() {
+        use crate::circuit::{Footprint, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        // 1 个 2-pin 水平电阻 (Δ=4)
+        let fp_r = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 4, y: 0 },
+                },
+            ],
+        };
+        // 1 个 1-pin 元件 (后面 跟 resistor 独立)
+        let fp_x = Footprint {
+            id: FootprintId(1),
+            name: "X".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = crate::circuit::Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0), // R, bridgeable
+                    ref_: "R1".into(),
+                    kind: "R".into(),
+                    value: None,
+                    pins: vec![PinId(0), PinId(1)],
+                    footprint: Some(FootprintId(0)),
+                    bridgeable: true,
+                },
+                Component {
+                    id: ComponentId(1), // X, 非 bridgeable
+                    ref_: "X1".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(2)],
+                    footprint: Some(FootprintId(1)),
+                    bridgeable: false,
+                },
+            ],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+                Pin {
+                    id: PinId(2),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                crate::circuit::Net {
+                    id: NetId(0),
+                    name: "P".into(),
+                    pins: vec![PinId(0)],
+                },
+                crate::circuit::Net {
+                    id: NetId(1),
+                    name: "S".into(),
+                    pins: vec![PinId(1), PinId(2)],
+                },
+            ],
+            footprints: vec![fp_r, fp_x],
+        };
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        });
+
+        // 拿启发式生成的 R1 bridged pair
+        let pair = propose_bridged_pair(
+            &circuit.components[0],
+            &circuit,
+            &board,
+            &[NetId(0), NetId(1)],
+        )
+        .expect("启发式应返 pair");
+
+        // X1 放在 (0, 0) — 与 bridged body 的 col 0 重叠
+        let state_overlap = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            is_bridgeable: vec![true, false],
+            bridged: vec![true, false],
+            bridged_pin_pair: vec![Some(pair), None],
+            x: vec![0, 0],
+            y: vec![0, 0],
+            rotation: vec![Rotation::R0, Rotation::R0],
+        };
+
+        // X1 放在 (5, 0) — 避开 bridged body
+        let state_clear = SAState {
+            placeable: vec![ComponentId(0), ComponentId(1)],
+            is_bridgeable: vec![true, false],
+            bridged: vec![true, false],
+            bridged_pin_pair: vec![Some(pair), None],
+            x: vec![0, 5],
+            y: vec![0, 0],
+            rotation: vec![Rotation::R0, Rotation::R0],
+        };
+
+        let w = Weights::default();
+        let c_overlap = cost(&state_overlap, &circuit, &board, &[], &w);
+        let c_clear = cost(&state_clear, &circuit, &board, &[], &w);
+
+        // 重叠的 cost 应比不重叠的高, 高出部分 ≈ bbox 碰撞 (100 per cell)
+        let delta = c_overlap - c_clear;
+        assert!(
+            delta > 1.0,
+            "X1 摆 bridged body 上应比避开贵, 但 delta = {delta} (c_overlap={c_overlap}, c_clear={c_clear})"
         );
     }
 }

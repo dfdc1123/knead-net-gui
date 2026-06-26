@@ -227,13 +227,26 @@ impl<'c> Layout<'c> {
         let best = best_state.expect("至少跑了一次");
 
         for (idx, &comp_id) in best.placeable.iter().enumerate() {
-            self.placements[comp_id.0] = Some(Placement::OnBoard {
-                position: Position {
-                    x: best.x[idx],
-                    y: best.y[idx],
-                },
-                rotation: best.rotation[idx],
-            });
+            // Toggle 在 SA 中可能拾到 Bridged 模式, 这里分流写回:
+            // - bridged[idx] = true: 写 `Placement::Bridged`, pin 对取自启发式缓存
+            //   (sa::simulate 在初始化后调 `populate_bridgeable_info` 填的)。
+            // - bridged[idx] = false: 写 `Placement::OnBoard`, 照原有逻辑取 (x, y, rotation)。
+            if best.bridged[idx] {
+                let pair = best.bridged_pin_pair[idx].expect(
+                    "bridged=true 必有 pin pair (sa::simulate 保证 is_bridgeable[idx] = true)",
+                );
+                self.placements[comp_id.0] = Some(Placement::Bridged {
+                    pin_holes: [pair[0], pair[1]],
+                });
+            } else {
+                self.placements[comp_id.0] = Some(Placement::OnBoard {
+                    position: Position {
+                        x: best.x[idx],
+                        y: best.y[idx],
+                    },
+                    rotation: best.rotation[idx],
+                });
+            }
         }
 
         self.validate(board)
@@ -289,7 +302,9 @@ pub(crate) fn footprint_horizontal_width(footprint: &Footprint) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::circuit::{Component, Footprint, FootprintId, PhysicalPin, Pin, PinId, Position};
+    use crate::circuit::{
+        Component, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin, PinId, Position,
+    };
 
     fn fixture() -> &'static Circuit {
         Box::leak(Box::new(Circuit {
@@ -446,7 +461,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1), PinId(2)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -455,7 +470,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(3)],
                     footprint: None,
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -552,7 +567,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1), PinId(2)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -561,7 +576,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(3), PinId(4)],
                     footprint: Some(FootprintId(1)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -728,7 +743,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -737,7 +752,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: None,
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -954,7 +969,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0), PinId(1)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let r1_pins = vec![
             Pin {
@@ -1020,6 +1035,102 @@ mod tests {
                 p2
             );
         }
+    }
+
+    /// bridged body 在 occupancy 里被标 Blocked: 验证桥接 (0, -3) → (5, 0) 后,
+    /// (1, 0) 到 (4, 0) 这些 main board 主体格 (在 bbox 里、不是 pin) 应该是 Blocked,
+    /// 而 (0, -3)、(5, 0) 是 Pin. 另验证 router 不会用 (1..=4, 0) 作端点。
+    #[test]
+    fn bridged_body_cells_are_marked_blocked() {
+        use crate::Occupant;
+        use crate::circuit::{FootprintId, Net, NetId, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R_BR".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 5, y: 0 },
+                },
+            ],
+        };
+        let r1 = Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        };
+        let r1_pins = vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            },
+        ];
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![r1],
+            pins: r1_pins,
+            nets: vec![Net {
+                id: NetId(0),
+                name: "GND".into(),
+                pins: vec![PinId(0), PinId(1)],
+            }],
+            footprints: vec![fp],
+        }));
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(0),
+        });
+        let h_main = board.at(5, 0).unwrap();
+        let h_rail = board.at(0, -4).unwrap();
+        let placement = Placement::Bridged {
+            pin_holes: [(h_main, PinId(0)), (h_rail, PinId(1))],
+        };
+        let mut layout = Layout::new(circuit);
+        layout.place(ComponentId(0), placement);
+        let occ = layout.occupancy(&board).expect("bridged layout 应该合法");
+
+        // pin 端点应是 Pin
+        assert!(matches!(occ.occupant_at(h_main), Some(Occupant::Pin(_))));
+        assert!(matches!(occ.occupant_at(h_rail), Some(Occupant::Pin(_))));
+
+        // body 中间 (1..=4, 0) 这些 main board 格应是 Blocked (R1)
+        for x in 1..=4 {
+            let h = board.at(x, 0).unwrap();
+            assert!(
+                matches!(occ.occupant_at(h), Some(Occupant::Blocked(_))),
+                "bridged body 中间格 ({x}, 0) 应被标 Blocked, got {:?}",
+                occ.occupant_at(h)
+            );
+        }
+        // body 在 rail 行 (-4) 那些格也应是 Blocked
+        for x in 1..=4 {
+            let h = board.at(x, -4).unwrap();
+            assert!(
+                matches!(occ.occupant_at(h), Some(Occupant::Blocked(_))),
+                "bridged body 在 rail 上的 ({x}, -4) 应被标 Blocked, got {:?}",
+                occ.occupant_at(h)
+            );
+        }
+        // (0, -3) / (0, -2) / (0, -1) 是 gap row, 不存在 hole, 不检查
     }
 
     /// 关键: 2D 状态下, 18 元件 30x5 板不应再出 OOB (以前 sequential x 会塞不下)
@@ -1154,5 +1265,193 @@ mod tests {
                 assert_eq!(oob, 0, "2D SA 不应再出 OOB, got: {errors:?}");
             }
         }
+    }
+
+    // ============================================================
+    //  桥接 Toggle 端到端
+    // ============================================================
+
+    /// 1 个 bridgeable 2-pin 电阻, 放标准板 + power rail 绑定。
+    /// 退火后 bridgeable 元件可能是 OnBoard (cost 低) 或 Bridged (启发式选得好)。
+    /// 验证: 两种 placement 都应合法, 不出 OOB / pin 碰撞。
+    #[test]
+    fn place_sa_can_emit_bridged_placement_for_bridgeable_resistor() {
+        use crate::circuit::{Footprint, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "R1".into(),
+                kind: "R".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: true, // 关键: 被启发式预选
+            }],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "P".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "S".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        }));
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        });
+        let mut layout = Layout::new(circuit);
+        // 退火不一定总选 Bridged (取决于 SA 随机接受), 但无论选哪个, validate 应过。
+        // 为提高撞上 Toggle 的概率, 提升 p_toggle_bridge 到 0.3 跑多次。
+        let config = SAConfig {
+            max_iters: 2000,
+            t0: 5.0,
+            cool_rate: 0.95,
+            n_seeds: 5,
+            p_toggle_bridge: 0.3,
+            ..SAConfig::default()
+        };
+        let result = layout.place_sa(&board, &config);
+        assert!(
+            result.is_ok(),
+            "place_sa 应成功 (validate 过), got {result:?}"
+        );
+        // 验证 placement 类型合法
+        match layout.placement(ComponentId(0)) {
+            Some(Placement::OnBoard { .. }) | Some(Placement::Bridged { .. }) => {}
+            other => panic!("R1 应该有 placement, got {other:?}"),
+        }
+    }
+
+    /// 验证: 高 p_toggle_bridge + 多 seed 跑下来, 至少有一个 seed 产出 Bridged。
+    /// (如果概率分布对, 7% × 多次跑应该能撞上; 提高到 0.5 + n_seeds=20 更稳。)
+    #[test]
+    fn place_sa_bridgeable_can_flip_to_bridged() {
+        use crate::circuit::{Footprint, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "R1".into(),
+                kind: "R".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: true,
+            }],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "P".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "S".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![fp],
+        }));
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        });
+        // 跑多次, 记录是否出现 Bridged 结果。
+        // 不强求 100% 出现 (SA 随机性), 但要求至少 1 次出现 (概率足够大时必然出现)。
+        let config = SAConfig {
+            max_iters: 2000,
+            t0: 10.0,
+            cool_rate: 0.9,
+            n_seeds: 20,
+            p_toggle_bridge: 0.5,
+            ..SAConfig::default()
+        };
+        let mut any_bridged = false;
+        for seed in 0..20u64 {
+            let mut layout = Layout::new(circuit);
+            let cfg = SAConfig { seed, ..config };
+            if layout.place_sa(&board, &cfg).is_ok() {
+                if matches!(
+                    layout.placement(ComponentId(0)),
+                    Some(Placement::Bridged { .. })
+                ) {
+                    any_bridged = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            any_bridged,
+            "20 个 seed × p_toggle=0.5 × 2000 iters 至少应出现 1 次 Bridged, 全是 OnBoard"
+        );
     }
 }
