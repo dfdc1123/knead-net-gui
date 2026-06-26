@@ -15,8 +15,8 @@ pub mod routing;
 pub mod sa;
 
 pub use breadboard::{
-    Breadboard, Hole, HoleId, Polarity, PowerRail, PowerRails, PowerStrip, Region,
-    standard_power_rails,
+    Breadboard, Hole, HoleId, Polarity, PowerRail, PowerRailBinding, PowerRails, PowerStrip,
+    Region, standard_power_rails,
 };
 pub use cost::{FDConfig, Weights};
 pub use occupancy::{Occupancy, Occupant};

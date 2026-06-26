@@ -32,7 +32,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ops::RangeInclusive;
 
-use crate::circuit::Position;
+use crate::circuit::{NetId, Position};
 
 /// 板上一个孔的标识, 范围 0..board.len()。
 ///
@@ -124,12 +124,29 @@ pub struct PowerRails {
     pub negative_names: Vec<String>,
 }
 
+/// 电源轨到 net 的绑定: 哪条 rail 电气上等同于哪个 net。
+///
+/// 设置后, cost / 路由 会**自动注入一个虚拟 pin** 到该 rail 的 anchor 位置,
+/// 并把它挂到绑定 net 上。这样:
+/// - net 的 MST 必然包含 rail, 强制算上从主区到 rail 的 jumper 长度
+/// - 路由器必会生成一根 wire 把 rail 连到主区最近 pin
+/// - 如果同 rail 出现别的 net 的 pin, occupancy 的 rail 冲突检查会逮到
+#[derive(Debug, Clone, Copy)]
+pub struct PowerRailBinding {
+    /// 正极 rail 绑定的 net (例: `+12V` / `5V` / `VCC`)
+    pub positive: NetId,
+    /// 负极 rail 绑定的 net (例: `GND`)
+    pub negative: NetId,
+}
+
 #[derive(Debug, Clone)]
 pub struct Breadboard {
     cols: usize,
     main_rows: usize,
     main_blocked_rows: BTreeSet<usize>,
     power_rails: Option<PowerRails>,
+    /// 电源轨到 net 的绑定 (None = 不绑定, 跟以前一样)
+    power_rail_binding: Option<PowerRailBinding>,
     holes: Vec<Hole>,
     /// (x, y) → HoleId 反查, 加速 `at` 调用
     at_map: HashMap<(i32, i32), HoleId>,
@@ -284,6 +301,7 @@ impl Breadboard {
             main_rows,
             main_blocked_rows,
             power_rails,
+            power_rail_binding: None,
             holes,
             at_map,
         }
@@ -400,6 +418,34 @@ impl Breadboard {
             .iter()
             .chain(pr.bottom.rows.iter())
             .find(|r| r.y == y)
+    }
+
+    /// 设置电源轨到 net 的绑定。返回 self 便于链式调用。
+    ///
+    /// `binding.positive` / `binding.negative` 必须是有效 `NetId` (即
+    /// `< circuit.nets().len()`), 否则 cost / 路由 时会静默忽略 (找不到 net)。
+    pub fn with_power_rail_binding(mut self, binding: PowerRailBinding) -> Self {
+        self.power_rail_binding = Some(binding);
+        self
+    }
+
+    /// 当前是否设置了电源轨绑定。
+    pub fn power_rail_binding(&self) -> Option<&PowerRailBinding> {
+        self.power_rail_binding.as_ref()
+    }
+
+    /// 给定极性, 返回该 rail 上的一个 anchor `HoleId` (用作虚拟 pin 位置)。
+    ///
+    /// 选 top strip 里极性匹配那一行的**第一个**孔 (col 0)。因为同 rail 的所有
+    /// 孔内部短接, anchor 选哪个孔都对, 这里只是稳定起见。
+    /// 返回 `None` 表示: 没装 power rail, 或该极性在配置里不存在。
+    pub fn power_rail_anchor(&self, polarity: Polarity) -> Option<HoleId> {
+        let pr = self.power_rails.as_ref()?;
+        let target_y = pr.top.rows.iter().find(|r| r.polarity == polarity)?.y;
+        self.holes
+            .iter()
+            .find(|h| h.position.y == target_y)
+            .map(|h| h.id)
     }
 
     /// 给定一个 hole, 返回它的 rail_id。
@@ -704,5 +750,48 @@ mod tests {
         assert_eq!(b.len(), 2);
         assert_eq!(b.at(0, 0), Some(HoleId(0)));
         assert_eq!(b.at(0, 3), Some(HoleId(1)));
+    }
+
+    // ============================================================
+    //  PowerRailBinding
+    // ============================================================
+
+    #[test]
+    fn binding_default_is_none() {
+        let b = Breadboard::standard();
+        assert!(b.power_rail_binding().is_none());
+    }
+
+    #[test]
+    fn with_power_rail_binding_sets_it() {
+        use crate::circuit::NetId;
+        let binding = PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        };
+        let b = Breadboard::standard().with_power_rail_binding(binding);
+        let got = b.power_rail_binding().unwrap();
+        assert_eq!(got.positive, NetId(0));
+        assert_eq!(got.negative, NetId(1));
+    }
+
+    #[test]
+    fn power_rail_anchor_returns_first_hole_in_top_rail() {
+        let b = Breadboard::standard();
+        // 负极 anchor: top strip 的 y=-2 行, col 0
+        let neg = b.power_rail_anchor(Polarity::Negative).unwrap();
+        let neg_pos = b.hole(neg).position;
+        assert_eq!(neg_pos, Position { x: 0, y: -2 });
+        // 正极 anchor: top strip 的 y=-1 行, col 0
+        let pos = b.power_rail_anchor(Polarity::Positive).unwrap();
+        let pos_pos = b.hole(pos).position;
+        assert_eq!(pos_pos, Position { x: 0, y: -1 });
+    }
+
+    #[test]
+    fn power_rail_anchor_returns_none_without_rails() {
+        let b = Breadboard::new(30, 5);
+        assert!(b.power_rail_anchor(Polarity::Negative).is_none());
+        assert!(b.power_rail_anchor(Polarity::Positive).is_none());
     }
 }

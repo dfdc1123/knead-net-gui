@@ -2,7 +2,9 @@ use std::fs;
 
 use knead_net::input::footprint::parse_many as parse_footprints;
 use knead_net::input::netlist::parse_netlist;
-use knead_net::{Breadboard, Layout, Occupant, PathFinderRouter, Router, SAConfig};
+use knead_net::{
+    Breadboard, Layout, Occupant, PathFinderRouter, PowerRailBinding, Router, SAConfig,
+};
 
 fn main() {
     let kicad_dir = "examples/kicad";
@@ -34,8 +36,28 @@ fn main() {
 
     // 4. 布局: 模拟退火 + 压缩
     // 标准板: 30 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
-    // 上下半各自独立 rail, 同列不同 rail 互不连通。
-    let board = Breadboard::standard();
+    // 上下半各自独立 rail, 同列不同 rail 互不连通。 上下各一组 power rail。
+    let mut board = Breadboard::standard();
+
+    // 4b. 把电源轨绑到具体 net (让 SA/路由把 rail 强制接进电路)
+    // - 负极 → GND
+    // - 正极 → +12V (h-bridge-power.net 里用这个名字)
+    // 找不到 net 就跳过, 退回原来的"不绑定"行为
+    let gnd_net = circuit.nets().iter().find(|n| n.name() == "GND");
+    let v12_net = circuit.nets().iter().find(|n| n.name() == "+12V");
+    if let (Some(gnd), Some(v12)) = (gnd_net, v12_net) {
+        board = board.with_power_rail_binding(PowerRailBinding {
+            positive: v12.id(),
+            negative: gnd.id(),
+        });
+        eprintln!(
+            "Power rail binding: − → GND ({:?}), + → +12V ({:?})",
+            gnd.id(),
+            v12.id()
+        );
+    } else {
+        eprintln!("(电路里没找到 GND / +12V net, 电源轨不绑定)");
+    }
     let mut layout = Layout::new(&circuit);
     // SA 是随机算法; 跑 10 次取最低 cost (MST cost 下大部分能找到 cost=0 的零跳线布局)
     if let Err(errors) = layout.place_sa(

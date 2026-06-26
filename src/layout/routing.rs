@@ -131,6 +131,26 @@ impl Router for PathFinderRouter {
             net_pins[net.id.0] = pins;
         }
 
+        // 注入 power rail 虚拟 pin: 每个 bound rail 加一个 anchor 位置的 pin,
+        // 挂在绑定的 net 上。这样路由会强制生成一根 wire 把主区 pin 连到 rail。
+        if let Some(binding) = board.power_rail_binding() {
+            for (polarity, net_id) in [
+                (crate::layout::Polarity::Negative, binding.negative),
+                (crate::layout::Polarity::Positive, binding.positive),
+            ] {
+                if (net_id.0) < net_pins.len() {
+                    if let Some(anchor) = board.power_rail_anchor(polarity) {
+                        let pos = board.hole(anchor).position;
+                        let rail_id = board.rail_id_of(anchor);
+                        net_pins[net_id.0].push((pos.x, pos.y, rail_id));
+                        net_pins[net_id.0].sort_by_key(|&(x, y, r)| (r, x, y));
+                        net_pins[net_id.0].dedup_by_key(|&mut (_, _, r)| r);
+                    }
+                }
+                // net_id 越界 (不在 circuit 里) 静默忽略
+            }
+        }
+
         let mut history: Vec<f64> = vec![0.0; board.len()];
         let mut best_solution: Vec<Wire> = Vec::new();
         let mut best_conflicts = usize::MAX;
@@ -360,6 +380,7 @@ mod tests {
         Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin,
         PinId, Position,
     };
+    use crate::layout::breadboard::PowerRailBinding;
     use crate::layout::placement::{Placement, Rotation};
 
     fn board() -> Breadboard {
@@ -806,5 +827,146 @@ mod tests {
         assert_eq!(p2.x, 5);
         assert!(p1.y < 5, "p1 应该在 上 rail, got {p1:?}");
         assert!(p2.y >= 7, "p2 应该在 下 rail (y=7..12), got {p2:?}");
+    }
+
+    // ============================================================
+    //  PowerRailBinding 路由测试
+    // ============================================================
+
+    /// 绑定 GND → 负极: 1 个 GND pin 在主区 (5, 0)。路由器必须生成 1 根 wire
+    /// 把这个 pin 连到负极轨 (y=-2 或 y=12, 同 rail_id)。
+    #[test]
+    fn router_with_binding_runs_wire_to_rail() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "1p".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "G".into(),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(0)],
+                footprint: Some(FootprintId(0)),
+            }],
+            pins: vec![Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            }],
+            nets: vec![Net {
+                id: NetId(0),
+                name: "GND".into(),
+                pins: vec![PinId(0)],
+            }],
+            footprints: vec![fp],
+        }));
+
+        let mut layout = Layout::new(circuit);
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 5, y: 0 },
+                rotation: Rotation::R0,
+            },
+        );
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            // positive 用越界 NetId, 路由会跳过 (该 net 不存在)
+            positive: NetId(999),
+            negative: NetId(0),
+        });
+        let occ = layout.occupancy(&board).unwrap();
+        let wires = PathFinderRouter::default().route(circuit, &board, &occ);
+
+        // 应该有 1 根 wire (pin → rail)
+        assert_eq!(
+            wires.len(),
+            1,
+            "绑定 GND → 负极后, 路由必须生成 1 根 wire 连到 rail"
+        );
+        let w = &wires[0];
+        // 端点 1: 某个 power rail (y=-2 或 y=12, 同 rail_id)
+        // 端点 2: 某个 col 5 的 main rail 孔 (y in 0..5)
+        // 注意: wire 端点不能在 (5, 0) (被 component pin 占), 所以同 rail 的
+        // 其他孔 (y in 1..5) 都行 — rail 短接, 电气上等效。
+        let p1 = board.hole(w.from).position;
+        let p2 = board.hole(w.to).position;
+        let rail_pos = if p1.y < 0 || p1.y >= 12 {
+            p1
+        } else if p2.y < 0 || p2.y >= 12 {
+            p2
+        } else {
+            panic!("wire 端点应该有一个在 power rail, 实际 p1={p1:?} p2={p2:?}");
+        };
+        let main_pos = if p1.x == 5 && p1.y >= 0 && p1.y < 5 {
+            p1
+        } else if p2.x == 5 && p2.y >= 0 && p2.y < 5 {
+            p2
+        } else {
+            panic!("wire 端点应该有一个在 col 5 的 main rail (y 0..5), 实际 p1={p1:?} p2={p2:?}");
+        };
+        // jumper 长度: |Δcol| + |Δrow| (col 5 跟 rail col 0..28 里的某个 x 都可以)
+        let dx = (rail_pos.x - main_pos.x).abs();
+        let dy = (rail_pos.y - main_pos.y).abs();
+        assert!(
+            dx + dy <= 8,
+            "jumper 长度应该合理, dx={dx} dy={dy}, main={main_pos:?} rail={rail_pos:?}"
+        );
+    }
+
+    /// 不绑定时, GND net 1 个 pin 不用 wire (没东西要连)
+    #[test]
+    fn router_no_binding_no_rail_wire() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "1p".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "G".into(),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(0)],
+                footprint: Some(FootprintId(0)),
+            }],
+            pins: vec![Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            }],
+            nets: vec![Net {
+                id: NetId(0),
+                name: "GND".into(),
+                pins: vec![PinId(0)],
+            }],
+            footprints: vec![fp],
+        }));
+
+        let mut layout = Layout::new(circuit);
+        layout.place(
+            ComponentId(0),
+            Placement {
+                position: Position { x: 5, y: 0 },
+                rotation: Rotation::R0,
+            },
+        );
+        let board = Breadboard::standard(); // 不绑定
+        let occ = layout.occupancy(&board).unwrap();
+        let wires = PathFinderRouter::default().route(circuit, &board, &occ);
+        assert_eq!(wires.len(), 0, "不绑定时, 1 个 pin 的 net 不用 wire (0 根)");
     }
 }

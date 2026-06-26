@@ -581,6 +581,24 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         bboxes.push(BBox::from_points(world_positions));
     }
 
+    // 1b. 注入 power rail 虚拟 pin (如果用户绑定了 net)
+    //    虚拟 pin 落在 rail 的 anchor 位置, 挂在绑定的 net 上。
+    //    后续步骤会自然处理: 算 OOB 时它是有效 rail, 算 MST 时它跟同 net 的
+    //    真实 pin 连边, 算 rail 冲突时它跟同 rail 的别 net pin 冲突。
+    if let Some(binding) = board.power_rail_binding() {
+        for (polarity, net_id) in [
+            (crate::layout::Polarity::Negative, binding.negative),
+            (crate::layout::Polarity::Positive, binding.positive),
+        ] {
+            if let Some(anchor) = board.power_rail_anchor(polarity) {
+                let pos = board.hole(anchor).position;
+                let rail_id = board.rail_id_of(anchor);
+                holes.push((pos.x, pos.y, rail_id));
+                nets.push(Some(net_id));
+            }
+        }
+    }
+
     // 2. OOB: rail_id == u32::MAX 即"该位置没有 HoleId" — 越界 / blocked row / 电源轨 gap
     let mut oob_count = 0;
     for &(_, _, rail_id) in &holes {
@@ -785,6 +803,7 @@ mod tests {
         PinId, Position,
     };
     use crate::layout::Breadboard;
+    use crate::layout::breadboard::PowerRailBinding;
 
     /// 1 列宽, 1 个 pin, R0/R180 等价的 footprint (没有第二个 pin 区分方向)。
     fn one_pin_fp() -> Footprint {
@@ -1536,6 +1555,150 @@ mod tests {
         // top negative (0, -2) 跟 main upper (0, 0): |0| + |2| = 2
         let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 0, 0)]);
         assert_eq!(len, 2.0);
+    }
+
+    // ============================================================
+    //  PowerRailBinding 虚拟 pin
+    // ============================================================
+
+    /// 绑定 GND 到负极: 1 个 GND pin 在 (10, 0), 加上虚拟 pin 在 (0, -2)。
+    /// MST 距离 = |10| + |2| = 12 (主区到 rail 的 jumper 长度)。
+    /// 不绑定时, 那个 pin 单独一个节点, MST = 0。
+    /// 用 delta 检验: cost(绑定) - cost(不绑定) 应该 = 12 * hpwl_weight。
+    #[test]
+    fn cost_with_binding_reflects_rail_jumper() {
+        use crate::circuit::{ComponentId, FootprintId, NetId, PinId};
+        use crate::layout::cost::{SAState, Weights};
+
+        let footprint = crate::circuit::Footprint {
+            id: FootprintId(0),
+            name: "1p".into(),
+            pins: vec![crate::circuit::PhysicalPin {
+                name: "1".into(),
+                offset: crate::circuit::Position { x: 0, y: 0 },
+            }],
+        };
+        let component = crate::circuit::Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0)],
+            footprint: Some(FootprintId(0)),
+        };
+        let pin = crate::circuit::Pin {
+            id: PinId(0),
+            component: ComponentId(0),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        };
+        let net = crate::circuit::Net {
+            id: NetId(0),
+            name: "GND".into(),
+            pins: vec![PinId(0)],
+        };
+        let circuit = crate::circuit::Circuit {
+            components: vec![component],
+            pins: vec![pin],
+            nets: vec![net],
+            footprints: vec![footprint],
+        };
+        let mut state = SAState::from_order(vec![ComponentId(0)], 1, &[1]);
+        state.x[0] = 10;
+        state.y[0] = 0;
+        let w = Weights::default();
+
+        // 不绑定
+        let board_no_bind = Breadboard::standard();
+        let cost_no = cost(&state, &circuit, &board_no_bind, &w);
+
+        // 绑定: 虚拟 pin (0, -2) 加入 net, MST = |10| + |2| = 12
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(0),
+        });
+        let cost_with = cost(&state, &circuit, &board, &w);
+
+        let delta = cost_with - cost_no;
+        let expected_delta = 12.0 * w.hpwl; // 纯 MST 增量
+        assert!(
+            (delta - expected_delta).abs() < 0.01,
+            "绑定后 cost 增量 = MST 12, 实际 delta = {delta}, 期望 = {expected_delta}"
+        );
+    }
+
+    /// 不绑定时, 成本跟以前完全一样 (虚拟 pin 0 个)。
+    /// 上面那个测试的不绑定部分已覆盖, 这里再加个明显不动的检查: 0 元件 0 pin。
+    #[test]
+    fn cost_no_binding_no_rail_pins() {
+        use crate::circuit::{ComponentId, FootprintId, NetId, PinId};
+
+        // 2-pin 元件, 2 个 pin 都在同一 rail, 同 net → MST = 0
+        // 不绑定: 0 虚拟 pin, 跟以前一样
+        let footprint = crate::circuit::Footprint {
+            id: FootprintId(0),
+            name: "2p".into(),
+            pins: vec![
+                crate::circuit::PhysicalPin {
+                    name: "1".into(),
+                    offset: crate::circuit::Position { x: 0, y: 0 },
+                },
+                crate::circuit::PhysicalPin {
+                    name: "2".into(),
+                    offset: crate::circuit::Position { x: 1, y: 0 },
+                },
+            ],
+        };
+        let component = crate::circuit::Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+        };
+        let pins = vec![
+            crate::circuit::Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            },
+            crate::circuit::Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            },
+        ];
+        let net = crate::circuit::Net {
+            id: NetId(0),
+            name: "n".into(),
+            pins: vec![PinId(0), PinId(1)],
+        };
+        let circuit = crate::circuit::Circuit {
+            components: vec![component],
+            pins,
+            nets: vec![net],
+            footprints: vec![footprint],
+        };
+        let state = crate::layout::cost::SAState::from_order(vec![ComponentId(0)], 1, &[2]);
+        let board = Breadboard::standard();
+        let c = cost(
+            &state,
+            &circuit,
+            &board,
+            &crate::layout::cost::Weights::default(),
+        );
+        // cost = MST 1 (同 rail 不同 col, |Δcol|=1) + compactness 1.0 (2×1×0.5) = 2.0
+        // 验证不绑定时, 没注入虚拟 pin 进去 (否则 cost 会更高)
+        assert_eq!(
+            c, 2.0,
+            "不绑定, 同 rail 同 net, cost = MST 1 + compactness 1.0 = 2.0"
+        );
     }
 
     /// 成本函数走 MST 而非 HPWL:

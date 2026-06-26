@@ -17,6 +17,6 @@ pub use circuit::{
 };
 pub use layout::{
     Breadboard, FDConfig, Hole, HoleId, Layout, LayoutError, Occupancy, Occupant, PathFinderRouter,
-    PinHole, PlacedFootprint, Placement, Polarity, PowerRail, PowerRails, PowerStrip, Region,
-    Rotation, Router, SAConfig, Weights, Wire, WireId, standard_power_rails,
+    PinHole, PlacedFootprint, Placement, Polarity, PowerRail, PowerRailBinding, PowerRails,
+    PowerStrip, Region, Rotation, Router, SAConfig, Weights, Wire, WireId, standard_power_rails,
 };
