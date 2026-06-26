@@ -65,10 +65,9 @@ pub struct SAConfig {
     /// 仅在 `use_force_directed = true` 时使用。
     pub fd_config: FDConfig,
     /// `random_move` 生成 `Move::ToggleBridging` 的目标概率。
-    /// 仅当 `state.is_bridgeable[p] = true` 时实际生效, 否则该分支退回 `ShiftX`。
+    /// 仅当 `state.is_bridgeable[i] = true` 时实际生效, 否则该分支退回 `ShiftX`。
     /// 调高 → SA 更频繁探索 Bridged vs OnBoard; 调低 → 退回 v3 行为。
-    /// 经验起点 0.18 (从 v4 的 0.07 提高, 让 bridge 能被更频繁地探索;
-    /// 考虑多次测试中 “输出几乎全是 OnBoard” 的反面证据, 7% 明显不足)。
+    /// 默认 0.15: 配合 [`SAConfig`] 默认分布, Toggle 实际概率 15%。
     /// 0 = 完全关闭 Toggle (退回 v3 行为)。
     pub p_toggle_bridge: f64,
 }
@@ -84,7 +83,7 @@ impl Default for SAConfig {
             n_seeds: 1,
             use_force_directed: false,
             fd_config: FDConfig::default(),
-            p_toggle_bridge: 0.18,
+            p_toggle_bridge: 0.15,
         }
     }
 }
@@ -137,15 +136,18 @@ fn random_move(
     let dx = dx_sign * n_amp;
     let dy = dy_sign * n_amp;
 
-    // v5 分布: ShiftX 55% / Flip 30% / ToggleBridging 18% / ShiftY 8%(调整为
-    // 归一化后)。v4 默认 0.07 偏保守, 实际跑起来 bridge 几乎不出现,
-    // 现在默认 0.18 加上 clamp 上限放开到 0.45, 让 bridge 设计空间能被
-    // 更充分地探索。Flip / ShiftX / ShiftY 仍按 0.55/0.30/0.08 剩余区间切;
-    // p_toggle_bridge=0 时 Toggle 区间为空, 自动退回 v3 行为。
+    // v6 分布: ShiftX 45% / Flip 20% / ShiftY 20% / ToggleBridging 15% (默认)。
+    // 调高 ShiftY 从 v5 的 8% → 20%, 主动探索 row 0/1 混合的布局
+    // (避免卡在 "所有元件一行" 的 local optimum, 那个局部最优 MST=2
+    // 跟全局 MST=0 之间需要穿过中间态 MST=4)。
+    // ShiftX 同步 55% → 45%, Flip 30% → 20% 给 ShiftY 让位。
+    // Toggle 占 15%, p_toggle_bridge 默认 0.15。
+    // base 比例 0.45/0.20/0.20 求和 = 0.85, (1 - p_toggle) 重新归一化时除以 0.85。
     let p_toggle = config.p_toggle_bridge.clamp(0.0, 0.45); // 限制上限防误配
-    let p_shiftx = (1.0 - p_toggle) * 0.55 / 0.93; // 把 7% 拿出来后剩 93% 重新归一化
-    let p_flip = (1.0 - p_toggle) * 0.30 / 0.93;
-    // p_shifty = 1 - p_shiftx - p_flip - p_toggle = (1 - p_toggle) * 0.08 / 0.93
+    let p_shiftx = (1.0 - p_toggle) * 0.45 / 0.85;
+    let p_flip = (1.0 - p_toggle) * 0.20 / 0.85;
+    let p_shifty = (1.0 - p_toggle) * 0.20 / 0.85;
+    // 校验: p_shiftx + p_flip + p_shifty + p_toggle = (1 - p_toggle) + p_toggle = 1.0
 
     if r < p_shiftx {
         Move::ShiftX(p, dx)
@@ -467,14 +469,14 @@ mod tests {
     }
 
     /// random_move 选到 Toggle 区间 且 p 是 bridgeable 时, 返 ToggleBridging(p)。
-    /// 注: `p_toggle_bridge` 在 `random_move` 里被 clamp 到 0.30 (防误配超过 30%)。
+    /// 注: `p_toggle_bridge` 在 `random_move` 里被 clamp 到 0.45 (防误配超过 45%)。
     /// 设 0.25 → 期望 ~25% = 500/2000, 留 100 偏差。
     #[test]
     fn random_move_toggle_emits_when_bridgeable() {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
         state.is_bridgeable = vec![true, true];
         let cfg = SAConfig {
-            p_toggle_bridge: 0.25, // 低于 clamp 0.30, 期望 ~25% Toggle
+            p_toggle_bridge: 0.25, // 低于 clamp 0.45, 期望 ~25% Toggle
             ..SAConfig::default()
         };
         let mut rng = fastrand::Rng::with_seed(0);

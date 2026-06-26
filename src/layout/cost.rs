@@ -54,8 +54,9 @@ pub struct Weights {
 impl Default for Weights {
     fn default() -> Self {
         Self {
-            // 一根 5 孔 wire 省下 ~5 成本
-            mst: 1.0,
+            // 一根 5 孔 wire 省下 ~25 成本 (mst=5); 大权重让 SA 冲过
+            // "中间态变差" 的 barrier, 主动去找零跳线布局。
+            mst: 5.0,
             // 一次 pin 碰撞 = 让 SA 宁愿多绕 50-100 孔也不撞
             pin_overlap: 100.0,
             // bbox 重叠基本也当硬约束, 跟 pin 碰撞同量级 (一个孔算 1)。
@@ -1324,8 +1325,11 @@ mod tests {
 
     /// 只关心 MST / pin / bbox / column 各项的测试用, 屏蔽新加的紧凑度和跨 rail 惩罚。
     /// 不想让"layout 跨几行" 之类的全局性质混入到孤立某项成本的断言里。
+    /// 显式 mst=1.0 让 "1 cell MST → cost 1.0" 这种简单算术在测试里成立
+    /// (默认 mst=5.0 是给 SA 跑的; 测试要看的不是权重而是公式结构)。
     fn weights_legacy() -> Weights {
         Weights {
+            mst: 1.0,
             compactness: 0.0,
             rail_crossing: 0.0,
             ..Weights::default()
@@ -2152,11 +2156,12 @@ mod tests {
             &[],
             &crate::layout::cost::Weights::default(),
         );
-        // cost = MST 1 (同 rail 不同 col, |Δcol|=1) + compactness 1.0 (2×1×0.5) = 2.0
+        // cost = MST 1 (同 rail 不同 col, |Δcol|=1) × 5.0 (默认 mst 权重)
+        //     + compactness 1.0 (2×1×0.5) = 6.0
         // 验证不绑定时, 没注入虚拟 pin 进去 (否则 cost 会更高)
         assert_eq!(
-            c, 2.0,
-            "不绑定, 同 rail 同 net, cost = MST 1 + compactness 1.0 = 2.0"
+            c, 6.0,
+            "不绑定, 同 rail 同 net, cost = MST 1 × mst 5.0 + compactness 1.0 = 6.0"
         );
     }
 
