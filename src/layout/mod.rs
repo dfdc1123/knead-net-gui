@@ -849,8 +849,8 @@ mod tests {
         }
     }
 
-    /// 不同 seed 都应能跑出有效布局 (不强求不同——HPWL 在 1D 顺序布局下是
-    /// permutation-invariant, swap 沿 HPWL 是平的, 不同 seed 可能收敛到同解)。
+    /// 不同 seed 都应能跑出有效布局 (不强求不同——MST 在 1D 顺序布局下是
+    /// permutation-invariant, swap 沿 MST 是平的, 不同 seed 可能收敛到同解)。
     /// 这个测试主要确保"没因为换个 seed 就崩"。
     #[test]
     fn place_sa_handles_various_seeds() {

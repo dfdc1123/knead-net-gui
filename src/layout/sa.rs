@@ -527,7 +527,7 @@ mod tests {
     fn sa_converges_below_initial() {
         let circuit = simple_circuit();
         // 故意构造差初始: C0 @ (0,0), C1 @ (3,4) — 都在不同 row 远距离
-        // 共享 net, HPWL 跨度 3
+        // 共享 net, MST = 8 (远大于 0, SA 应能压下来)
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
         state.x = vec![0, 3];
         state.y = vec![0, 4];

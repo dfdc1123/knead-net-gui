@@ -7,8 +7,8 @@
 //!   - **同 rail 不同 col: |Δcol|** (走 jumper wire 在同一行)
 //!   - **同 col 不同 rail: |Δrow|** (跨中央通道)
 //!   - **不同 col 不同 rail: |Δcol| + |Δrow|** (Manhattan)
-//!   比 2D HPWL 准 — HPWL 把 "同列不同 row 同 rail" 算成 Δrow, MST 直接 0, 推动
-//!   SA 主动寻找 rail 短接的零跳线布局。
+//!   比 2D HPWL 准 — 普通 HPWL 把 "同列不同 row 同 rail" 算成 Δrow, MST 直接 0,
+//!   推动 SA 主动寻找 rail 短接的零跳线布局。
 //! - **紧凑度**: 按 rail 分组算 union bbox 面积加和, 阻止 SA 停在"零冲突但留白大"的状态。
 //!   按 rail 切分避免中央通道把"实际占 1 行"的布局算成跨 2 行。
 //! - 成本是各项**加权和**, 权在 [`Weights`] 里调。
@@ -23,14 +23,18 @@ use crate::layout::placement::{BBox, Rotation, rotate};
 
 /// SA 成本函数的六项权重。
 ///
-/// 成本 = `hpwl * HPWL + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
+/// 成本 = `mst * MST_sum + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
 ///       + column_conflict * 列短路对数 + out_of_bounds * 越界 pin 数
 ///       + compactness * (按 rail 分组的 union bbox 面积之和) + rail_crossing (用 2+ rail 时)`
 ///
 /// 默认值见 [`Weights::default`], 经验起点; 真用时按板子拥挤程度调。
 #[derive(Debug, Clone, Copy)]
 pub struct Weights {
-    pub hpwl: f64,
+    /// MST (Minimum Spanning Tree) 走线总长的权重。
+    /// 每个 net 跑一次 Kruskal, 边权按 breadboard 物理距离 (同 rail = 0,
+    /// 不同 rail = Manhattan), sum 起来乘以本权重。
+    /// 比纯 HPWL 准: HPWL 算同列不同 row 的距离仍按 Δrow, MST 直接 0。
+    pub mst: f64,
     pub pin_overlap: f64,
     /// bbox 碰撞总格数 (本体撞 pin 也算)。一般比 pin_overlap 略高 — 本体挤到
     /// 其它元件身体上比 pin 互相碰还要糟糕 (后面 wire 还会避开本体)。
@@ -51,7 +55,7 @@ impl Default for Weights {
     fn default() -> Self {
         Self {
             // 一根 5 孔 wire 省下 ~5 成本
-            hpwl: 1.0,
+            mst: 1.0,
             // 一次 pin 碰撞 = 让 SA 宁愿多绕 50-100 孔也不撞
             pin_overlap: 100.0,
             // bbox 重叠基本也当硬约束, 跟 pin 碰撞同量级 (一个孔算 1)。
@@ -61,7 +65,7 @@ impl Default for Weights {
             column_conflict: 1_000_000.0,
             // 越界基本不允许; 巨大惩罚让 SA 直接拒绝
             out_of_bounds: 1_000_000.0,
-            // 紧凑度: 1 cell² ≈ 0.5 MST cell 的代价, 让 HPWL 仍有空间优化跨列 net,
+            // 紧凑度: 1 cell² ≈ 0.5 MST cell 的代价, 让 MST 仍有空间优化跨列 net,
             // 但空隙会被这股力挤掉。
             compactness: 0.5,
             // 跨 rail = 多一根 jumper + 视觉割裂, 取约 5 cell MST, 比单 cell 紧凑贵
@@ -1171,7 +1175,7 @@ pub fn cost(
         0.0
     };
 
-    w.hpwl * mst_sum
+    w.mst * mst_sum
         + w.pin_overlap * coll_count as f64
         + w.b_box_overlap * bbox_overlap_count as f64
         + w.column_conflict * col_conflict_pairs as f64
@@ -1318,7 +1322,7 @@ mod tests {
         Breadboard::new(30, 5)
     }
 
-    /// 只关心 HPWL / pin / bbox / column 各项的测试用, 屏蔽新加的紧凑度和跨 rail 惩罚。
+    /// 只关心 MST / pin / bbox / column 各项的测试用, 屏蔽新加的紧凑度和跨 rail 惩罚。
     /// 不想让"layout 跨几行" 之类的全局性质混入到孤立某项成本的断言里。
     fn weights_legacy() -> Weights {
         Weights {
@@ -1337,8 +1341,8 @@ mod tests {
     }
 
     #[test]
-    fn one_component_same_net_hpwl_is_one() {
-        // 2 pin 紧挨着 (0, 2) 和 (1, 2), 都在同一 net → HPWL = 1 - 0 = 1
+    fn one_component_same_net_mst_is_one() {
+        // 2 pin 紧挨着 (0, 2) 和 (1, 2), 都在同一 net → MST = |1-0| = 1
         let (circuit, cid) = two_pin_in_net();
         let state = SAState::from_order(vec![cid], 2, &[2]);
         let c = cost(&state, &circuit, &board(), &[], &weights_legacy());
@@ -2016,7 +2020,7 @@ mod tests {
     /// 绑定 GND 到负极: 1 个 GND pin 在 (10, 0), 加上虚拟 pin 在 (0, -4)。
     /// MST 距离 = |10| + |4| = 14 (主区到 rail 的 jumper 长度)。
     /// 不绑定时, 那个 pin 单独一个节点, MST = 0。
-    /// 用 delta 检验: cost(绑定) - cost(不绑定) 应该 = 14 * hpwl_weight。
+    /// 用 delta 检验: cost(绑定) - cost(不绑定) 应该 = 14 * mst_weight。
     #[test]
     fn cost_with_binding_reflects_rail_jumper() {
         use crate::circuit::{ComponentId, FootprintId, NetId, PinId};
@@ -2074,7 +2078,7 @@ mod tests {
         let cost_with = cost(&state, &circuit, &board, &[], &w);
 
         let delta = cost_with - cost_no;
-        let expected_delta = 14.0 * w.hpwl; // 纯 MST 增量
+        let expected_delta = 14.0 * w.mst; // 纯 MST 增量
         assert!(
             (delta - expected_delta).abs() < 0.01,
             "绑定后 cost 增量 = MST 14, 实际 delta = {delta}, 期望 = {expected_delta}"
@@ -2240,9 +2244,9 @@ mod tests {
             nets: vec![],
             footprints: vec![fp],
         };
-        // 屏蔽 HPWL / pin / bbox / column, 只看 compactness
+        // 屏蔽 MST / pin / bbox / column, 只看 compactness
         let w = Weights {
-            hpwl: 0.0,
+            mst: 0.0,
             pin_overlap: 0.0,
             b_box_overlap: 0.0,
             column_conflict: 0.0,
@@ -2310,7 +2314,7 @@ mod tests {
             footprints: vec![fp],
         };
         let w = Weights {
-            hpwl: 0.0,
+            mst: 0.0,
             pin_overlap: 0.0,
             b_box_overlap: 0.0,
             column_conflict: 0.0,
@@ -2375,7 +2379,7 @@ mod tests {
             footprints: vec![fp],
         };
         let w = Weights {
-            hpwl: 0.0,
+            mst: 0.0,
             pin_overlap: 0.0,
             b_box_overlap: 0.0,
             column_conflict: 0.0,
@@ -2444,7 +2448,7 @@ mod tests {
             footprints: vec![fp],
         };
         let w = Weights {
-            hpwl: 0.0,
+            mst: 0.0,
             pin_overlap: 0.0,
             b_box_overlap: 0.0,
             column_conflict: 0.0,
