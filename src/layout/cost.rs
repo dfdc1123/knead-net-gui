@@ -107,14 +107,18 @@ impl SAState {
     }
 
     /// 贪心 first-fit 初始状态: 按元件顺序, 找第一个有效 `(x, y)` (按行从上到下、
-    /// 列从左到右扫)。"有效" = 所有 pin 都在板内 + 包围盒不撞已摆元件的 bbox。
-    /// **不**考虑列短路——那由 SA 后续优化。
+    /// 列从左到右扫)。"有效" = 所有 pin 都在板内 + 包围盒不撞已摆元件的 bbox +
+    /// 不引入列冲突 (同列同 rail 不同 net 的 pin)。**不**考虑列短路——那由 SA 后续优化
+    /// (FD 初排已避免大部分, SA 翻元件时若重新引入, cost 会捕捉并罚分)。
     pub fn from_greedy(placeable: Vec<ComponentId>, circuit: &Circuit, board: &Breadboard) -> Self {
         let n = placeable.len();
         let mut x = vec![0i32; n];
         let mut y = vec![0i32; n];
         let rotation = vec![Rotation::R0; n];
         let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+        // (col, rail_top) → 第一个放进去的 pin 的 net; 后续 pin 若 net 不同则为冲突。
+        // None 表示该位置的 pin 未连 net (unconnected); unconnected 与 connected 互冲。
+        let mut col_owner: HashMap<(i32, i32), Option<crate::circuit::NetId>> = HashMap::new();
 
         for idx in 0..n {
             let comp_id = placeable[idx];
@@ -122,17 +126,33 @@ impl SAState {
             let fid = component.footprint.expect("placeable 必有 footprint");
             let footprint = &circuit.footprints[fid.0];
 
-            let pin_offsets: Vec<(i32, i32)> = footprint
-                .pins()
+            // 该元件在 net 上的 pin: (本地 offset, net) — 用于列冲突检查
+            let pin_info: Vec<(i32, i32, Option<crate::circuit::NetId>)> = component
+                .pins
                 .iter()
-                .map(|p| (p.offset.x, p.offset.y))
+                .map(|&pin_id| {
+                    let pin = &circuit.pins[pin_id.0];
+                    let physical = footprint
+                        .pins()
+                        .iter()
+                        .find(|p| p.name() == pin.num())
+                        .expect("footprint 缺 pin (解析阶段就该爆)");
+                    (physical.offset.x, physical.offset.y, pin.net)
+                })
                 .collect();
-            // 用 pin 偏移算 footprint 本地 bbox (R0, 不旋转)。
-            let bbox_cells_local: Vec<(i32, i32)> =
-                pin_offsets.iter().map(|&(dx, dy)| (dx, dy)).collect();
-            let (min_x, max_x, min_y, max_y) = bbox_cells_local.iter().fold(
+            // bbox 仍用 footprint 全部物理 pin 算 (保留原 from_greedy 行为):
+            // 即便 component 只用 1 个 pin, footprint 本体的 silk / 镂空也算"占用",
+            // 不能让别的元件挤进来。
+            let (min_x, max_x, min_y, max_y) = footprint.pins().iter().fold(
                 (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
-                |(lx, rx, ly, ry), &(dx, dy)| (lx.min(dx), rx.max(dx), ly.min(dy), ry.max(dy)),
+                |(lx, rx, ly, ry), p| {
+                    (
+                        lx.min(p.offset.x),
+                        rx.max(p.offset.x),
+                        ly.min(p.offset.y),
+                        ry.max(p.offset.y),
+                    )
+                },
             );
             let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
                 .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
@@ -162,6 +182,28 @@ impl SAState {
                     if collides {
                         continue;
                     }
+                    // 列冲突检查: 任一 pin 落在 (col, rail_top) 上, 而该位置
+                    // 已有不同 net 的 pin (包括 None 视为一类), 则此位置不合法。
+                    let col_conflict = pin_info.iter().any(|&(lx, ly, pin_net)| {
+                        let abs_x = try_x + lx;
+                        let abs_y = try_y + ly;
+                        if abs_x < 0
+                            || abs_x >= board.cols() as i32
+                            || abs_y < 0
+                            || abs_y >= board.rows() as i32
+                            || board.is_blocked(abs_y as usize)
+                        {
+                            return true;
+                        }
+                        let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                        match col_owner.get(&(abs_x, rail_top)) {
+                            Some(existing) => *existing != pin_net,
+                            None => false,
+                        }
+                    });
+                    if col_conflict {
+                        continue;
+                    }
                     found = Some((try_x, try_y));
                     break 'outer;
                 }
@@ -172,6 +214,20 @@ impl SAState {
             y[idx] = fy;
             for &(dx, dy) in &bbox_cells {
                 occupied.insert((fx + dx, fy + dy));
+            }
+            // 记下每个 pin 占的 (col, rail_top) 及其 net
+            for &(lx, ly, pin_net) in &pin_info {
+                let abs_x = fx + lx;
+                let abs_y = fy + ly;
+                if abs_x >= 0
+                    && abs_x < board.cols() as i32
+                    && abs_y >= 0
+                    && abs_y < board.rows() as i32
+                    && !board.is_blocked(abs_y as usize)
+                {
+                    let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                    col_owner.entry((abs_x, rail_top)).or_insert(pin_net);
+                }
             }
         }
 
@@ -321,6 +377,10 @@ impl SAState {
         let mut y = vec![0i32; n];
         let rotation = vec![Rotation::R0; n];
         let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+        // (col, rail_top) → 该列第一个 pin 的 net。后续 pin 若 net 不同则为列冲突。
+        // 这是 SA 代价函数里 "列冲突" 定义的同构； FD 初排避免列冲突后,
+        // SA 只需要在 Flip / ShiftX 偶尔引入冲突时退回去, 不会一开始就被 1M 压死。
+        let mut col_owner: HashMap<(i32, i32), Option<crate::circuit::NetId>> = HashMap::new();
 
         for &idx in &order {
             let comp_id = placeable[idx];
@@ -328,15 +388,31 @@ impl SAState {
             let fid = component.footprint.expect("placeable 必有 footprint");
             let footprint = &circuit.footprints[fid.0];
 
-            let pin_offsets: Vec<(i32, i32)> = footprint
-                .pins()
+            // 该元件在 net 上的 pin: (本地 offset, net) — 用于列冲突检查
+            let pin_info: Vec<(i32, i32, Option<crate::circuit::NetId>)> = component
+                .pins
                 .iter()
-                .map(|p| (p.offset.x, p.offset.y))
+                .map(|&pin_id| {
+                    let pin = &circuit.pins[pin_id.0];
+                    let physical = footprint
+                        .pins()
+                        .iter()
+                        .find(|p| p.name() == pin.num())
+                        .expect("footprint 缺 pin (解析阶段就该爆)");
+                    (physical.offset.x, physical.offset.y, pin.net)
+                })
                 .collect();
-            // 用 pin 偏移算 footprint 本地 bbox (R0, 不旋转)。
-            let (min_x, max_x, min_y, max_y) = pin_offsets.iter().fold(
+            // bbox 用 footprint 全部物理 pin 算 (保留原 from_force_directed 行为)。
+            let (min_x, max_x, min_y, max_y) = footprint.pins().iter().fold(
                 (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
-                |(lx, rx, ly, ry), &(dx, dy)| (lx.min(dx), rx.max(dx), ly.min(dy), ry.max(dy)),
+                |(lx, rx, ly, ry), p| {
+                    (
+                        lx.min(p.offset.x),
+                        rx.max(p.offset.x),
+                        ly.min(p.offset.y),
+                        ry.max(p.offset.y),
+                    )
+                },
             );
             let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
                 .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
@@ -353,6 +429,7 @@ impl SAState {
                     continue;
                 }
                 for try_x in 0..board.cols() as i32 {
+                    // (1) OOB / blocked 检查
                     let oob_or_blocked = bbox_cells.iter().any(|&(dx, dy)| {
                         let x = try_x + dx;
                         let y = try_y + dy;
@@ -365,10 +442,33 @@ impl SAState {
                     if oob_or_blocked {
                         continue;
                     }
+                    // (2) 与已占 cell 碰撞检查
                     let collides = bbox_cells
                         .iter()
                         .any(|&(dx, dy)| occupied.contains(&(try_x + dx, try_y + dy)));
                     if collides {
+                        continue;
+                    }
+                    // (3) 列冲突检查: 任一 pin 落在 (col, rail_top) 上,
+                    //     而该位置已有不同 net 的 pin → 跳过。
+                    let col_conflict = pin_info.iter().any(|&(lx, ly, pin_net)| {
+                        let abs_x = try_x + lx;
+                        let abs_y = try_y + ly;
+                        if abs_x < 0
+                            || abs_x >= board.cols() as i32
+                            || abs_y < 0
+                            || abs_y >= board.rows() as i32
+                            || board.is_blocked(abs_y as usize)
+                        {
+                            return true;
+                        }
+                        let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                        match col_owner.get(&(abs_x, rail_top)) {
+                            Some(existing) => *existing != pin_net,
+                            None => false,
+                        }
+                    });
+                    if col_conflict {
                         continue;
                     }
                     let dx = try_x as f64 - target_x;
@@ -386,6 +486,20 @@ impl SAState {
             y[idx] = fy;
             for &(dx, dy) in &bbox_cells {
                 occupied.insert((fx + dx, fy + dy));
+            }
+            // 记下每个 pin 占的 (col, rail_top) 及其 net
+            for &(lx, ly, pin_net) in &pin_info {
+                let abs_x = fx + lx;
+                let abs_y = fy + ly;
+                if abs_x >= 0
+                    && abs_x < board.cols() as i32
+                    && abs_y >= 0
+                    && abs_y < board.rows() as i32
+                    && !board.is_blocked(abs_y as usize)
+                {
+                    let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                    col_owner.entry((abs_x, rail_top)).or_insert(pin_net);
+                }
             }
         }
 
@@ -1243,6 +1357,108 @@ mod tests {
                 assert!(holes.insert(abs), "pin 撞了: {:?}", abs);
             }
         }
+    }
+
+    /// FD 输出同列同 rail 不应存在不同 net 的 pin (避免造成 1M cost 跌入难赯出)。
+    /// 5 个 2-pin 元件,  pin 1 连 net A,  pin 2 连 net B。
+    fn two_pin_two_net_fp() -> Footprint {
+        Footprint {
+            id: FootprintId(0),
+            name: "two".into(),
+            pins: (1..=2)
+                .map(|n| PhysicalPin {
+                    name: n.to_string(),
+                    offset: Position { x: n - 1, y: 0 },
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn from_force_directed_no_column_conflict() {
+        let fp = two_pin_two_net_fp();
+        // 5 个 2-pin 元件, 偶数下标的 pin 连 net 0, 奇数连 net 1
+        let comps: Vec<Component> = (0..5)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("C{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i * 2), PinId(i * 2 + 1)],
+                footprint: Some(FootprintId(0)),
+            })
+            .collect();
+        let pins: Vec<Pin> = (0..10)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i / 2),
+                num: ((i % 2) + 1).to_string(),
+                pinfunction: None,
+                net: if i % 2 == 0 {
+                    Some(NetId(0))
+                } else {
+                    Some(NetId(1))
+                },
+            })
+            .collect();
+        let nets = vec![
+            Net {
+                id: NetId(0),
+                name: "a".into(),
+                pins: (0..5).map(|i| PinId(i * 2)).collect(),
+            },
+            Net {
+                id: NetId(1),
+                name: "b".into(),
+                pins: (0..5).map(|i| PinId(i * 2 + 1)).collect(),
+            },
+        ];
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        let placeable: Vec<ComponentId> = (0..5).map(ComponentId).collect();
+        let state =
+            SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
+
+        // 重新算列冲突, 期望为 0
+        let mut by_col: HashMap<(i32, i32), Vec<Option<NetId>>> = HashMap::new();
+        for idx in 0..5 {
+            let footprint = &circuit.footprints[0];
+            for pin_id in 0..2 {
+                let p = &circuit.pins[idx * 2 + pin_id];
+                let physical = footprint
+                    .pins()
+                    .iter()
+                    .find(|pp| pp.name == ((pin_id + 1).to_string()))
+                    .unwrap();
+                let abs_x = state.x[idx] + physical.offset.x;
+                let abs_y = state.y[idx] + physical.offset.y;
+                if abs_x < 0 || abs_x >= 30 || abs_y < 0 || abs_y >= 5 {
+                    continue;
+                }
+                let rail_top = board().rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                by_col.entry((abs_x, rail_top)).or_default().push(p.net);
+            }
+        }
+        let mut col_conflict_pairs = 0;
+        for col_owners in by_col.values() {
+            if col_owners.len() < 2 {
+                continue;
+            }
+            let base = col_owners[0];
+            for i in 1..col_owners.len() {
+                if col_owners[i] != base {
+                    col_conflict_pairs += 1;
+                }
+            }
+        }
+        assert_eq!(
+            col_conflict_pairs, 0,
+            "FD 输出含 {col_conflict_pairs} 个列冲突, by_col = {by_col:?}"
+        );
     }
 
     // ============================================================
