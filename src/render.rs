@@ -15,7 +15,7 @@ use std::fmt::Write;
 
 use crate::circuit::{Circuit, ComponentId, Position};
 use crate::layout::placement::BBox;
-use crate::layout::{Breadboard, HoleId, Layout, Occupant, Placement, Wire};
+use crate::layout::{Breadboard, Layout, Occupant, Placement, Polarity, Region, Wire};
 
 const CELL_X: f32 = 28.0; // 每列像素
 const CELL_Y: f32 = 44.0; // 每行像素 (比列宽, 给通道留地方)
@@ -27,11 +27,14 @@ const CHANNEL_FRAC: f32 = 0.30; // 通道相对 row 中心的偏移 (向下)
 
 /// 把整个布局渲染成 SVG 字符串。
 ///
-/// `layout` 可以是不合法的 (没有 placement / wire 冲突), 此时仍会画板子和孔,
+/// `layout` 可以是不合法的 (没有 placement / wire 冲突), 此时仍能画板子和孔,
 /// 只是引脚和线的颜色信息可能缺失。
 pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String {
     let w = board.cols() as f32 * CELL_X + MARGIN * 2.0;
-    let h = board.rows() as f32 * CELL_Y + MARGIN * 2.0;
+    // 画布高度 = 从板上最小 y 到最大 y 覆盖 (含 power rail 的负 y 和 >= main_rows)
+    let (y_min, y_max) = y_extent(board);
+    let h = (y_max - y_min + 1) as f32 * CELL_Y + MARGIN * 2.0;
+    let y_offset = -y_min; // 把所有 y 偏移到非负, 用于 hole_px_from_pos
     // 用 lossy 占用: 布局有冲突时, 仍能以“后覆盖先”填上 pin/wire,
     // 至少能看出 pin 位租和走线意图。 严格版会 return Err 导致孔全白。
     let occ = crate::layout::Occupancy::from_layout_lossy(layout, board);
@@ -48,13 +51,47 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
 
     // 画中央通道 (blocked row 拼接的带) — 面包板中线的简化表示。
     if let Some((gap_top, gap_bottom)) = gap_extent(board) {
-        let gap_y = MARGIN + gap_top as f32 * CELL_Y;
+        let gap_y = MARGIN + (gap_top as i32 + y_offset) as f32 * CELL_Y;
         let gap_h = (gap_bottom - gap_top + 1) as f32 * CELL_Y;
         let inner_w = board.cols() as f32 * CELL_X;
         let _ = writeln!(
             out,
-            r##"<rect x="{MARGIN}" y="{gap_y}" width="{inner_w}" height="{gap_h}" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.5"/>"##
+            r##"<rect x="{MARGIN}" y="{gap_y:.1}" width="{inner_w}" height="{gap_h:.1}" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.5"/>"##
         );
+    }
+
+    // 画电源轨: 红/蓝色色带 + 5 组 5 孔断开的样式
+    if let Some(pr) = board.power_rails() {
+        for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+            let rail_y = MARGIN + (rail.y + y_offset) as f32 * CELL_Y;
+            let (color, label) = match rail.polarity {
+                Polarity::Positive => ("#dc2626", "+"),
+                Polarity::Negative => ("#2563eb", "−"),
+            };
+            // 每个 group 画一条细长色带
+            for g in &rail.groups {
+                let gx = MARGIN + *g.start() as f32 * CELL_X;
+                let gw = (*g.end() - *g.start() + 1) as f32 * CELL_X;
+                let _ = writeln!(
+                    out,
+                    r##"<rect x="{gx:.1}" y="{rail_y:.1}" width="{gw:.1}" height="{ch}" fill="{color}" fill-opacity="0.10" stroke="{color}" stroke-width="0.6" stroke-dasharray="3,2"/>"##,
+                    gx = gx,
+                    gw = gw,
+                    rail_y = rail_y,
+                    ch = CELL_Y,
+                    color = color
+                );
+            }
+            // 行首标极性
+            let _ = writeln!(
+                out,
+                r##"<text x="{}" y="{:.1}" font-size="11" font-weight="bold" fill="{color}" text-anchor="end" dominant-baseline="central">{label}</text>"##,
+                MARGIN - 3.0,
+                rail_y + CELL_Y / 2.0,
+                color = color,
+                label = label
+            );
+        }
     }
 
     // 1) 元件包围框 + ref 文字
@@ -69,7 +106,7 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
         };
 
         let bx = MARGIN + bbox.min_x as f32 * CELL_X;
-        let by = MARGIN + bbox.min_y as f32 * CELL_Y;
+        let by = MARGIN + (bbox.min_y + y_offset) as f32 * CELL_Y;
         let bw = (bbox.max_x - bbox.min_x + 1) as f32 * CELL_X;
         let bh = (bbox.max_y - bbox.min_y + 1) as f32 * CELL_Y;
         let cx = bx + bw / 2.0;
@@ -88,14 +125,17 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
     }
 
     // 2) 接线 (同行 → Z 形通道, 跨行 → 直线)
-    let plans = plan_wires(board, layout.wires());
+    let plans = plan_wires(board, layout.wires(), y_offset);
     for plan in &plans {
         draw_wire(&mut out, plan, circuit);
     }
 
     // 3) 所有孔
     for hole in board.holes() {
-        let (cx, cy) = hole_px_from_pos(hole.position);
+        let (cx, cy) = hole_px_from_pos(Position {
+            x: hole.position.x,
+            y: hole.position.y + y_offset,
+        });
         let blocked_color;
         let (fill, stroke): (&str, &str) = match occ.occupant_at(hole.id) {
             Some(Occupant::Pin(_)) => ("#2563eb", "#1e3a8a"),
@@ -106,7 +146,13 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
                 blocked_color = component_color(cid.raw());
                 (blocked_color.as_str(), "#374151")
             }
-            None => ("#ffffff", "#cbd5e1"),
+            None => {
+                // 电源轨空孔: 略深一点的色, 跟色带背景区分
+                match hole.region {
+                    Region::PowerRail => ("#f3f4f6", "#9ca3af"),
+                    Region::MainRail => ("#ffffff", "#cbd5e1"),
+                }
+            }
         };
         let _ = writeln!(
             out,
@@ -118,11 +164,21 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
     out
 }
 
-// ---------- 孔坐标 ----------
-
-fn hole_px(board: &Breadboard, id: HoleId) -> (f32, f32) {
-    hole_px_from_pos(board.hole(id).position)
+/// 板上所有 y 值的范围 (含 power rail 的负 y / >= main_rows 的 y)。
+/// 返回 (min, max), 闭区间。
+fn y_extent(board: &Breadboard) -> (i32, i32) {
+    let mut lo = 0;
+    let mut hi = board.main_rows() as i32 - 1;
+    if let Some(pr) = board.power_rails() {
+        for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+            lo = lo.min(rail.y);
+            hi = hi.max(rail.y);
+        }
+    }
+    (lo, hi)
 }
+
+// ---------- 孔坐标 ----------
 
 fn hole_px_from_pos(pos: Position) -> (f32, f32) {
     (
@@ -182,7 +238,9 @@ struct WirePlan {
 /// 2. 每组内按 from.x 排序, 居中分配 lane 偏移 (-N/2 .. +N/2 个 `LANE_SPACING`)。
 /// 3. 通道 y = 行中心 y + `CELL_Y * CHANNEL_FRAC` + lane 偏移。
 ///    这样每根线在同行内垂直错开, 横向段不再重叠。
-fn plan_wires(board: &Breadboard, wires: &[Wire]) -> Vec<WirePlan> {
+///
+/// `y_offset` 把面包板坐标系的 y (可能为负, 含 power rail) 偏到画布像素 y。
+fn plan_wires(board: &Breadboard, wires: &[Wire], y_offset: i32) -> Vec<WirePlan> {
     // 1) 收集同行 wire
     let mut by_row: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
     for (i, w) in wires.iter().enumerate() {
@@ -212,8 +270,14 @@ fn plan_wires(board: &Breadboard, wires: &[Wire]) -> Vec<WirePlan> {
         .map(|(i, w)| {
             let p1 = board.hole(w.from).position;
             let p2 = board.hole(w.to).position;
-            let (x1, y1) = hole_px_from_pos(p1);
-            let (x2, y2) = hole_px_from_pos(p2);
+            let (x1, y1) = hole_px_from_pos(Position {
+                x: p1.x,
+                y: p1.y + y_offset,
+            });
+            let (x2, y2) = hole_px_from_pos(Position {
+                x: p2.x,
+                y: p2.y + y_offset,
+            });
             let net_idx = w.net.raw();
 
             if let Some(&off) = lane_offset.get(&i) {

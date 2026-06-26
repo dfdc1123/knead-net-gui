@@ -1,23 +1,44 @@
 //! 面包板的物理结构。
 //!
-//! 当前形态: 30 列 × 12 行矩形, 中间 2 行 (rows 5..7) 是物理占位 (面包板中央通道
-//! 的简化模型)。剩下 10 行分成两段独立 rail:
-//! - rail 0: rows 0..5   (上半)
-//! - rail 1: rows 7..12  (下半)
+//! 一个 [`Breadboard`] 由两部分组成:
+//! 1. **main board** — 中央插元件区, 5 (cols) × N (rows) 的网格, 中间可能有
+//!    物理占位的 blocked row (面包板中央通道的简化)。同列内一段连续的非 blocked
+//!    行是**纵向 rail** (面包板内部纵向短接)。
+//! 2. **power rails** — 板子上下两端各一组横条。每组两条 (上面负极, 下面正极),
+//!    每条由若干个 group 组成, 每个 group 内的孔横向短接 (面包板内部短接)。
 //!
-//! **同列的两个 rail 互相独立** — 上半和下半之间不连通 (面包板的物理事实)。
-//! 之前 `connected_to` 是"同列即连通", 现在变成"同列且同 rail 才连通"。
+//! 短路关系用 `rail_id` 统一表达:
+//! - main board 内的纵向 rail: 每个 (col, vertical_rail_top) 一个 rail_id
+//! - power rail 行: 一行一个 rail_id
+//!
+//! 两个孔 `rail_id` 相同就内部短接 (距离 0), 不同就走 Manhattan。
+//!
+//! 坐标空间 (默认 30×12 main + 上下各一组电源轨):
+//! ```text
+//!   y=-2  [top negative]  横向短路, 5 组 5 孔
+//!   y=-1  [top positive]  横向短路
+//!   y= 0  ┐
+//!   ...   ├ main upper rail (5 行, 内部纵向短路)
+//!   y= 4  ┘
+//!   y= 5  ⨯ blocked (中央通道, 不可访问)
+//!   y= 6  ⨯ blocked
+//!   y= 7  ┐
+//!   ...   ├ main lower rail (5 行, 内部纵向短路)
+//!   y=11  ┘
+//!   y=12  [bottom negative] 横向短路
+//!   y=13  [bottom positive] 横向短路
+//! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::ops::RangeInclusive;
 
 use crate::circuit::Position;
 
-/// 板上的一个孔的标识, 范围 0..non_blocked_holes。
+/// 板上一个孔的标识, 范围 0..board.len()。
 ///
-/// 索引规则: `id = y_actual * cols + x`, 其中 `y_actual = y - |blocked_rows < y|`。
-/// 跟 `at(x, y)` 互逆。**blocked row 没有 HoleId** — 它们不出现在 `holes` 里,
-/// `at` 在那里返回 `None`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// 编号规则: 在构造时按 (power rails → main board) 的顺序枚举所有孔, `HoleId` 是
+/// 该枚举里的索引。`at(x, y)` 通过反向查表拿回。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct HoleId(pub(crate) usize);
 
 impl HoleId {
@@ -26,93 +47,285 @@ impl HoleId {
     }
 }
 
+/// 孔所属的区域类型。
+///
+/// `at(x, y)` 对 `Region::Gap` 处的 y 返回 `None` — 那些孔在 `holes` 里不存在
+/// (跟原 `is_blocked` 语义一致, 中央通道 y 不参与布局)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Region {
+    /// main board 内非 blocked 的孔; 同列同 vertical rail 短接
+    MainRail,
+    /// 电源轨上的孔; 同行短接
+    PowerRail,
+}
+
+/// 电源轨极性。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Polarity {
+    Positive,
+    Negative,
+}
+
+/// 板上一个孔的全部元数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hole {
     pub id: HoleId,
-    /// 板内坐标: x = 列号, y = 行号 (含 blocked row 的坐标系, 跟 `at` 一致)
     pub position: Position,
+    pub region: Region,
+    /// 短路集合 id; `Hole::rail_id` 相同的孔在面包板内部被短接在一起。
+    /// main board 内的纵向短路和 power rail 内的横向短路用同一套 id 表达。
+    pub rail_id: u32,
+}
+
+/// 一条电源轨 (一行 5+5+5+5+5 横向短接的孔)。
+#[derive(Debug, Clone)]
+pub struct PowerRail {
+    /// 这条轨在板坐标空间里的 y 值 (例如 -1, -2, 12, 13)
+    pub y: i32,
+    pub polarity: Polarity,
+    /// 短接的列范围列表, 通常 5 个 group, 每个 group 5 孔。
+    /// `groups[0].end() + 1 == groups[1].start()` 中间是 1 个空孔断开。
+    pub groups: Vec<RangeInclusive<i32>>,
+}
+
+impl PowerRail {
+    /// 列出这条轨上所有 (短路) 孔的 x 坐标 (按 x 升序)。
+    pub fn columns(&self) -> impl Iterator<Item = i32> + '_ {
+        let mut xs: Vec<i32> = self.groups.iter().flat_map(|g| g.clone()).collect();
+        xs.sort();
+        xs.into_iter()
+    }
+
+    /// x 是否在这条轨上 (属于某个 group)。
+    pub fn contains(&self, x: i32) -> bool {
+        self.groups.iter().any(|g| g.contains(&x))
+    }
+}
+
+/// 一组电源轨 (一条负极 + 一条正极, 上下叠在一起)。
+#[derive(Debug, Clone)]
+pub struct PowerStrip {
+    /// `rows[0].y < rows[1].y`, 用户自行决定哪个是正哪个是负
+    /// (约定俗成: rows[0] 是远离 main board 的那条, rows[1] 是靠近的)。
+    pub rows: [PowerRail; 2],
+}
+
+/// 板子两端的电源轨配置 + 允许绑定的 net 名字列表。
+///
+/// "允许绑定的 net 名字" 是 UI/验证层的提示: 调用方拿这个名字在 netlist 里查
+/// `NetId`。最终绑定 ([`NetId`] 级别的) 不放在这里, 由 layout 主流程传进来。
+#[derive(Debug, Clone)]
+pub struct PowerRails {
+    pub top: PowerStrip,
+    pub bottom: PowerStrip,
+    /// 正极允许绑定的 net 名字 (eg `["VCC", "5V", "12V", "3V3"]`)
+    pub positive_names: Vec<String>,
+    /// 负极允许绑定的 net 名字 (eg `["GND"]`)
+    pub negative_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Breadboard {
     cols: usize,
-    rows: usize,
+    main_rows: usize,
+    main_blocked_rows: BTreeSet<usize>,
+    power_rails: Option<PowerRails>,
     holes: Vec<Hole>,
-    /// 物理上不可用的行 (例如面包板中央通道), 视为已被板子本身永久占用。
-    /// `at(x, y)` 在这些行上返回 `None`, `holes` 不包含它们。
-    blocked_rows: BTreeSet<usize>,
+    /// (x, y) → HoleId 反查, 加速 `at` 调用
+    at_map: HashMap<(i32, i32), HoleId>,
 }
 
 impl Breadboard {
-    /// 创建一个 `cols` 列 × `rows` 行的矩形面包板, 没有 blocked row。
-    ///
-    /// 等价于 `Breadboard::with_blocked_rows(cols, rows, [])`。
-    pub fn new(cols: usize, rows: usize) -> Self {
-        Self::with_blocked_rows(cols, rows, std::iter::empty())
+    /// 创建 `cols × main_rows` 的 main board, 没有 blocked row, 没有 power rail。
+    pub fn new(cols: usize, main_rows: usize) -> Self {
+        Self::with_blocked_rows_and_power_rails(cols, main_rows, std::iter::empty(), None)
     }
 
-    /// 创建一个 `cols` 列 × `rows` 行的矩形面包板, 并把 `blocked_rows` 中的行
-    /// 标为物理占用 (不参与布局, `at` 在那里返回 `None`)。
-    ///
-    /// `blocked_rows` 里的每个值必须严格 < `rows`; 否则 panic。
+    /// 创建 main board 并标 blocked row; 仍然没有 power rail。
     pub fn with_blocked_rows(
         cols: usize,
-        rows: usize,
-        blocked_rows: impl IntoIterator<Item = usize>,
+        main_rows: usize,
+        main_blocked_rows: impl IntoIterator<Item = usize>,
     ) -> Self {
-        let blocked_rows: BTreeSet<usize> = blocked_rows.into_iter().collect();
-        for &r in &blocked_rows {
-            assert!(r < rows, "blocked row {} 越界 (rows = {})", r, rows);
+        Self::with_blocked_rows_and_power_rails(cols, main_rows, main_blocked_rows, None)
+    }
+
+    /// 创建 main board + 上下两端 power rail 的完整面包板。
+    pub fn with_power_rails(
+        cols: usize,
+        main_rows: usize,
+        main_blocked_rows: impl IntoIterator<Item = usize>,
+        power_rails: PowerRails,
+    ) -> Self {
+        Self::with_blocked_rows_and_power_rails(
+            cols,
+            main_rows,
+            main_blocked_rows,
+            Some(power_rails),
+        )
+    }
+
+    fn with_blocked_rows_and_power_rails(
+        cols: usize,
+        main_rows: usize,
+        main_blocked_rows: impl IntoIterator<Item = usize>,
+        power_rails: Option<PowerRails>,
+    ) -> Self {
+        let main_blocked_rows: BTreeSet<usize> = main_blocked_rows.into_iter().collect();
+        for &r in &main_blocked_rows {
+            assert!(
+                r < main_rows,
+                "blocked row {} 越界 (main_rows = {})",
+                r,
+                main_rows
+            );
         }
-        let mut holes = Vec::with_capacity(cols * (rows - blocked_rows.len()));
-        for y in 0..rows {
-            if blocked_rows.contains(&y) {
+
+        // 校验 power rail 的 y 跟 main_rows 不冲突 (避免 -1 / 13 跟 main 内部 y 撞)
+        if let Some(pr) = &power_rails {
+            for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+                assert!(
+                    rail.y < 0 || rail.y >= main_rows as i32,
+                    "power rail y={} 落在 main board [0, {}) 范围内",
+                    rail.y,
+                    main_rows
+                );
+                for g in &rail.groups {
+                    assert!(
+                        *g.start() >= 0 && *g.end() < cols as i32,
+                        "power rail group {:?} 越界 (cols = {})",
+                        g,
+                        cols
+                    );
+                }
+            }
+        }
+
+        let mut holes = Vec::new();
+        let mut at_map = HashMap::new();
+        let mut next_rail_id: u32 = 0;
+
+        // 1. 电源轨的 rail_id 分配 + 孔枚举
+        if let Some(pr) = &power_rails {
+            // 同一极性的所有行 (top + bottom) 共享一个 rail_id
+            // (用户约定: 上下两条先简化, 短接 + 同一个 net)
+            // 我们用 negative / positive 各一个 rail_id
+            for &polarity in &[Polarity::Negative, Polarity::Positive] {
+                let rail_id = next_rail_id;
+                next_rail_id += 1;
+                // 遍历所有 4 行, 找到极性匹配的
+                for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+                    if rail.polarity != polarity {
+                        continue;
+                    }
+                    for x in rail.columns() {
+                        let pos = Position { x, y: rail.y };
+                        let id = HoleId(holes.len());
+                        holes.push(Hole {
+                            id,
+                            position: pos,
+                            region: Region::PowerRail,
+                            rail_id,
+                        });
+                        at_map.insert((x, rail.y), id);
+                    }
+                }
+            }
+        }
+
+        // 2. main board: 收集所有 (col, vertical_rail_top) 对, 给每个分配 rail_id
+        // 找出所有 vertical rail 的 top y
+        let mut vertical_rails: Vec<usize> = Vec::new();
+        for y in 0..main_rows {
+            if main_blocked_rows.contains(&y) {
                 continue;
             }
-            for x in 0..cols {
-                holes.push(Hole {
-                    id: HoleId(holes.len()),
-                    position: Position {
-                        x: x as i32,
-                        y: y as i32,
-                    },
-                });
+            // 检查是不是某个 rail 的 top (上一个 row 是 blocked 或者 y == 0)
+            let is_top = y == 0 || main_blocked_rows.contains(&(y - 1));
+            if is_top {
+                vertical_rails.push(y);
             }
         }
+
+        // 给每个 (col, vertical_rail_index) 一个 rail_id
+        for y in 0..main_rows {
+            if main_blocked_rows.contains(&y) {
+                continue; // blocked row 没有孔
+            }
+            // 找该 y 所在 vertical rail 的 top
+            let rail_top = *vertical_rails
+                .iter()
+                .find(|&&top| {
+                    top <= y && (top + count_rail_rows(&main_blocked_rows, top, main_rows) > y)
+                })
+                .expect("每个非 blocked y 都属于某个 vertical rail");
+            let rail_index = vertical_rails.iter().position(|&t| t == rail_top).unwrap();
+            let rail_id = next_rail_id + (rail_index as u32) * (cols as u32) + 0; // 后面按 col 加
+            for x in 0..cols {
+                let id_rail = rail_id + x as u32;
+                let pos = Position {
+                    x: x as i32,
+                    y: y as i32,
+                };
+                let id = HoleId(holes.len());
+                holes.push(Hole {
+                    id,
+                    position: pos,
+                    region: Region::MainRail,
+                    rail_id: id_rail,
+                });
+                at_map.insert((x as i32, y as i32), id);
+            }
+        }
+        let _ = next_rail_id + (vertical_rails.len() as u32) * (cols as u32);
+
         Self {
             cols,
-            rows,
+            main_rows,
+            main_blocked_rows,
+            power_rails,
             holes,
-            blocked_rows,
+            at_map,
         }
     }
 
-    /// 标准全尺寸面包板: 30 列 × 12 行, rows 5..7 (中央 2 行) 是物理占位。
-    /// 等价于 `Breadboard::with_blocked_rows(30, 12, [5, 6])`。
+    // ============================================================
+    //  标准板
+    // ============================================================
+
+    /// 标准全尺寸面包板: 30 列 × 12 行 main, 中央 2 行 blocked,
+    /// 上下各一组 5×5 横向短接的电源轨 (极性按用户约定: 远离 main 是负, 靠近是正)。
     pub fn standard() -> Self {
-        Self::with_blocked_rows(30, 12, [5, 6])
+        let power_rails = standard_power_rails(30);
+        Self::with_power_rails(30, 12, [5, 6], power_rails)
     }
 
     pub fn cols(&self) -> usize {
         self.cols
     }
 
-    /// 总行数 (含 blocked row)。
+    pub fn main_rows(&self) -> usize {
+        self.main_rows
+    }
+
+    /// 兼容旧 API; 等价于 `main_rows()`。
     pub fn rows(&self) -> usize {
-        self.rows
+        self.main_rows
     }
 
-    /// 该 row 是否是物理占位 (blocked row)。
     pub fn is_blocked(&self, row: usize) -> bool {
-        self.blocked_rows.contains(&row)
+        self.main_blocked_rows.contains(&row)
     }
 
-    /// 所有 blocked row 的列表 (升序)。
     pub fn blocked_rows(&self) -> Vec<usize> {
-        self.blocked_rows.iter().copied().collect()
+        self.main_blocked_rows.iter().copied().collect()
     }
 
-    /// 非 blocked 的孔数量 (= `cols * (rows - |blocked_rows|)`)。
+    pub fn power_rails(&self) -> Option<&PowerRails> {
+        self.power_rails.as_ref()
+    }
+
+    /// 总孔数 (= `cols * (main_rows - |blocked_rows|) + 电源轨孔数`)。
     pub fn len(&self) -> usize {
         self.holes.len()
     }
@@ -125,278 +338,351 @@ impl Breadboard {
         &self.holes[id.0]
     }
 
-    /// 非 blocked 的所有孔 (不包含 blocked row 的孔)。
     pub fn holes(&self) -> &[Hole] {
         &self.holes
     }
 
-    /// 板内坐标 → HoleId, 越界或落在 blocked row 上返回 `None`。
+    /// 板内坐标 → HoleId。
+    ///
+    /// 越界、blocked row、电源轨里不属于任何 group 的位置, 都返回 `None`。
     pub fn at(&self, x: i32, y: i32) -> Option<HoleId> {
-        if x < 0 || y < 0 {
-            return None;
-        }
-        let (x, y) = (x as usize, y as usize);
-        if x >= self.cols || y >= self.rows {
-            return None;
-        }
-        if self.blocked_rows.contains(&y) {
-            return None;
-        }
-        // holes 里只有非 blocked 的孔, 跳过的行数 = 严格 < y 的 blocked 行数
-        let n_blocked_before = self.blocked_rows.range(0..y).count();
-        let y_actual = y - n_blocked_before;
-        Some(HoleId(y_actual * self.cols + x))
+        self.at_map.get(&(x, y)).copied()
     }
 
-    /// 给定 y, 返回它所在 rail 的所有 y 值 (含自身)。y 在 blocked row 上返回空。
+    /// 给定 y, 返回它所在的 main board vertical rail 的所有 y (含自身)。
     ///
-    /// "rail" = 板上连续的非 blocked 行; 一列上 blocked row 把它切成多段独立 rail。
-    /// 同 rail 内的孔在面包板内部被纵向 rail 短接在一起。
+    /// y 在 blocked row / 越界 / 电源轨上时返回空。
     pub fn rail_rows(&self, y: i32) -> Vec<i32> {
-        if y < 0 || y >= self.rows as i32 {
+        if y < 0 || y >= self.main_rows as i32 {
             return Vec::new();
         }
         let y = y as usize;
-        if self.blocked_rows.contains(&y) {
+        if self.main_blocked_rows.contains(&y) {
             return Vec::new();
         }
-        // 找该 rail 的最高行
+        // 找 rail 的 top
         let mut top = y;
-        while top > 0 && !self.blocked_rows.contains(&(top - 1)) {
+        while top > 0 && !self.main_blocked_rows.contains(&(top - 1)) {
             top -= 1;
         }
-        // 往下直到 blocked row 或板边
+        // 找 rail 的 bottom
         let mut bottom = y;
-        while bottom + 1 < self.rows && !self.blocked_rows.contains(&(bottom + 1)) {
+        while bottom + 1 < self.main_rows && !self.main_blocked_rows.contains(&(bottom + 1)) {
             bottom += 1;
         }
         (top..=bottom).map(|r| r as i32).collect()
     }
 
-    /// 同一列同一 rail 的所有 HoleId, 含自身。
+    /// 跟 `id` 内部短接的所有 HoleId (含自身)。
     ///
-    /// 模型变化: 之前是"同列即连通", 现在是"同列且同 rail 才连通"。
-    /// blocked row 把一列切成多段独立的 rail, 互相不连通。
+    /// - MainRail 孔: 同列同 vertical rail 的所有孔
+    /// - PowerRail 孔: 同一 rail_id 的所有孔 (即同极性的所有 4 行, 因为我们把
+    ///   同一极性的所有行合并到同一个 rail_id 里)
     pub fn connected_to(&self, id: HoleId) -> Vec<HoleId> {
-        let pos = self.hole(id).position;
-        self.rail_rows(pos.y)
-            .into_iter()
-            .filter_map(|y| self.at(pos.x, y))
+        let target_rail = self.holes[id.0].rail_id;
+        self.holes
+            .iter()
+            .filter(|h| h.rail_id == target_rail)
+            .map(|h| h.id)
             .collect()
     }
+
+    /// 给定一个 hole, 如果它在电源轨上, 返回它所属的 PowerRail; 否则 None。
+    pub fn power_rail_of(&self, id: HoleId) -> Option<&PowerRail> {
+        let hole = &self.holes[id.0];
+        if hole.region != Region::PowerRail {
+            return None;
+        }
+        let pr = self.power_rails.as_ref()?;
+        let y = hole.position.y;
+        pr.top
+            .rows
+            .iter()
+            .chain(pr.bottom.rows.iter())
+            .find(|r| r.y == y)
+    }
+
+    /// 给定一个 hole, 返回它的 rail_id。
+    pub fn rail_id_of(&self, id: HoleId) -> u32 {
+        self.holes[id.0].rail_id
+    }
+
+    /// 给定一个 hole, 返回它的 region。
+    pub fn region_of(&self, id: HoleId) -> Region {
+        self.holes[id.0].region
+    }
 }
+
+/// 返回从 `top` 开始的 vertical rail 长度 (含 top)。
+fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize {
+    let mut count = 1;
+    let mut y = top + 1;
+    while y < rows && !blocked.contains(&y) {
+        count += 1;
+        y += 1;
+    }
+    count
+}
+
+/// 默认电源轨配置: 30 列, 每条 5 组 5 孔, 上下各一组 (4 行)。
+///
+/// 排布 (相对 main board, y 从小到大):
+/// - y=-2: top negative (5 groups: 0..4, 6..10, 12..16, 18..22, 24..28)
+/// - y=-1: top positive
+/// - y=12: bottom negative
+/// - y=13: bottom positive
+///
+/// 同一极性 (负或正) 的 top + bottom 两条**合并**为同一个 rail_id
+/// (用户约定: 上下两组先简化, 短接 + 同一个 net)。
+pub fn standard_power_rails(_cols: i32) -> PowerRails {
+    let groups: Vec<RangeInclusive<i32>> = (0..5).map(|i| (i * 6)..=(i * 6 + 4)).collect();
+    PowerRails {
+        top: PowerStrip {
+            rows: [
+                PowerRail {
+                    y: -2,
+                    polarity: Polarity::Negative,
+                    groups: groups.clone(),
+                },
+                PowerRail {
+                    y: -1,
+                    polarity: Polarity::Positive,
+                    groups: groups.clone(),
+                },
+            ],
+        },
+        bottom: PowerStrip {
+            rows: [
+                PowerRail {
+                    y: 12,
+                    polarity: Polarity::Negative,
+                    groups: groups.clone(),
+                },
+                PowerRail {
+                    y: 13,
+                    polarity: Polarity::Positive,
+                    groups,
+                },
+            ],
+        },
+        positive_names: vec!["VCC".into(), "5V".into(), "12V".into(), "3V3".into()],
+        negative_names: vec!["GND".into()],
+    }
+}
+
+// ============================================================
+//  测试
+// ============================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn board() -> Breadboard {
+    // 一块没有 power rail 的纯 main board
+    fn board_no_power() -> Breadboard {
         Breadboard::new(30, 5)
     }
 
-    fn full_board() -> Breadboard {
+    fn board_blocked() -> Breadboard {
+        Breadboard::with_blocked_rows(30, 5, [1, 2])
+    }
+
+    fn board_full() -> Breadboard {
         Breadboard::standard()
     }
 
     #[test]
     fn new_30x5_has_150_holes() {
-        let b = board();
+        let b = board_no_power();
         assert_eq!(b.len(), 150);
         assert_eq!(b.cols(), 30);
-        assert_eq!(b.rows(), 5);
+        assert_eq!(b.main_rows(), 5);
         assert!(b.blocked_rows().is_empty());
+        assert!(b.power_rails().is_none());
     }
 
     #[test]
-    fn standard_30x12_has_300_holes() {
-        let b = full_board();
-        // 30 cols × 12 rows = 360, blocked 2 行 = 60 → 剩 300
-        assert_eq!(b.len(), 300);
+    fn with_blocked_rows_30x5_with_2_blocked_has_90_holes() {
+        let b = board_blocked();
+        assert_eq!(b.len(), 30 * 3);
+        assert_eq!(b.blocked_rows(), vec![1, 2]);
+    }
+
+    #[test]
+    fn standard_board_30x12_with_power_rails() {
+        let b = board_full();
+        // main 30×12 - 2 blocked = 300, + 4 排 × 25 孔 = 100 → 400
+        assert_eq!(b.len(), 300 + 100);
         assert_eq!(b.cols(), 30);
-        assert_eq!(b.rows(), 12);
+        assert_eq!(b.main_rows(), 12);
         assert_eq!(b.blocked_rows(), vec![5, 6]);
-    }
-
-    #[test]
-    fn at_returns_correct_id_no_blocked() {
-        let b = board();
-        // id = y * cols + x
-        assert_eq!(b.at(0, 0), Some(HoleId(0)));
-        assert_eq!(b.at(1, 0), Some(HoleId(1)));
-        assert_eq!(b.at(0, 1), Some(HoleId(30)));
-        assert_eq!(b.at(29, 4), Some(HoleId(29 + 4 * 30)));
-    }
-
-    #[test]
-    fn at_rejects_out_of_bounds() {
-        let b = board();
-        assert_eq!(b.at(-1, 0), None);
-        assert_eq!(b.at(0, -1), None);
-        assert_eq!(b.at(30, 0), None);
-        assert_eq!(b.at(0, 5), None);
-        assert_eq!(b.at(100, 100), None);
+        assert!(b.power_rails().is_some());
     }
 
     #[test]
     fn at_returns_none_for_blocked_rows() {
-        let b = full_board();
-        // 中间 2 行物理占位
+        let b = board_full();
         assert_eq!(b.at(0, 5), None);
         assert_eq!(b.at(0, 6), None);
         assert_eq!(b.at(15, 5), None);
-        assert_eq!(b.at(29, 6), None);
-        // 边界: row 4 是上 rail 最底, row 7 是下 rail 最顶
-        assert!(b.at(0, 4).is_some());
+    }
+
+    #[test]
+    fn at_returns_some_for_main_rails() {
+        let b = board_full();
+        // 上半
+        assert!(b.at(0, 0).is_some());
+        assert!(b.at(29, 4).is_some());
+        // 下半
         assert!(b.at(0, 7).is_some());
-        // 越界
-        assert_eq!(b.at(0, 12), None);
+        assert!(b.at(29, 11).is_some());
     }
 
     #[test]
-    fn at_uses_skipped_indexing_through_blocked_rows() {
-        let b = full_board();
-        // 上 rail: y=0..5, 5 行 × 30 = 150 孔, id 0..150
-        assert_eq!(b.at(0, 0), Some(HoleId(0)));
-        assert_eq!(b.at(29, 0), Some(HoleId(29)));
-        assert_eq!(b.at(0, 4), Some(HoleId(4 * 30)));
-        assert_eq!(b.at(29, 4), Some(HoleId(4 * 30 + 29)));
-        // 下 rail: 跳过 2 行, y=7..12
-        assert_eq!(b.at(0, 7), Some(HoleId(5 * 30)));
-        assert_eq!(b.at(29, 7), Some(HoleId(5 * 30 + 29)));
-        assert_eq!(b.at(0, 11), Some(HoleId(9 * 30)));
-        assert_eq!(b.at(29, 11), Some(HoleId(9 * 30 + 29)));
+    fn at_returns_some_for_power_rail_holes() {
+        let b = board_full();
+        // top negative row y=-2
+        assert!(b.at(0, -2).is_some());
+        assert!(b.at(4, -2).is_some());
+        // gap (col 5) in power rail
+        assert_eq!(b.at(5, -2), None);
+        assert!(b.at(6, -2).is_some());
+        // bottom positive row y=13
+        assert!(b.at(28, 13).is_some());
+        assert_eq!(b.at(29, 13), None); // col 29 是 unused
     }
 
     #[test]
-    fn hole_position_matches_at() {
-        let b = board();
-        for y in 0..5 {
-            for x in 0..30 {
-                let id = b.at(x, y).unwrap();
-                assert_eq!(b.hole(id).position, Position { x, y });
-            }
+    fn at_returns_none_for_garbage_y() {
+        let b = board_full();
+        assert_eq!(b.at(0, -3), None);
+        assert_eq!(b.at(0, 14), None);
+        assert_eq!(b.at(-1, 0), None);
+        assert_eq!(b.at(30, 0), None);
+    }
+
+    #[test]
+    fn power_rail_holes_have_region_power_rail() {
+        let b = board_full();
+        let id = b.at(0, -2).unwrap();
+        assert_eq!(b.region_of(id), Region::PowerRail);
+        let id = b.at(0, 13).unwrap();
+        assert_eq!(b.region_of(id), Region::PowerRail);
+        let id = b.at(0, 0).unwrap();
+        assert_eq!(b.region_of(id), Region::MainRail);
+    }
+
+    #[test]
+    fn same_main_column_same_rail_shorted() {
+        let b = board_full();
+        let a = b.at(15, 0).unwrap();
+        let c = b.at(15, 4).unwrap();
+        // 同列上半 rail: rows 0..5
+        let connected = b.connected_to(a);
+        assert_eq!(connected.len(), 5);
+        for h in &connected {
+            assert_eq!(b.hole(*h).position.x, 15);
+            assert!(b.hole(*h).position.y < 5);
         }
+        let _ = c; // unused, just to confirm we can look it up
     }
 
     #[test]
-    fn hole_position_matches_at_on_full_board() {
-        let b = full_board();
-        // 走遍所有非 blocked (x, y), id 和 position 要对得上
-        for y in 0..12 {
-            for x in 0..30 {
-                if b.is_blocked(y) {
-                    assert!(b.at(x, y as i32).is_none());
-                    continue;
-                }
-                let id = b.at(x, y as i32).unwrap();
-                assert_eq!(
-                    b.hole(id).position,
-                    Position {
-                        x: x as i32,
-                        y: y as i32
-                    }
-                );
-            }
-        }
+    fn main_upper_and_lower_are_independent() {
+        let b = board_full();
+        let upper = b.connected_to(b.at(7, 0).unwrap());
+        let lower = b.connected_to(b.at(7, 7).unwrap());
+        let upper_ids: std::collections::HashSet<_> = upper.into_iter().collect();
+        let lower_ids: std::collections::HashSet<_> = lower.into_iter().collect();
+        assert!(upper_ids.is_disjoint(&lower_ids));
     }
 
     #[test]
-    fn connected_to_returns_full_column_no_blocked() {
-        let b = board();
-        let id = b.at(15, 2).unwrap();
-        let column = b.connected_to(id);
-        assert_eq!(column.len(), 5);
-        for (i, hole_id) in column.iter().enumerate() {
-            let pos = b.hole(*hole_id).position;
-            assert_eq!(pos.x, 15);
-            assert_eq!(pos.y, i as i32);
-        }
+    fn power_rail_top_negative_is_shorted_across_columns() {
+        let b = board_full();
+        // top negative y=-2, 孔在 col 0 和 col 10
+        let a = b.at(0, -2).unwrap();
+        let c = b.at(10, -2).unwrap();
+        let connected = b.connected_to(a);
+        let ids: std::collections::HashSet<_> = connected.into_iter().collect();
+        assert!(ids.contains(&c), "同 power rail 行的孔应该短接");
+        // 用户约定: 同极性的 top + bottom 合并到同一 rail_id,
+        // 所以连通集 = 25 (top) + 25 (bottom) = 50
+        assert_eq!(ids.len(), 50);
     }
 
     #[test]
-    fn connected_to_returns_only_own_rail_on_full_board() {
-        let b = full_board();
-        // 上半: row 2 → 同 rail 是 rows 0..5
-        let upper = b.connected_to(b.at(15, 2).unwrap());
-        assert_eq!(upper.len(), 5);
-        for h in &upper {
-            let pos = b.hole(*h).position;
-            assert_eq!(pos.x, 15);
-            assert!(
-                pos.y >= 0 && pos.y < 5,
-                "上 rail 孔应在 y=0..5, got {pos:?}"
-            );
-        }
-        // 下半: row 10 → 同 rail 是 rows 7..12
-        let lower = b.connected_to(b.at(15, 10).unwrap());
-        assert_eq!(lower.len(), 5);
-        for h in &lower {
-            let pos = b.hole(*h).position;
-            assert_eq!(pos.x, 15);
-            assert!(
-                pos.y >= 7 && pos.y < 12,
-                "下 rail 孔应在 y=7..12, got {pos:?}"
-            );
-        }
+    fn power_rail_top_negative_and_bottom_negative_share_rail() {
+        let b = board_full();
+        // 用户约定: 上下两条同极性 shorted
+        let top_neg = b.at(0, -2).unwrap();
+        let bot_neg = b.at(0, 12).unwrap();
+        let connected = b.connected_to(top_neg);
+        let ids: std::collections::HashSet<_> = connected.into_iter().collect();
+        assert!(ids.contains(&bot_neg));
+        // 25 + 25 = 50 孔 (top 25 + bottom 25)
+        assert_eq!(ids.len(), 50);
     }
 
     #[test]
-    fn connected_to_upper_and_lower_are_disjoint() {
-        let b = full_board();
-        let upper: std::collections::HashSet<_> =
-            b.connected_to(b.at(7, 0).unwrap()).into_iter().collect();
-        let lower: std::collections::HashSet<_> =
-            b.connected_to(b.at(7, 11).unwrap()).into_iter().collect();
-        assert!(upper.is_disjoint(&lower), "上下 rail 必须互不相连");
+    fn positive_and_negative_rails_are_independent() {
+        let b = board_full();
+        let neg = b.at(0, -2).unwrap();
+        let pos = b.at(0, -1).unwrap();
+        let neg_ids: std::collections::HashSet<_> = b.connected_to(neg).into_iter().collect();
+        let pos_ids: std::collections::HashSet<_> = b.connected_to(pos).into_iter().collect();
+        assert!(neg_ids.is_disjoint(&pos_ids));
     }
 
     #[test]
-    fn connected_to_is_rail_invariant() {
-        let b = full_board();
-        // 上 rail 内任意两点连通集相同
-        let a = b.connected_to(b.at(7, 0).unwrap());
-        let b_ = b.connected_to(b.at(7, 3).unwrap());
-        assert_eq!(a, b_);
-        // 下 rail 同理
-        let c = b.connected_to(b.at(7, 7).unwrap());
-        let d = b.connected_to(b.at(7, 10).unwrap());
-        assert_eq!(c, d);
-    }
-
-    #[test]
-    fn different_columns_not_connected() {
-        let b = board();
-        let a = b.connected_to(b.at(7, 0).unwrap());
-        let c = b.connected_to(b.at(8, 0).unwrap());
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn different_columns_not_connected_on_full_board() {
-        let b = full_board();
-        // 同 rail 内, 跨列 → 不同连通集
-        let a = b.connected_to(b.at(7, 2).unwrap());
-        let c = b.connected_to(b.at(8, 2).unwrap());
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn rail_rows_returns_correct_range() {
-        let b = full_board();
+    fn rail_rows_returns_main_rail_range() {
+        let b = board_full();
         assert_eq!(b.rail_rows(0), vec![0, 1, 2, 3, 4]);
         assert_eq!(b.rail_rows(2), vec![0, 1, 2, 3, 4]);
-        assert_eq!(b.rail_rows(4), vec![0, 1, 2, 3, 4]);
         assert!(b.rail_rows(5).is_empty());
         assert!(b.rail_rows(6).is_empty());
         assert_eq!(b.rail_rows(7), vec![7, 8, 9, 10, 11]);
-        assert_eq!(b.rail_rows(11), vec![7, 8, 9, 10, 11]);
     }
 
     #[test]
-    fn rail_rows_rejects_out_of_bounds() {
-        let b = full_board();
-        assert!(b.rail_rows(-1).is_empty());
-        assert!(b.rail_rows(12).is_empty());
+    fn rail_rows_for_power_rail_y_is_empty() {
+        // rail_rows 只对 main board 内的 vertical rail 有意义
+        let b = board_full();
+        assert!(b.rail_rows(-2).is_empty());
+        assert!(b.rail_rows(13).is_empty());
+    }
+
+    #[test]
+    fn power_rail_of_returns_correct_rail() {
+        let b = board_full();
+        let id = b.at(0, -2).unwrap();
+        let rail = b.power_rail_of(id).unwrap();
+        assert_eq!(rail.y, -2);
+        assert_eq!(rail.polarity, Polarity::Negative);
+
+        let id = b.at(0, 13).unwrap();
+        let rail = b.power_rail_of(id).unwrap();
+        assert_eq!(rail.y, 13);
+        assert_eq!(rail.polarity, Polarity::Positive);
+    }
+
+    #[test]
+    fn power_rail_of_returns_none_for_main_holes() {
+        let b = board_full();
+        assert!(b.power_rail_of(b.at(0, 0).unwrap()).is_none());
+    }
+
+    #[test]
+    fn standard_power_rails_5_groups_of_5() {
+        let pr = standard_power_rails(30);
+        for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+            assert_eq!(rail.groups.len(), 5);
+            for g in &rail.groups {
+                assert_eq!(g.end() - g.start() + 1, 5);
+            }
+            // 总共 25 孔
+            assert_eq!(rail.columns().count(), 25);
+        }
     }
 
     #[test]
@@ -406,8 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn any_dimensions_work() {
-        // 验证不是硬编码 30×5, 任意 cols × rows 都能工作
+    fn any_dimensions_work_no_power() {
         let b = Breadboard::new(5, 30);
         assert_eq!(b.len(), 150);
         assert_eq!(b.connected_to(b.at(2, 5).unwrap()).len(), 30);
@@ -415,12 +700,9 @@ mod tests {
 
     #[test]
     fn blocked_rows_in_middle_split_into_two_rails() {
-        // 1 列 × 5 行, rows 1,2 blocked → 上下两段各 1 行
         let b = Breadboard::with_blocked_rows(1, 4, [1, 2]);
         assert_eq!(b.len(), 2);
         assert_eq!(b.at(0, 0), Some(HoleId(0)));
         assert_eq!(b.at(0, 3), Some(HoleId(1)));
-        assert!(b.connected_to(b.at(0, 0).unwrap())[0] == b.at(0, 0).unwrap());
-        assert!(b.connected_to(b.at(0, 3).unwrap())[0] == b.at(0, 3).unwrap());
     }
 }

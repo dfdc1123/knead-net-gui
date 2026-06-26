@@ -110,23 +110,24 @@ impl Router for PathFinderRouter {
             })
             .collect();
 
-        // 每个 net 的 unique pin (col, rail_top) 对。
-        // 引入 blocked row 后, 同列不同 rail 是两个独立的"汇点" — wire 端点必须
-        // 落在 pin 所在 rail 才能靠面包板内部连通接到 pin。 同列同 rail 合并。
-        let mut net_pins: Vec<Vec<(i32, i32)>> = vec![Vec::new(); circuit.nets().len()];
+        // 每个 net 的 unique pin (col, row, rail_id) 汇点, 按 rail_id dedup。
+        // 引入 power rail 后短路集合不再是"同列同 rail_top", 而是"同 rail_id"
+        // (不管 vertical 还是 power)。同 rail 合并 = 面包板已内部连通, 不需 wire。
+        let mut net_pins: Vec<Vec<(i32, i32, u32)>> = vec![Vec::new(); circuit.nets().len()];
         for net in circuit.nets() {
-            let mut pins: Vec<(i32, i32)> = net
+            let mut pins: Vec<(i32, i32, u32)> = net
                 .pins
                 .iter()
                 .filter_map(|p| {
                     let h = pin_hole.get(p)?;
                     let pos = board.hole(*h).position;
-                    let rail_top = board.rail_rows(pos.y).first().copied().unwrap_or(pos.y);
-                    Some((pos.x, rail_top))
+                    let rail_id = board.rail_id_of(*h);
+                    Some((pos.x, pos.y, rail_id))
                 })
                 .collect();
-            pins.sort();
-            pins.dedup();
+            // 按 (rail_id, x, y) 排序, 然后按 rail_id dedup
+            pins.sort_by_key(|&(x, y, r)| (r, x, y));
+            pins.dedup_by_key(|&mut (_, _, r)| r);
             net_pins[net.id.0] = pins;
         }
 
@@ -160,7 +161,7 @@ fn route_iteration(
     circuit: &Circuit,
     board: &Breadboard,
     occupancy: &Occupancy,
-    net_pins: &[Vec<(i32, i32)>],
+    net_pins: &[Vec<(i32, i32, u32)>],
     history: &[f64],
     next_id: &mut usize,
 ) -> (Vec<Wire>, usize) {
@@ -170,7 +171,7 @@ fn route_iteration(
     for net in circuit.nets() {
         let pins = &net_pins[net.id.0];
         if pins.len() < 2 {
-            // 0 或 1 个 (col, rail) 汇点: 不需要 wire (同 rail 同列内已连通, 或没东西)
+            // 0 或 1 个 rail 汇点: 不需要 wire (同 rail 内已连通, 或没东西)
             continue;
         }
 
@@ -192,7 +193,7 @@ fn route_iteration(
     (all_wires, conflicts)
 }
 
-/// 给一个 net 的 (col, rail_top) 汇点算最小生成树 (Kruskal), 返回 tree 的边 (端点对)
+/// 给一个 net 的 (col, row, rail_id) 汇点算最小生成树 (Kruskal), 返回 tree 的边 (端点对)
 ///
 /// 关键: Kruskal 每加一条边, 重算 best wire 时刻意排除本 net 已用的孔,
 /// 避免 net 内部两根 wire 撞同一个孔 (尤其是度 >= 2 的 hub column)。
@@ -200,7 +201,7 @@ fn route_iteration(
 /// edge cost 排序是按"理想" cost (不排除已用孔) — 只用来选 MST 结构;
 /// 最终的孔选择是加边时重算的, 会略高于理想 cost, 但合法。
 fn mst_wires(
-    pins: &[(i32, i32)],
+    pins: &[(i32, i32, u32)],
     board: &Breadboard,
     occupancy: &Occupancy,
     history: &[f64],
@@ -255,14 +256,14 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
     x
 }
 
-/// 给定两个 (col, rail_top) 汇点, 找一对空孔 (ha, hb) 让 wire cost 最小
+/// 给定两个 (col, row, rail_id) 汇点, 找一对空孔 (ha, hb) 让 wire cost 最小
 ///
 /// wire cost = Manhattan(ha, hb) + history[ha] + history[hb]
 /// **关键约束**: ha 必须在 `pin_a` 所在 rail 内, hb 在 `pin_b` 所在 rail 内 —
 /// 否则面包板内部连通接不到 pin, 整个 net 实际是断的。
 fn best_wire(
-    pin_a: (i32, i32),
-    pin_b: (i32, i32),
+    pin_a: (i32, i32, u32),
+    pin_b: (i32, i32, u32),
     board: &Breadboard,
     occupancy: &Occupancy,
     history: &[f64],
@@ -272,15 +273,15 @@ fn best_wire(
 
 /// 同 `best_wire`, 但排除 `used` 里的孔 (本 net 内部已占的孔)
 fn best_wire_avoiding(
-    pin_a: (i32, i32),
-    pin_b: (i32, i32),
+    pin_a: (i32, i32, u32),
+    pin_b: (i32, i32, u32),
     board: &Breadboard,
     occupancy: &Occupancy,
     history: &[f64],
     used: &HashSet<HoleId>,
 ) -> Option<(f64, HoleId, HoleId)> {
-    let holes_a = empty_holes_in_rail(pin_a.0, pin_a.1, board, occupancy);
-    let holes_b = empty_holes_in_rail(pin_b.0, pin_b.1, board, occupancy);
+    let holes_a = empty_holes_in_rail(pin_a.2, board, occupancy);
+    let holes_b = empty_holes_in_rail(pin_b.2, board, occupancy);
     if holes_a.is_empty() || holes_b.is_empty() {
         return None;
     }
@@ -306,18 +307,18 @@ fn best_wire_avoiding(
     best
 }
 
-/// 一列上某 rail 的所有空孔 (含 rail_top 所在 rail 的所有行)。
-/// 重点: blocked row 上的位置天然被 `at` 过滤掉, 不需要额外检查。
-fn empty_holes_in_rail(
-    col: i32,
-    rail_top: i32,
-    board: &Breadboard,
-    occupancy: &Occupancy,
-) -> Vec<HoleId> {
+/// 一个短路集合 (vertical rail 或 power rail 行) 的所有空孔。
+/// `board.connected_to` 拿到所有内部短接的孔, 然后过滤掉已被占用 / 已用过的。
+fn empty_holes_in_rail(rail_id: u32, board: &Breadboard, occupancy: &Occupancy) -> Vec<HoleId> {
+    // 找到 rail_id 对应的任一 HoleId, 用 connected_to 拿整个 rail
+    // power rail 的 rail_id 唯一确定一行 (因为 top + bottom 同极性合并)
+    // main rail 的 rail_id 唯一确定 (col, vertical_rail), connected_to 返回 5 个孔
+    let Some(anchor) = board.holes().iter().find(|h| h.rail_id == rail_id) else {
+        return Vec::new();
+    };
     board
-        .rail_rows(rail_top)
+        .connected_to(anchor.id)
         .into_iter()
-        .filter_map(|row| board.at(col, row))
         .filter(|&id| occupancy.can_place_pin(id))
         .collect()
 }

@@ -14,7 +14,10 @@ pub mod placement;
 pub mod routing;
 pub mod sa;
 
-pub use breadboard::{Breadboard, Hole, HoleId};
+pub use breadboard::{
+    Breadboard, Hole, HoleId, Polarity, PowerRail, PowerRails, PowerStrip, Region,
+    standard_power_rails,
+};
 pub use cost::{FDConfig, Weights};
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{BBox, PinHole, PlacedFootprint, Placement, Rotation};

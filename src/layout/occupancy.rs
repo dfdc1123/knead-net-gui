@@ -50,10 +50,10 @@ impl Occupancy {
         let mut occ = Self::empty(board);
         let mut errors = Vec::new();
         let mut occupied: HashSet<HoleId> = HashSet::new();
-        // 按 (col, rail) 收集 endpoint, 用于检查"同列同 rail 不同 net" 短路。
-        // 之前只按 col 收集; 引入 blocked row 后, 同一列被分成多段独立 rail,
-        // 上下半的 pin 即便 x 相同也不该视为冲突。
-        let mut by_column: std::collections::BTreeMap<(i32, i32), Vec<super::ColumnEndpoint>> =
+        // 按 rail_id 收集 endpoint, 用于检查"同短路集合不同 net" 冲突。
+        // 之前用 (col, rail_top) 做 key, 引入电源轨后不够: 电源轨里两个不同 col
+        // 的孔在同一 rail_id (横向短接), 也会被面包板短路。统一用 rail_id。
+        let mut by_rail: std::collections::BTreeMap<u32, Vec<super::ColumnEndpoint>> =
             std::collections::BTreeMap::new();
 
         for (idx, placement_opt) in layout.placements().iter().enumerate() {
@@ -108,16 +108,16 @@ impl Occupancy {
                 occ.at[hole.0] = Some(Occupant::Pin(ph.pin));
                 let pin = &layout.circuit().pins[ph.pin.0];
                 let pos = board.hole(hole).position;
-                // rail_top = 该孔所在 rail 的最小 y 值; blocked row 上 at 已是 None,
-                // 所以这里总能拿到 Some。拿到 None 的极端情况 (row < 0) 视为同一 rail 0。
-                let rail_top = board.rail_rows(pos.y).first().copied().unwrap_or(pos.y);
-                by_column
-                    .entry((pos.x, rail_top))
+                // rail_id 统一处理纵向 rail + 电源轨横向 rail
+                let rail_id = board.rail_id_of(hole);
+                by_rail
+                    .entry(rail_id)
                     .or_default()
                     .push(super::ColumnEndpoint::Pin {
                         pin: ph.pin,
                         net: pin.net,
                     });
+                let _ = pos;
             }
 
             if let Some(bbox) = placed.bbox {
@@ -193,20 +193,22 @@ impl Occupancy {
                 occupied.insert(hole);
                 occ.at[hole.0] = Some(Occupant::Wire(wire.id));
                 let pos = board.hole(hole).position;
-                let rail_top = board.rail_rows(pos.y).first().copied().unwrap_or(pos.y);
-                by_column
-                    .entry((pos.x, rail_top))
+                let rail_id = board.rail_id_of(hole);
+                by_rail
+                    .entry(rail_id)
                     .or_default()
                     .push(super::ColumnEndpoint::Wire {
                         wire: wire.id,
                         net: wire.net,
                     });
+                let _ = pos;
             }
         }
 
-        // 列短路检查: 任意 (col, rail) 上, 任意两个 endpoint 的 net 不一致 → 报 ColumnConflict。
-        // 选第一项作为"基准", 其后只报第一对 (一列报一次避免刷屏)。
-        for ((col, _rail), endpoints) in by_column {
+        // Rail 冲突检查: 任意 rail_id 上, 任意两个 endpoint 的 net 不一致 → 报 ColumnConflict。
+        // "Column" 现在名不副实 (电源轨冲突是 row 冲突), 但 API 名称保留, 只是里面的
+        // column 字段改为 rail_id。选第一项作为"基准", 其后只报第一对 (一 rail 报一次避免刷屏)。
+        for (rail_id, endpoints) in by_rail {
             if endpoints.len() < 2 {
                 continue;
             }
@@ -221,7 +223,7 @@ impl Occupancy {
                 };
                 if other_net != base_net {
                     errors.push(LayoutError::ColumnConflict {
-                        column: col,
+                        column: rail_id as i32,
                         a: endpoints[0],
                         b: endpoints[i],
                     });

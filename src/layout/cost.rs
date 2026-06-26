@@ -541,10 +541,11 @@ impl Default for FDConfig {
 /// 评估当前状态的 cost。
 pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights) -> f64 {
     let cols_i = board.cols() as i32;
-    let rows_i = board.rows() as i32;
 
-    // 1. 收集所有 pin 的 (col, row) 和所属 net, 以及每个元件的 bbox。
-    let mut holes: Vec<(i32, i32)> = Vec::new();
+    // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
+    //    rail_id = u32::MAX 表示"该位置没有 HoleId" (越界 / blocked / 电源轨 gap)
+    //    — 这些 pin 不参与 MST / 列冲突, 但算 OOB。
+    let mut holes: Vec<(i32, i32, u32)> = Vec::new();
     let mut nets: Vec<Option<NetId>> = Vec::new();
     let mut bboxes: Vec<Option<BBox>> = Vec::with_capacity(state.placeable.len());
     for (idx, &comp_id) in state.placeable.iter().enumerate() {
@@ -565,35 +566,37 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
                 .find(|pp| pp.name() == pin.num())
                 .expect("footprint 缺 pin (解析阶段就该爆)");
             let r = rotate(physical.offset, rotation);
-            holes.push((px + r.x, row_y + r.y));
+            let x = px + r.x;
+            let y = row_y + r.y;
+            // 用 board.at 反查: 返回 None 意味着 OOB / blocked row / 电源轨 gap,
+            // 全部归为"不能放" (u32::MAX 是 sentinel, 不参与任何短路/冲突)
+            let rail_id = board
+                .at(x, y)
+                .map(|h| board.rail_id_of(h))
+                .unwrap_or(u32::MAX);
+            holes.push((x, y, rail_id));
             nets.push(pin.net);
-            world_positions.push(crate::circuit::Position {
-                x: px + r.x,
-                y: row_y + r.y,
-            });
+            world_positions.push(crate::circuit::Position { x, y });
         }
         bboxes.push(BBox::from_points(world_positions));
     }
 
-    // 2. OOB: 超出板边 或 落在 blocked row (被面包板本身永久占用的行) 都算。
-    //    blocked row 不是可放置区域, pin 落在上面 = 跟越界一样的“不能放”。
+    // 2. OOB: rail_id == u32::MAX 即"该位置没有 HoleId" — 越界 / blocked row / 电源轨 gap
     let mut oob_count = 0;
-    for &(c, r) in &holes {
-        if c < 0 || c >= cols_i || r < 0 || r >= rows_i {
-            oob_count += 1;
-        } else if board.is_blocked(r as usize) {
+    for &(_, _, rail_id) in &holes {
+        if rail_id == u32::MAX {
             oob_count += 1;
         }
     }
 
     // 3. Pin 碰撞: 每个被多个 pin 占用的孔, 算 N-1 次 (SA 关心 Δcost, 系数 1 vs 系数 N 等价)
     let mut coll_count = 0;
-    let mut seen: HashMap<(i32, i32), ()> = HashMap::new();
+    let mut seen: HashMap<(i32, i32, u32), ()> = HashMap::new();
     for &hole in &holes {
-        if in_board(hole, cols_i, rows_i)
-            && !board.is_blocked(hole.1 as usize)
-            && seen.insert(hole, ()).is_some()
-        {
+        if hole.2 == u32::MAX {
+            continue; // OOB pin 不参与碰撞检查
+        }
+        if seen.insert(hole, ()).is_some() {
             coll_count += 1;
         }
     }
@@ -618,14 +621,13 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
     }
 
     // 5. MST 走线估算: 按 net 聚合, 每个 net 算一次 Kruskal 最小生成树。
-    //    边长按 breadboard 物理距离计算 — 同列同 rail 短接 = 0。
-    //    比 2D HPWL 更准: HPWL 会把 "同列同 rail 但不同 row" 算成 Δrow,
-    //    MST 直接 = 0, 推动 SA 主动寻找 rail 短接 (零跳线) 布局。
-    let mut by_net: HashMap<NetId, Vec<(i32, i32)>> = HashMap::new();
+    //    短路判定改用 rail_id: 同 rail_id = 0 (不管这是 vertical 还是 power rail)。
+    //    不同 rail_id = Manhattan 距离。
+    let mut by_net: HashMap<NetId, Vec<(i32, i32, u32)>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
         let hole = holes[i];
-        if !in_board(hole, cols_i, rows_i) || board.is_blocked(hole.1 as usize) {
-            continue; // OOB / blocked-row pin 不参与 MST (会被压到板内, 没意义)
+        if hole.2 == u32::MAX {
+            continue; // OOB pin 不参与 MST
         }
         if let Some(net) = net_opt {
             by_net.entry(net).or_default().push(hole);
@@ -633,29 +635,28 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
     }
     let mut mst_sum = 0.0;
     for pins in by_net.values() {
-        mst_sum += mst_wire_length(pins, board);
+        mst_sum += mst_wire_length(pins);
     }
 
-    // 6. 列冲突: 按 (col, rail) 聚合, 计数"不同 net" 的对数。
-    //    之前只按 col, 引入 blocked row 后同列会被切分成多个 rail, 必须分桶。
-    //    blocked-row 上的 pin 也不该参与 (它根本放不上板, rail 都不算)。
-    let mut by_col: HashMap<(i32, i32), Vec<Option<NetId>>> = HashMap::new();
+    // 6. 列冲突 (更准确叫 "rail 冲突"): 按 rail_id 聚合, 计数"不同 net" 的对数。
+    //    之前用 (col, rail_top) 作为 key, 引入电源轨后不够 — 电源轨里两个不同 col 的
+    //    孔在同一 rail_id (横向短接), 也会被这块板短路。统一用 rail_id。
+    let mut by_rail: HashMap<u32, Vec<Option<NetId>>> = HashMap::new();
     for (i, &net_opt) in nets.iter().enumerate() {
-        let hole = holes[i];
-        if !in_board(hole, cols_i, rows_i) || board.is_blocked(hole.1 as usize) {
+        let (_, _, rail_id) = holes[i];
+        if rail_id == u32::MAX {
             continue;
         }
-        let rail_top = board.rail_rows(hole.1).first().copied().unwrap_or(hole.1);
-        by_col.entry((hole.0, rail_top)).or_default().push(net_opt);
+        by_rail.entry(rail_id).or_default().push(net_opt);
     }
     let mut col_conflict_pairs = 0usize;
-    for col_owners in by_col.values() {
-        if col_owners.len() < 2 {
+    for rail_owners in by_rail.values() {
+        if rail_owners.len() < 2 {
             continue;
         }
-        let base = col_owners[0];
-        for i in 1..col_owners.len() {
-            if col_owners[i] != base {
+        let base = rail_owners[0];
+        for i in 1..rail_owners.len() {
+            if rail_owners[i] != base {
                 col_conflict_pairs += 1;
             }
         }
@@ -665,12 +666,13 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
     //    阻止 SA 停在"cost=0 但留白大"的状态。
     //    跳过 OOB / blocked row 的 bbox: 那些是被 OOB / state_y_valid 硬卡掉的, 进了 union
     //    反而把面积算虚了; 反正 cost 会被 OOB 惩罚主导, 不影响 SA 走向。
+    //    bbox 在 main board 的 vertical rail 上: 用 rail_top 做 key (同 rail 的所有 row 汇到一处)
     let mut by_rail: HashMap<i32, Vec<BBox>> = HashMap::new();
     for bbox in bboxes.iter().flatten() {
         if bbox.min_x < 0
             || bbox.max_x >= cols_i
             || bbox.min_y < 0
-            || bbox.max_y >= rows_i
+            || bbox.min_y >= board.main_rows() as i32
             || board.is_blocked(bbox.min_y as usize)
         {
             continue;
@@ -721,38 +723,22 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
 
 /// 给一个 net 的 pin 位置算 MST (Kruskal) 总长度。
 ///
-/// breadboard 物理距离:
-/// - 同列同 rail: **0** (rail 短接)
-/// - 同 rail 不同 col: |Δcol| (走 jumper)
-/// - 同 col 不同 rail: |Δrow| (跨中央通道)
-/// - 不同 col 不同 rail: Manhattan |Δcol| + |Δrow|
+/// breadboard 物理距离 (短路抽象为 `rail_id`):
+/// - 同 `rail_id`: **0** (面包板内部短接, 无论是 vertical rail 还是 power rail)
+/// - 不同 `rail_id`: Manhattan |Δcol| + |Δrow|
 ///
 /// 这是 wire 长度的下界 — 实际走线可能更长 (绕障碍), 但 SA 用它做优化目标。
-fn mst_wire_length(pins: &[(i32, i32)], board: &Breadboard) -> f64 {
+fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
     let n = pins.len();
     if n < 2 {
         return 0.0;
     }
 
-    let dist = |a: (i32, i32), b: (i32, i32)| -> i32 {
-        let same_col = a.0 == b.0;
-        if same_col {
-            let rail_top_a = board.rail_rows(a.1).first().copied().unwrap_or(a.1);
-            let rail_top_b = board.rail_rows(b.1).first().copied().unwrap_or(b.1);
-            if rail_top_a == rail_top_b {
-                0 // rail 短接
-            } else {
-                (a.1 - b.1).abs() // 同列跨 rail = 跨中央通道
-            }
+    let dist = |a: (i32, i32, u32), b: (i32, i32, u32)| -> i32 {
+        if a.2 == b.2 {
+            0 // 同 rail (vertical 或 power) 短接
         } else {
-            let rail_top_a = board.rail_rows(a.1).first().copied().unwrap_or(a.1);
-            let rail_top_b = board.rail_rows(b.1).first().copied().unwrap_or(b.1);
-            if rail_top_a == rail_top_b {
-                (a.0 - b.0).abs() // 同 rail 不同 col = jumper
-            } else {
-                // 不同 col 不同 rail: Manhattan
-                (a.0 - b.0).abs() + (a.1 - b.1).abs()
-            }
+            (a.0 - b.0).abs() + (a.1 - b.1).abs()
         }
     };
 
@@ -789,10 +775,6 @@ fn mst_wire_length(pins: &[(i32, i32)], board: &Breadboard) -> f64 {
         }
     }
     total as f64
-}
-
-fn in_board(hole: (i32, i32), cols: i32, rows: i32) -> bool {
-    hole.0 >= 0 && hole.0 < cols && hole.1 >= 0 && hole.1 < rows
 }
 
 #[cfg(test)]
@@ -1465,11 +1447,11 @@ mod tests {
     //  MST cost 测试
     // ============================================================
 
-    /// MST 边距: 同列同 rail = 0 (rail 短接)
+    /// MST 边距: 同 rail_id = 0 (不管是 vertical 还是 power rail)
     #[test]
     fn mst_same_col_same_rail_is_zero() {
         let b = Breadboard::new(30, 5);
-        let len = mst_wire_length(&[(0, 0), (0, 2)], &b);
+        let len = mst_wire_length(&[pin(&b, 0, 0), pin(&b, 0, 2)]);
         assert_eq!(len, 0.0, "同列同 rail 应该 rail 短接, MST = 0");
     }
 
@@ -1477,15 +1459,15 @@ mod tests {
     #[test]
     fn mst_same_rail_different_col_is_abs_col_delta() {
         let b = Breadboard::new(30, 5);
-        let len = mst_wire_length(&[(0, 2), (3, 2)], &b);
+        let len = mst_wire_length(&[pin(&b, 0, 2), pin(&b, 3, 2)]);
         assert_eq!(len, 3.0, "同 rail 不同 col = |Δcol| = 3");
     }
 
-    /// MST 边距: 同 col 不同 rail = |Δrow| (跨中央通道)
+    /// MST 边距: 不同 rail (跨中央通道) = Manhattan
     #[test]
     fn mst_same_col_different_rail_is_abs_row_delta() {
         let b = Breadboard::standard(); // rows 5, 6 blocked
-        let len = mst_wire_length(&[(5, 0), (5, 8)], &b);
+        let len = mst_wire_length(&[pin(&b, 5, 0), pin(&b, 5, 8)]);
         assert_eq!(len, 8.0, "同 col 跨 rail = |Δrow| = 8");
     }
 
@@ -1494,7 +1476,7 @@ mod tests {
     fn mst_different_col_different_rail_is_manhattan() {
         // row 2 blocked → (0, 0) 在 rail 0 (row 0..1), (3, 4) 在 rail 1 (row 3..11)
         let b = Breadboard::with_blocked_rows(30, 12, [2]);
-        let len = mst_wire_length(&[(0, 0), (3, 4)], &b);
+        let len = mst_wire_length(&[pin(&b, 0, 0), pin(&b, 3, 4)]);
         assert_eq!(len, 7.0, "不同 col 不同 rail = 3 + 4 = 7");
     }
 
@@ -1504,8 +1486,56 @@ mod tests {
         let b = Breadboard::new(30, 5);
         // 3 pin: (0,0), (1,0), (5,0) — 都在同一 rail
         // 边: 0-1 (1), 0-5 (5), 1-5 (4) → MST 取 0-1 + 1-5 = 5
-        let len = mst_wire_length(&[(0, 0), (1, 0), (5, 0)], &b);
+        let len = mst_wire_length(&[pin(&b, 0, 0), pin(&b, 1, 0), pin(&b, 5, 0)]);
         assert_eq!(len, 5.0);
+    }
+
+    /// helper: 从 board 反查 (x, y) 对应的 (x, y, rail_id) 测试输入
+    fn pin(b: &Breadboard, x: i32, y: i32) -> (i32, i32, u32) {
+        let id = b
+            .at(x, y)
+            .unwrap_or_else(|| panic!("测试 pin ({x},{y}) 不在板上"));
+        (x, y, b.rail_id_of(id))
+    }
+
+    // ============================================================
+    //  Power rail 短路 测试
+    // ============================================================
+
+    /// 同 power rail 行内 (不同 col) → MST = 0 (横向短接)
+    #[test]
+    fn mst_same_power_rail_row_is_zero() {
+        let b = Breadboard::standard();
+        // top negative y=-2, col 0 和 col 10
+        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 10, -2)]);
+        assert_eq!(len, 0.0, "同 power rail 行内应该 shorted, MST = 0");
+    }
+
+    /// 同极性 top + bottom (用户约定: 短接 + 同一 net) → MST = 0
+    #[test]
+    fn mst_top_and_bottom_same_polarity_is_zero() {
+        let b = Breadboard::standard();
+        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 0, 12)]);
+        assert_eq!(len, 0.0, "上下两条同极性应该 shorted, MST = 0");
+    }
+
+    /// 正负极 → MST = Manhattan (不短接)
+    #[test]
+    fn mst_positive_and_negative_is_manhattan() {
+        let b = Breadboard::standard();
+        // (0, -2) negative, (6, -1) positive → |6| + |1| = 7
+        // (6 是 group 第二个的开始: cols 6..10)
+        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 6, -1)]);
+        assert_eq!(len, 7.0, "正负极不短接, MST = Manhattan");
+    }
+
+    /// Power rail 跟 main board → MST = Manhattan (rail_id 不同)
+    #[test]
+    fn mst_power_rail_to_main_is_manhattan() {
+        let b = Breadboard::standard();
+        // top negative (0, -2) 跟 main upper (0, 0): |0| + |2| = 2
+        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 0, 0)]);
+        assert_eq!(len, 2.0);
     }
 
     /// 成本函数走 MST 而非 HPWL:

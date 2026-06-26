@@ -25,7 +25,7 @@ fn main() {
     let footprints = parse_footprints(footprint_texts).unwrap();
 
     // 2. 读 .net 文件
-    let netlist_path = format!("{kicad_dir}/h-bridge-short.net");
+    let netlist_path = format!("{kicad_dir}/h-bridge-power.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 
