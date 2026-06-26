@@ -521,8 +521,17 @@ fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize 
 ///
 /// 同一极性 (负或正) 的 top + bottom 两条**合并**为同一个 rail_id
 /// (用户约定: 上下两组先简化, 短接 + 同一个 net)。
-pub fn standard_power_rails(_cols: i32) -> PowerRails {
-    let groups: Vec<RangeInclusive<i32>> = (0..5).map(|i| (i * 6)..=(i * 6 + 4)).collect();
+pub fn standard_power_rails(cols: i32) -> PowerRails {
+    // 按 6-col 节拍重复 (5 个连续孔 + 1 个空孔断开): 0-4, 6-10, 12-16, ...
+    // 最后一组可能被裁短 (e.g. cols=50 时最后一组是 48-49 而不是 48-52)。
+    // 原来错误: 这个参数被当成 `_cols` 忽略, groups 硬编码 5 组只覆盖前 30 列。
+    let mut groups: Vec<RangeInclusive<i32>> = Vec::new();
+    let mut start = 0;
+    while start < cols {
+        let end = (start + 4).min(cols - 1);
+        groups.push(start..=end);
+        start += 6;
+    }
     PowerRails {
         top: PowerStrip {
             rows: [
@@ -771,6 +780,36 @@ mod tests {
             }
             // 总共 25 孔
             assert_eq!(rail.columns().count(), 25);
+        }
+    }
+
+    /// cols=50 时多生成 4 组 (30→50 多出 20 列, 加上原 5 共 9 组)。
+    /// 最后 1 组被裁短到 2 孔 (48+4=52 越界 → clip 到 49)。
+    #[test]
+    fn standard_power_rails_scales_with_cols() {
+        let pr = standard_power_rails(50);
+        for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+            // 50/6 = 8.33, 下一组 start=54 退出循环 → 共 9 组
+            assert_eq!(rail.groups.len(), 9);
+            // 前 8 组都是 5 孔, 最后 1 组 (48-49) 是 2 孔
+            for g in &rail.groups[..8] {
+                assert_eq!(g.end() - g.start() + 1, 5, "前 8 组必须是 5 孔");
+            }
+            assert_eq!(rail.groups[8].end() - rail.groups[8].start() + 1, 2);
+            // 总孔数 = 8×5 + 2 = 42
+            assert_eq!(rail.columns().count(), 42);
+        }
+    }
+
+    /// cols=60 时最后一组也能放完整 5 孔 (48+4=52 < 60)。
+    #[test]
+    fn standard_power_rails_60_cols_full_groups() {
+        let pr = standard_power_rails(60);
+        for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+            assert_eq!(rail.groups.len(), 10);
+            for g in &rail.groups {
+                assert_eq!(g.end() - g.start() + 1, 5);
+            }
         }
     }
 
