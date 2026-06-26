@@ -71,17 +71,20 @@ impl Default for Weights {
     }
 }
 
-/// SA 内部状态: 每个元件显式持有 `(x, y, rotation)`。
+/// SA 内部状态: 每个元件显式持有 `(x, y, rotation)`.
 ///
 /// v2 起 (显式 2D 布局), x 不再由 order 推导, SA 可以把元件放到板子任意位置。
 /// order 还在, 但只用于标识; `placeable[i]` 的 i 索引对应 `x[i] / y[i] / rotation[i]`。
 ///
-/// `is_bridgeable[i] / bridged[i] / bridged_pin_pair[i]` 是桥接探索的三个字段,
-/// 长度都 == `placeable.len()`。`is_bridgeable` 由 `place_sa` 在 SA 启动前根据
-/// `Component.bridgeable` + 启发式是否找到合法桥接位决定; `bridged` 初始全 false
-/// (默认 OnBoard), SA 通过 `Move::ToggleBridging` 翻成 true; `bridged_pin_pair`
-/// 缓存启发式算出的 `(HoleId, PinId)` 对, bridged=true 时由 `cost()` 用它替代
-/// OnBoard 的 `(x, y, rotation)` 计算 pin 位置。
+/// `is_bridgeable[i] / bridged[i] / bridged_pin_pairs[i] / active_bridge_idx[i]`
+/// 是桥接探索的四个字段, 长度都 == `placeable.len()`。`is_bridgeable` 由
+/// `place_sa` 在 SA 启动前根据 `Component.bridgeable` + 启发式是否找到合法桥接位
+/// 决定; `bridged` 初始全 false (默认 OnBoard), SA 通过 `Move::ToggleBridging`
+/// 翻成 true; `bridged_pin_pairs[i]` 是启发式算出的**所有合法** `(HoleId, PinId)`
+/// 对 (按 "signal pin 离同 net 中心最近" 排序), bridged=true 时由 `cost()` 用
+/// `active_bridge_idx[i]` 选中的那对替代 OnBoard 的 `(x, y, rotation)` 计算 pin
+/// 位置; `active_bridge_idx[i]` 默认 0 (启发式最优), SA Toggle 到 bridge 时会
+/// 遍历候选、按 cost 重选。
 #[derive(Debug, Clone)]
 pub struct SAState {
     pub placeable: Vec<ComponentId>,
@@ -91,8 +94,14 @@ pub struct SAState {
     pub is_bridgeable: Vec<bool>,
     /// `i` 当前是否处于 Bridged 模式; 初始 false, 由 `Move::ToggleBridging` 翻转。
     pub bridged: Vec<bool>,
-    /// `i` 的预计算桥接 pin 对 (`Some` 仅当 `is_bridgeable[i] = true`)。
-    pub bridged_pin_pair: Vec<Option<[(HoleId, PinId); 2]>>,
+    /// `i` 的预计算桥接 pin 对**列表** (按启发式质量排序: signal pin 离同 net 中心
+    /// 最近排第一)。`is_bridgeable[i] = false` 时此 Vec 为空。bridged=true 时由
+    /// `active_bridge_idx[i]` 选出实际使用的那对。
+    pub bridged_pin_pairs: Vec<Vec<[(HoleId, PinId); 2]>>,
+    /// `i` 当前选中的候选下标 (仅 bridged[i] = true 时有意义); 默认 0。
+    /// SA 在 ToggleBridging 翻到 bridge 模式时会遍历 `bridged_pin_pairs[i]` 按 cost
+    /// 重选并写回这里。
+    pub active_bridge_idx: Vec<usize>,
     pub x: Vec<i32>,
     pub y: Vec<i32>,
     pub rotation: Vec<Rotation>,
@@ -101,6 +110,18 @@ pub struct SAState {
 impl SAState {
     pub fn n(&self) -> usize {
         self.placeable.len()
+    }
+
+    /// 当前 `i` 在 Bridged 模式下使用的 pin 对 (None 表示当前不是 bridge 模式
+    /// 或没有候选)。cost() / place_sa 写回 placement 时都通过这里取值, 避免
+    /// 直接散落读 `bridged_pin_pairs[i][active_bridge_idx[i]]` 引发越界。
+    pub fn active_bridge_pair(&self, idx: usize) -> Option<[(HoleId, PinId); 2]> {
+        if !self.bridged[idx] {
+            return None;
+        }
+        self.bridged_pin_pairs[idx]
+            .get(self.active_bridge_idx[idx])
+            .copied()
     }
 
     /// 拼装辅助: 默认“所有元件不可桥接”的桥接字段。
@@ -112,7 +133,8 @@ impl SAState {
             placeable: Vec::new(),
             is_bridgeable: vec![false; n],
             bridged: vec![false; n],
-            bridged_pin_pair: vec![None; n],
+            bridged_pin_pairs: vec![Vec::new(); n],
+            active_bridge_idx: vec![0; n],
             x: Vec::new(),
             y: Vec::new(),
             rotation: Vec::new(),
@@ -135,7 +157,8 @@ impl SAState {
             placeable: order,
             is_bridgeable: vec![false; n],
             bridged: vec![false; n],
-            bridged_pin_pair: vec![None; n],
+            bridged_pin_pairs: vec![Vec::new(); n],
+            active_bridge_idx: vec![0; n],
             x,
             y: vec![row; n],
             rotation: vec![Rotation::R0; n],
@@ -271,7 +294,8 @@ impl SAState {
             placeable,
             is_bridgeable: vec![false; n],
             bridged: vec![false; n],
-            bridged_pin_pair: vec![None; n],
+            bridged_pin_pairs: vec![Vec::new(); n],
+            active_bridge_idx: vec![0; n],
             x,
             y,
             rotation,
@@ -294,7 +318,8 @@ impl SAState {
                 placeable,
                 is_bridgeable: vec![],
                 bridged: vec![],
-                bridged_pin_pair: vec![],
+                bridged_pin_pairs: vec![],
+                active_bridge_idx: vec![],
                 x: vec![],
                 y: vec![],
                 rotation: vec![],
@@ -549,7 +574,8 @@ impl SAState {
             placeable,
             is_bridgeable: vec![false; n],
             bridged: vec![false; n],
-            bridged_pin_pair: vec![None; n],
+            bridged_pin_pairs: vec![Vec::new(); n],
+            active_bridge_idx: vec![0; n],
             x,
             y,
             rotation,
@@ -557,11 +583,12 @@ impl SAState {
     }
 }
 
-/// 为 bridgeable 元件计算唯一确定的桥接 pin 对 (启发式)。
+/// 为 bridgeable 元件计算所有合法桥接 pin 对 (启发式)。
 ///
 /// **输入**: 一个 bridgeable 元件 (必有 2 pin, 一腿 power net, 一腿 signal net)。
-/// **输出**: 第一个让 signal 落在主区合法孔的 `(power hole, signal hole)` 对,
-///          按 `HoleId` 升序 × 旋转 `[R0, R90, R180, R270]` 顺序扫; 都失败则 `None`。
+/// **输出**: 所有让 signal 落在主区合法孔的 `(power hole, signal hole)` 对,
+///          按 `HoleId` 升序 × 旋转 `[R0, R90, R180, R270]` 顺序扫。空 Vec
+///          表示没找到任何合法对 (启发式失败, 该元件保持 OnBoard)。
 ///
 /// **为什么需要 4 种旋转**: Bridged 路径下 body 浮在板外, 允许 R90/R270。
 /// 对水平 footprint 的电阻 (pin offset Δx = L, Δy = 0), R0/R180 让 signal
@@ -571,16 +598,21 @@ impl SAState {
 /// **为什么不存 rotation**: `Placement::Bridged` 只存 `(HoleId, PinId)` 对,
 /// body 朝向是隐式的 (选哪两个孔就决定了 body 朝哪)。SA 的 `Move::Flip` 继续
 /// 只作用于 OnBoard 路径, 不跟桥接路径争用。
-pub(crate) fn propose_bridged_pair(
+///
+/// **排序**: 返回的列表按 (matching-rail 优先, then other rail) × HoleId 升序
+/// × 旋转 `[R0, R90, R180, R270]` 顺序排列。**注意**: 调用方 (`populate_bridgeable_info`)
+/// 会基于 "signal pin 离同 net 中心最近" 重新排序, 启发式本身的顺序只决定 enumeration
+/// 终止时机, 不影响最终结果。
+pub(crate) fn propose_bridged_pairs(
     comp: &Component,
     circuit: &Circuit,
     board: &Breadboard,
     power_net_ids: &[NetId],
-) -> Option<[(HoleId, PinId); 2]> {
+) -> Vec<[(HoleId, PinId); 2]> {
     debug_assert_eq!(comp.pins.len(), 2, "bridgeable 必有 2 pin");
 
     // 1. 分 power / signal pin
-    let power_pin_id = comp
+    let Some(power_pin_id) = comp
         .pins
         .iter()
         .find(|&&pid| {
@@ -589,27 +621,36 @@ pub(crate) fn propose_bridged_pair(
                 .map(|n| power_net_ids.contains(&n))
                 .unwrap_or(false)
         })
-        .copied()?;
+        .copied()
+    else {
+        return Vec::new();
+    };
     let signal_pin_id = comp
         .pins
         .iter()
         .find(|&&pid| pid != power_pin_id)
-        .copied()?;
+        .copied()
+        .expect("bridgeable 必有 2 pin (debug_assert 已守)");
     let power_net = circuit.pins[power_pin_id.0].net;
 
     // 2. 查 footprint pad offsets
-    let fp_id = comp.footprint?;
+    let Some(fp_id) = comp.footprint else {
+        return Vec::new();
+    };
     let fp = &circuit.footprints[fp_id.0];
     let power_off = fp
         .pins()
         .iter()
         .find(|p| p.name() == circuit.pins[power_pin_id.0].num())
-        .map(|p| p.offset)?;
+        .map(|p| p.offset);
     let signal_off = fp
         .pins()
         .iter()
         .find(|p| p.name() == circuit.pins[signal_pin_id.0].num())
-        .map(|p| p.offset)?;
+        .map(|p| p.offset);
+    let (Some(power_off), Some(signal_off)) = (power_off, signal_off) else {
+        return Vec::new();
+    };
 
     let delta = Position {
         x: signal_off.x - power_off.x,
@@ -631,6 +672,7 @@ pub(crate) fn propose_bridged_pair(
         .iter()
         .partition(|h| matching_rail_ids.contains(&board.rail_id_of(**h)));
 
+    let mut out = Vec::new();
     for &h in matching.iter().chain(other.iter()) {
         let h_pos = board.hole(h).position;
         for &rot in &[Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
@@ -641,12 +683,26 @@ pub(crate) fn propose_bridged_pair(
             };
             if let Some(signal_h) = board.at(signal_pos.x, signal_pos.y) {
                 if board.region_of(signal_h) == Region::MainRail {
-                    return Some([(h, power_pin_id), (signal_h, signal_pin_id)]);
+                    out.push([(h, power_pin_id), (signal_h, signal_pin_id)]);
                 }
             }
         }
     }
-    None
+    out
+}
+
+/// 旧 API 兼容: 返回**第一个**合法桥接对 (用于单对场景, 如向后兼容测试)。
+/// 新代码请用 `propose_bridged_pairs` + `populate_bridgeable_info`。
+#[cfg(test)]
+pub(crate) fn propose_bridged_pair(
+    comp: &Component,
+    circuit: &Circuit,
+    board: &Breadboard,
+    power_net_ids: &[NetId],
+) -> Option<[(HoleId, PinId); 2]> {
+    propose_bridged_pairs(comp, circuit, board, power_net_ids)
+        .into_iter()
+        .next()
 }
 
 /// 收集 rail_id 集合: 这些 power rail 被 bound 到 `pin_net`。
@@ -675,12 +731,24 @@ fn collect_matching_rail_ids(
 }
 
 /// 对 state 中所有 `Component.bridgeable = true` 的元件跑启发式, 填充
-/// `is_bridgeable` / `bridged_pin_pair`。`bridged` 字段不动 (默认 false = OnBoard)。
+/// `is_bridgeable` / `bridged_pin_pairs` / `active_bridge_idx`。`bridged` 字段不动
+/// (默认 false = OnBoard)。
 ///
 /// 调用时机: `from_greedy` / `from_force_directed` 构造完 state 之后,
 /// SA 启动前 (在 `sa::simulate` 内部)。`Component.bridgeable = false` 的元件
-/// `is_bridgeable` 恒为 false, `bridged_pin_pair` 为 None —— `Move::ToggleBridging`
+/// `is_bridgeable` 恒为 false, `bridged_pin_pairs` 为空 Vec —— `Move::ToggleBridging`
 /// 不会命中它们。
+///
+/// **排序**: 对每个 bridgeable 元件, 启发式返回所有合法 (hole, rotation) 对。
+/// 这里按 "signal pin 离同 net (signal pin 所在的 net) 其他元件 pin 的几何中心
+/// 最近" 排序, 索引 0 = 最佳候选。SA 在 `ToggleBridging` 翻到 bridge 模式时会
+/// 遍历这个列表、按 cost 重选并写回 `active_bridge_idx[idx]`。
+///
+/// **静态中心**: 用 SA 启动**前** state 里其他元件的 pin 位置算中心 (从
+/// `state.x/y/rotation` 推, bridged 元件用 active_bridge_pair)。SA 跑起来后
+/// 中心会变, 但我们不重算 —— SA 选 candidate 时是按 cost 选, 中心只是初始
+/// 排序的 hint, 不会把真正最优的候选卡在后面 (因为候选列表只是初始偏置,
+/// SA 会按 cost 重排)。
 pub(crate) fn populate_bridgeable_info(
     state: &mut SAState,
     circuit: &Circuit,
@@ -690,18 +758,120 @@ pub(crate) fn populate_bridgeable_info(
     let n = state.placeable.len();
     debug_assert_eq!(state.is_bridgeable.len(), n);
     debug_assert_eq!(state.bridged.len(), n);
-    debug_assert_eq!(state.bridged_pin_pair.len(), n);
+    debug_assert_eq!(state.bridged_pin_pairs.len(), n);
+    debug_assert_eq!(state.active_bridge_idx.len(), n);
+
     for (idx, &comp_id) in state.placeable.iter().enumerate() {
         let comp = &circuit.components[comp_id.0];
         if !comp.bridgeable {
             continue;
         }
-        if let Some(pair) = propose_bridged_pair(comp, circuit, board, power_net_ids) {
-            state.is_bridgeable[idx] = true;
-            state.bridged_pin_pair[idx] = Some(pair);
+        let candidates = propose_bridged_pairs(comp, circuit, board, power_net_ids);
+        if candidates.is_empty() {
+            // 启发式返空: 该元件本轮无法桥接, is_bridgeable 保持 false,
+            // Toggle 不会命中它 (随机退回其他 move, 不污染 seed 序列)。
+            continue;
         }
-        // 启发式返回 None: 该元件本轮无法桥接, is_bridgeable 保持 false,
-        // Toggle 不会命中它 (随机退回其他 move, 不污染 seed 序列)。
+
+        // 算 signal net 的几何中心 (用 state 当前 (x, y, rotation), bridged 元件
+        // 用 active_bridge_pair)。只用于排序 hint, 精度不重要。
+        let signal_net_id = comp
+            .pins
+            .iter()
+            .map(|&pid| circuit.pins[pid.0].net)
+            .find(|net_opt| net_opt.is_some() && !power_net_ids.contains(&net_opt.unwrap()))
+            .flatten();
+        let center = signal_net_id
+            .and_then(|nid| compute_signal_net_center(circuit, board, state, nid, Some(comp_id)));
+
+        // 按 "signal pin 离中心 Manhattan 距离" 排序, 距离小的优先。
+        // 没有中心 (signal net 只此一个 pin) 时保持原顺序 (启发式扫的顺序)。
+        if let Some(center) = center {
+            let mut sorted: Vec<(i32, [(HoleId, PinId); 2])> = candidates
+                .into_iter()
+                .map(|pair| {
+                    let signal_pos = board.hole(pair[1].0).position;
+                    let dist = (signal_pos.x - center.x).abs() + (signal_pos.y - center.y).abs();
+                    (dist, pair)
+                })
+                .collect();
+            sorted.sort_by_key(|&(d, _)| d);
+            state.bridged_pin_pairs[idx] = sorted.into_iter().map(|(_, p)| p).collect();
+        } else {
+            state.bridged_pin_pairs[idx] = candidates;
+        }
+        state.is_bridgeable[idx] = true;
+        state.active_bridge_idx[idx] = 0; // 启发式最佳 = 索引 0
+    }
+}
+
+/// 算一个 net 的几何中心 (各 pin 位置的平均)。排除 `exclude_comp` 的 pin
+/// (避免启发式把自己要摆的 signal pin 也算进去, 造成 "候选间无差异" 的退化)。
+/// 返回 None 当 net 上没有其他 pin (只有 bridgeable 自己一个)。
+fn compute_signal_net_center(
+    circuit: &Circuit,
+    board: &Breadboard,
+    state: &SAState,
+    net_id: NetId,
+    exclude_comp: Option<ComponentId>,
+) -> Option<Position> {
+    let mut sum_x: i64 = 0;
+    let mut sum_y: i64 = 0;
+    let mut count: i64 = 0;
+    for &pid in &circuit.nets[net_id.0].pins {
+        let pin = &circuit.pins[pid.0];
+        if exclude_comp.is_some_and(|c| c == pin.component) {
+            continue;
+        }
+        // 找这个 component 在 state.placeable 里的 idx
+        let Some(idx) = state.placeable.iter().position(|&c| c == pin.component) else {
+            continue;
+        };
+        // 推 pin 的世界坐标
+        let pos = pin_world_pos(state, idx, pin, circuit, board);
+        sum_x += pos.x as i64;
+        sum_y += pos.y as i64;
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    Some(Position {
+        x: (sum_x / count) as i32,
+        y: (sum_y / count) as i32,
+    })
+}
+
+/// 推 `state.placeable[idx]` 的指定 pin 当前世界坐标。处理 bridged / OnBoard 两种路径。
+fn pin_world_pos(
+    state: &SAState,
+    idx: usize,
+    pin: &crate::circuit::Pin,
+    circuit: &Circuit,
+    board: &Breadboard,
+) -> Position {
+    if let Some(pair) = state.active_bridge_pair(idx) {
+        // bridged: pair 里两条腿, 找 pin.num 跟哪条匹配
+        for &(hole, pid) in &pair {
+            if pid == pin.id {
+                return board.hole(hole).position;
+            }
+        }
+        // pin 不在该元件的桥接 pair 里 (例如该元件 3 pin 但 is_bridgeable=true 的罕见情况)
+        // 退回 OnBoard 路径
+    }
+    let comp = &circuit.components[state.placeable[idx].0];
+    let fp_id = comp.footprint.expect("placeable 元件必有 footprint");
+    let fp = &circuit.footprints[fp_id.0];
+    let physical = fp
+        .pins()
+        .iter()
+        .find(|p| p.name() == pin.num())
+        .expect("footprint 缺 pin (解析阶段就该爆)");
+    let rotated = rotate(physical.offset, state.rotation[idx]);
+    Position {
+        x: state.x[idx] + rotated.x,
+        y: state.y[idx] + rotated.y,
     }
 }
 
@@ -763,24 +933,22 @@ pub fn cost(
             // bbox 越界就报)。“body 在板外”那个早期判断只适用于“连信号 net 都不在板上”
             // 的情形；本启发式选的两孔一腿在 rail、一腿在主区, body 横跨 gap 行和
             // 主区, 主区那段必须在 bbox 里。pin 注入见下面 1b'。
-            let bridged_bbox = state
-                .bridged_pin_pair
-                .get(idx)
-                .and_then(|opt| opt.as_ref())
-                .map(|pair| {
-                    let p0 = board.hole(pair[0].0).position;
-                    let p1 = board.hole(pair[1].0).position;
-                    let min_x = p0.x.min(p1.x);
-                    let max_x = p0.x.max(p1.x);
-                    let min_y = p0.y.min(p1.y);
-                    let max_y = p0.y.max(p1.y);
-                    BBox {
-                        min_x,
-                        max_x,
-                        min_y,
-                        max_y,
-                    }
-                });
+            // 走 active_bridge_pair(idx): SA Toggle 到 bridge 时可能重选候选,
+            // 这里要读最新选定的那对, 不是启发式初始排序的索引 0。
+            let bridged_bbox = state.active_bridge_pair(idx).map(|pair| {
+                let p0 = board.hole(pair[0].0).position;
+                let p1 = board.hole(pair[1].0).position;
+                let min_x = p0.x.min(p1.x);
+                let max_x = p0.x.max(p1.x);
+                let min_y = p0.y.min(p1.y);
+                let max_y = p0.y.max(p1.y);
+                BBox {
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                }
+            });
             bboxes.push(bridged_bbox);
             continue;
         }
@@ -827,25 +995,23 @@ pub fn cost(
         is_virtual.push(false);
     }
 
-    // 1b'. 注入 SA Toggle 后的 bridged 元件的 pin。来源: `state.bridged_pin_pair`。
-    //      `is_bridgeable[i] = true` 才能被 Toggle 命中, 所以这里 `Some(pair)` 总是有效。
-    for (idx, opt) in state.bridged_pin_pair.iter().enumerate() {
+    // 1b'. 注入 SA Toggle 后的 bridged 元件的 pin。来源: `state.active_bridge_pair`。
+    //      `is_bridgeable[i] = true` 才能被 Toggle 命中, 所以这里 Some(pair) 总是有效。
+    for idx in 0..state.placeable.len() {
         if !state.bridged[idx] {
             continue;
         }
-        if let Some(pair) = opt {
-            for &(h, pin_id) in pair {
-                let pin = &circuit.pins[pin_id.0];
-                let pos = board.hole(h).position;
-                let rail_id = board.rail_id_of(h);
-                holes.push((pos.x, pos.y, rail_id));
-                nets.push(pin.net);
-                is_virtual.push(false);
-            }
+        let pair = state
+            .active_bridge_pair(idx)
+            .expect("bridged=true 必有 pin pair (sa::simulate 保证 is_bridgeable[idx] = true)");
+        for &(h, pin_id) in &pair {
+            let pin = &circuit.pins[pin_id.0];
+            let pos = board.hole(h).position;
+            let rail_id = board.rail_id_of(h);
+            holes.push((pos.x, pos.y, rail_id));
+            nets.push(pin.net);
+            is_virtual.push(false);
         }
-        // bridged=true 但 bridged_pin_pair[idx] = None: 不该发生
-        // (is_bridgeable=false 时 Toggle 不会命中), debug_assert 防守即可。
-        debug_assert!(opt.is_some(), "bridged=true 必有 pin pair");
     }
 
     // 1c. 注入 power rail 虚拟 pin (如果用户绑定了 net)
@@ -2583,7 +2749,8 @@ mod tests {
         let mut bridged = on_board.clone();
         bridged.is_bridgeable = vec![true];
         bridged.bridged = vec![true];
-        bridged.bridged_pin_pair = vec![Some(pair)];
+        bridged.bridged_pin_pairs = vec![vec![pair]];
+        bridged.active_bridge_idx = vec![0];
         let c_bridge = cost(&bridged, &circuit, &board, &[], &w);
 
         // Bridged cost 应远小于 OnBoard (启发式选中两孔都在板上 + 有 rail, MST = 0)
@@ -2704,7 +2871,8 @@ mod tests {
             placeable: vec![ComponentId(0), ComponentId(1)],
             is_bridgeable: vec![true, false],
             bridged: vec![true, false],
-            bridged_pin_pair: vec![Some(pair), None],
+            bridged_pin_pairs: vec![vec![pair], Vec::new()],
+            active_bridge_idx: vec![0, 0],
             x: vec![0, 0],
             y: vec![0, 0],
             rotation: vec![Rotation::R0, Rotation::R0],
@@ -2715,7 +2883,8 @@ mod tests {
             placeable: vec![ComponentId(0), ComponentId(1)],
             is_bridgeable: vec![true, false],
             bridged: vec![true, false],
-            bridged_pin_pair: vec![Some(pair), None],
+            bridged_pin_pairs: vec![vec![pair], Vec::new()],
+            active_bridge_idx: vec![0, 0],
             x: vec![0, 5],
             y: vec![0, 0],
             rotation: vec![Rotation::R0, Rotation::R0],

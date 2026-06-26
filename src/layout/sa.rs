@@ -67,7 +67,9 @@ pub struct SAConfig {
     /// `random_move` 生成 `Move::ToggleBridging` 的目标概率。
     /// 仅当 `state.is_bridgeable[p] = true` 时实际生效, 否则该分支退回 `ShiftX`。
     /// 调高 → SA 更频繁探索 Bridged vs OnBoard; 调低 → 退回 v3 行为。
-    /// 经验起点 0.07 (与 v4 文档头分布表一致); 0 = 完全关闭 Toggle。
+    /// 经验起点 0.18 (从 v4 的 0.07 提高, 让 bridge 能被更频繁地探索;
+    /// 考虑多次测试中 “输出几乎全是 OnBoard” 的反面证据, 7% 明显不足)。
+    /// 0 = 完全关闭 Toggle (退回 v3 行为)。
     pub p_toggle_bridge: f64,
 }
 
@@ -82,7 +84,7 @@ impl Default for SAConfig {
             n_seeds: 1,
             use_force_directed: false,
             fd_config: FDConfig::default(),
-            p_toggle_bridge: 0.07,
+            p_toggle_bridge: 0.18,
         }
     }
 }
@@ -135,11 +137,12 @@ fn random_move(
     let dx = dx_sign * n_amp;
     let dy = dy_sign * n_amp;
 
-    // v4 分布: ShiftX 55% / Flip 30% / ToggleBridging 7% / ShiftY 8%。
-    // 概率表来自 SAConfig.p_toggle_bridge (默认 0.07)。Flip / ShiftX / ShiftY
-    // 按 0.55/0.30/0.08 剩余区间切; p_toggle_bridge=0 时 Toggle 区间为空,
-    // 自动退回 v3 行为。
-    let p_toggle = config.p_toggle_bridge.clamp(0.0, 0.30); // 限制上限防误配
+    // v5 分布: ShiftX 55% / Flip 30% / ToggleBridging 18% / ShiftY 8%(调整为
+    // 归一化后)。v4 默认 0.07 偏保守, 实际跑起来 bridge 几乎不出现,
+    // 现在默认 0.18 加上 clamp 上限放开到 0.45, 让 bridge 设计空间能被
+    // 更充分地探索。Flip / ShiftX / ShiftY 仍按 0.55/0.30/0.08 剩余区间切;
+    // p_toggle_bridge=0 时 Toggle 区间为空, 自动退回 v3 行为。
+    let p_toggle = config.p_toggle_bridge.clamp(0.0, 0.45); // 限制上限防误配
     let p_shiftx = (1.0 - p_toggle) * 0.55 / 0.93; // 把 7% 拿出来后剩 93% 重新归一化
     let p_flip = (1.0 - p_toggle) * 0.30 / 0.93;
     // p_shifty = 1 - p_shiftx - p_flip - p_toggle = (1 - p_toggle) * 0.08 / 0.93
@@ -221,6 +224,26 @@ pub(super) fn simulate(
         // 另外, 若初始状态本身就合法, SA 也不会被锁定到 "都是 OOB 的同代价态"。)
         if !state_y_valid(&candidate, board) {
             continue;
+        }
+        // ToggleBridging 翻到 bridge 模式时: 遍历该元件的候选, 选 cost 最低的那对
+        // 写回 active_bridge_idx。候选列表来自 `populate_bridgeable_info` 按
+        // "signal pin 离同 net 中心最近" 预排序的结果, 这里选 cost 最低是真正的
+        // 优化。候选数 K 一般 < 8, 额外 cost 调用次数可接受。
+        // 翻到 OnBoard 时不用管 active_bridge_idx (cost 函数忽略它)。
+        if let Move::ToggleBridging(i) = m {
+            if candidate.bridged[i] && candidate.bridged_pin_pairs[i].len() > 1 {
+                let mut best_cost = f64::INFINITY;
+                let mut best_idx = candidate.active_bridge_idx[i];
+                for (j, _) in candidate.bridged_pin_pairs[i].iter().enumerate() {
+                    candidate.active_bridge_idx[i] = j;
+                    let c = cost(&candidate, circuit, board, bridged_pins, &config.weights);
+                    if c < best_cost {
+                        best_cost = c;
+                        best_idx = j;
+                    }
+                }
+                candidate.active_bridge_idx[i] = best_idx;
+            }
         }
         let new_cost = cost(&candidate, circuit, board, bridged_pins, &config.weights);
         let delta = new_cost - current_cost;

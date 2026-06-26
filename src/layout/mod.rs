@@ -232,7 +232,7 @@ impl<'c> Layout<'c> {
             //   (sa::simulate 在初始化后调 `populate_bridgeable_info` 填的)。
             // - bridged[idx] = false: 写 `Placement::OnBoard`, 照原有逻辑取 (x, y, rotation)。
             if best.bridged[idx] {
-                let pair = best.bridged_pin_pair[idx].expect(
+                let pair = best.active_bridge_pair(idx).expect(
                     "bridged=true 必有 pin pair (sa::simulate 保证 is_bridgeable[idx] = true)",
                 );
                 self.placements[comp_id.0] = Some(Placement::Bridged {
