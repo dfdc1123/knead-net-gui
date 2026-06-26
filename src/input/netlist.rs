@@ -90,6 +90,7 @@ impl NetlistInput {
                 value: comp_in.value,
                 pins: comp_pin_ids,
                 footprint,
+                bridgeable: false, // 由 auto_mark_bridgeable 后处理
             });
         }
 
@@ -129,6 +130,35 @@ impl NetlistInput {
             pins,
             nets,
             footprints: footprints.to_vec(),
+        }
+    }
+}
+
+/// 自动标记**可桥接**元件: 2 pin 元件, 一腿在 power net, 另一腿在 signal net。
+///
+/// 规则: 2 pin + (属于 power net) XOR (另一 pin 属于 power net) = true。
+/// - `power_net_names`: 被认为是 power net 的名字列表, 比如 `&["GND", "+12V", "VCC", "5V"]`。
+///   这里**用名字**匹配 (而不是 `NetId`), 因为 binding 配置 (`PowerRails.positive_names`)
+///   也是按名字存。
+///
+/// 设置 `Component.bridgeable = true` 后, 调用方可以决定是手动用
+/// `Placement::Bridged` 摆它, 还是后续给 SA 加 Toggle 扰动去探索。
+pub fn auto_mark_bridgeable(circuit: &mut Circuit, power_net_names: &[&str]) {
+    for comp in &mut circuit.components {
+        // 仅 2 pin 元件考虑 (电阻 / LED / 电容 / 二极管等)
+        if comp.pins.len() != 2 {
+            continue;
+        }
+        let mut nets = comp.pins.iter().filter_map(|&pid| circuit.pins[pid.0].net);
+        let Some(n1) = nets.next() else { continue };
+        let Some(n2) = nets.next() else { continue };
+        let name1 = circuit.nets[n1.0].name();
+        let name2 = circuit.nets[n2.0].name();
+        let n1_is_power = power_net_names.contains(&name1);
+        let n2_is_power = power_net_names.contains(&name2);
+        // XOR: 正好一个在 power net
+        if n1_is_power != n2_is_power {
+            comp.bridgeable = true;
         }
     }
 }
@@ -331,5 +361,326 @@ fn atom_value(items: &[Sexp]) -> Option<String> {
         Some(s.clone())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::circuit::{ComponentId, Footprint, FootprintId, PhysicalPin, Pin, PinId};
+
+    /// 2 pin 元件, 一腿 power 一腿 signal → 标记 bridgeable
+    #[test]
+    fn auto_marks_2pin_one_power_one_signal() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: crate::circuit::Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: crate::circuit::Position { x: 5, y: 0 },
+                },
+            ],
+        };
+        let r1 = Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        };
+        let pin1 = Pin {
+            id: PinId(0),
+            component: ComponentId(0),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(0)), // GND
+        };
+        let pin2 = Pin {
+            id: PinId(1),
+            component: ComponentId(0),
+            num: "2".into(),
+            pinfunction: None,
+            net: Some(NetId(1)), // signal
+        };
+        let gnd = Net {
+            id: NetId(0),
+            name: "GND".into(),
+            pins: vec![PinId(0)],
+        };
+        let sig = Net {
+            id: NetId(1),
+            name: "n1".into(),
+            pins: vec![PinId(1)],
+        };
+        let mut circuit = Circuit {
+            components: vec![r1],
+            pins: vec![pin1, pin2],
+            nets: vec![gnd, sig],
+            footprints: vec![fp],
+        };
+        auto_mark_bridgeable(&mut circuit, &["GND"]);
+        assert!(circuit.components[0].bridgeable, "R1 应该被标记 bridgeable");
+    }
+
+    /// 2 pin 元件, 两腿都 power (例如 0 欧跨接) → 不标记
+    #[test]
+    fn auto_marks_2pin_both_power_skipped() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: crate::circuit::Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: crate::circuit::Position { x: 5, y: 0 },
+                },
+            ],
+        };
+        let r1 = Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        };
+        let pin1 = Pin {
+            id: PinId(0),
+            component: ComponentId(0),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        };
+        let pin2 = Pin {
+            id: PinId(1),
+            component: ComponentId(0),
+            num: "2".into(),
+            pinfunction: None,
+            net: Some(NetId(0)), // 同 net
+        };
+        let gnd = Net {
+            id: NetId(0),
+            name: "GND".into(),
+            pins: vec![PinId(0), PinId(1)],
+        };
+        let mut circuit = Circuit {
+            components: vec![r1],
+            pins: vec![pin1, pin2],
+            nets: vec![gnd],
+            footprints: vec![fp],
+        };
+        auto_mark_bridgeable(&mut circuit, &["GND"]);
+        assert!(
+            !circuit.components[0].bridgeable,
+            "两腿同 power net 不该被标 bridgeable"
+        );
+    }
+
+    /// 3 pin 元件 (三极管) → 不标, 不管 nets 是啥
+    #[test]
+    fn auto_marks_skips_3pin_components() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "TO92".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: crate::circuit::Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: crate::circuit::Position { x: 1, y: 0 },
+                },
+                PhysicalPin {
+                    name: "3".into(),
+                    offset: crate::circuit::Position { x: 2, y: 0 },
+                },
+            ],
+        };
+        let q1 = Component {
+            id: ComponentId(0),
+            ref_: "Q1".into(),
+            kind: "NPN".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1), PinId(2)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        };
+        let pin0 = Pin {
+            id: PinId(0),
+            component: ComponentId(0),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        };
+        let pin1 = Pin {
+            id: PinId(1),
+            component: ComponentId(0),
+            num: "2".into(),
+            pinfunction: None,
+            net: Some(NetId(1)),
+        };
+        let pin2 = Pin {
+            id: PinId(2),
+            component: ComponentId(0),
+            num: "3".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        };
+        let gnd = Net {
+            id: NetId(0),
+            name: "GND".into(),
+            pins: vec![PinId(0), PinId(2)],
+        };
+        let sig = Net {
+            id: NetId(1),
+            name: "n1".into(),
+            pins: vec![PinId(1)],
+        };
+        let mut circuit = Circuit {
+            components: vec![q1],
+            pins: vec![pin0, pin1, pin2],
+            nets: vec![gnd, sig],
+            footprints: vec![fp],
+        };
+        auto_mark_bridgeable(&mut circuit, &["GND"]);
+        assert!(
+            !circuit.components[0].bridgeable,
+            "3 pin 元件不该被标 bridgeable (规则只覆盖 2 pin)"
+        );
+    }
+
+    /// 多个元件, 混合场景: 只有 2 pin + 一腿 power 一腿 signal 的才标
+    #[test]
+    fn auto_marks_only_qualifying_components() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: crate::circuit::Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: crate::circuit::Position { x: 5, y: 0 },
+                },
+            ],
+        };
+        // R1: 2 pin, GND + signal → 标
+        let r1 = Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        };
+        // R2: 2 pin, signal + signal → 不标
+        let r2 = Component {
+            id: ComponentId(1),
+            ref_: "R2".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(2), PinId(3)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        };
+        // Q1: 3 pin → 不标
+        let q1 = Component {
+            id: ComponentId(2),
+            ref_: "Q1".into(),
+            kind: "NPN".into(),
+            value: None,
+            pins: vec![PinId(4), PinId(5), PinId(6)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        };
+        let pin0 = Pin {
+            id: PinId(0),
+            component: ComponentId(0),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        };
+        let pin1 = Pin {
+            id: PinId(1),
+            component: ComponentId(0),
+            num: "2".into(),
+            pinfunction: None,
+            net: Some(NetId(1)),
+        };
+        let pin2 = Pin {
+            id: PinId(2),
+            component: ComponentId(1),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(1)),
+        };
+        let pin3 = Pin {
+            id: PinId(3),
+            component: ComponentId(1),
+            num: "2".into(),
+            pinfunction: None,
+            net: Some(NetId(2)),
+        };
+        let pin4 = Pin {
+            id: PinId(4),
+            component: ComponentId(2),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        };
+        let pin5 = Pin {
+            id: PinId(5),
+            component: ComponentId(2),
+            num: "2".into(),
+            pinfunction: None,
+            net: Some(NetId(1)),
+        };
+        let pin6 = Pin {
+            id: PinId(6),
+            component: ComponentId(2),
+            num: "3".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        };
+        let gnd = Net {
+            id: NetId(0),
+            name: "GND".into(),
+            pins: vec![PinId(0), PinId(4), PinId(6)],
+        };
+        let sig1 = Net {
+            id: NetId(1),
+            name: "n1".into(),
+            pins: vec![PinId(1), PinId(2), PinId(5)],
+        };
+        let sig2 = Net {
+            id: NetId(2),
+            name: "n2".into(),
+            pins: vec![PinId(3)],
+        };
+        let mut circuit = Circuit {
+            components: vec![r1, r2, q1],
+            pins: vec![pin0, pin1, pin2, pin3, pin4, pin5, pin6],
+            nets: vec![gnd, sig1, sig2],
+            footprints: vec![fp],
+        };
+        auto_mark_bridgeable(&mut circuit, &["GND"]);
+        assert!(circuit.components[0].bridgeable, "R1 (GND+sig) 应当标");
+        assert!(!circuit.components[1].bridgeable, "R2 (sig+sig) 不该标");
+        assert!(!circuit.components[2].bridgeable, "Q1 (3 pin) 不该标");
     }
 }

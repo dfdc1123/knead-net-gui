@@ -69,6 +69,25 @@ pub struct Component {
     pub(crate) value: Option<String>,
     pub(crate) pins: Vec<PinId>,
     pub(crate) footprint: Option<FootprintId>,
+    /// **是否允许桥接**: true 表示这个元件的 2 pin 可以跨接 (比如从 power rail
+    /// 到主区, 走 `Placement::Bridged` 路径)。由 netlist 解析层的
+    /// [`crate::input::netlist::auto_mark_bridgeable`] 自动设定 (规则: 2 pin
+    /// 元件, 一腿在 power net, 另一腿在 signal net), 也可以手动 override。
+    pub bridgeable: bool,
+}
+
+impl Default for Component {
+    fn default() -> Self {
+        Self {
+            id: ComponentId(0),
+            ref_: String::new(),
+            kind: String::new(),
+            value: None,
+            pins: Vec::new(),
+            footprint: None,
+            bridgeable: false,
+        }
+    }
 }
 
 #[derive(Debug)]

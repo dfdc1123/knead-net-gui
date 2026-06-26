@@ -146,6 +146,7 @@ pub(super) fn simulate(
     circuit: &Circuit,
     board: &Breadboard,
     config: &SAConfig,
+    bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_force_directed {
@@ -153,7 +154,7 @@ pub(super) fn simulate(
     } else {
         SAState::from_greedy(placeable, circuit, board)
     };
-    let mut current_cost = cost(&state, circuit, board, &config.weights);
+    let mut current_cost = cost(&state, circuit, board, bridged_pins, &config.weights);
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
     let mut t = config.t0;
@@ -168,7 +169,7 @@ pub(super) fn simulate(
         if !state_y_valid(&candidate, board) {
             continue;
         }
-        let new_cost = cost(&candidate, circuit, board, &config.weights);
+        let new_cost = cost(&candidate, circuit, board, bridged_pins, &config.weights);
         let delta = new_cost - current_cost;
 
         let accept = delta <= 0.0 || rng.f64() < (-delta / t).exp();
@@ -233,6 +234,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i * 2), PinId(i * 2 + 1)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..4)
@@ -373,7 +375,7 @@ mod tests {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
         state.x = vec![0, 3];
         state.y = vec![0, 4];
-        let initial_cost = cost(&state, &circuit, &board(), &Weights::default());
+        let initial_cost = cost(&state, &circuit, &board(), &[], &Weights::default());
         let config = SAConfig {
             max_iters: 2000,
             t0: 5.0,
@@ -387,8 +389,9 @@ mod tests {
             &circuit,
             &board(),
             &config,
+            &[],
         );
-        let best_cost = cost(&best, &circuit, &board(), &Weights::default());
+        let best_cost = cost(&best, &circuit, &board(), &[], &Weights::default());
         assert!(
             best_cost <= initial_cost,
             "SA 应该不恶化: init={initial_cost} best={best_cost}"
@@ -408,6 +411,7 @@ mod tests {
             &circuit,
             &board(),
             &config,
+            &[],
         );
         // SA 输出本身就是 final 位置 (compact 删了, cost 里的 compactness 替代)
         let xs = best.x.clone();

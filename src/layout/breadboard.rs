@@ -13,10 +13,12 @@
 //!
 //! 两个孔 `rail_id` 相同就内部短接 (距离 0), 不同就走 Manhattan。
 //!
-//! 坐标空间 (默认 30×12 main + 上下各一组电源轨):
+//! 坐标空间 (默认 30×12 main + 上下各一组电源轨, 主区到 rail 间各 2 行 gap):
 //! ```text
-//!   y=-2  [top negative]  横向短路, 5 组 5 孔
-//!   y=-1  [top positive]  横向短路
+//!   y=-4  [top negative]  横向短路, 5 组 5 孔
+//!   y=-3  [top positive]  横向短路
+//!   y=-2  ⨯ external gap (主区到 top rail 之间的 2 行间隔, 不可访问)
+//!   y=-1  ⨯ external gap
 //!   y= 0  ┐
 //!   ...   ├ main upper rail (5 行, 内部纵向短路)
 //!   y= 4  ┘
@@ -25,8 +27,10 @@
 //!   y= 7  ┐
 //!   ...   ├ main lower rail (5 行, 内部纵向短路)
 //!   y=11  ┘
-//!   y=12  [bottom negative] 横向短路
-//!   y=13  [bottom positive] 横向短路
+//!   y=12  ⨯ external gap (主区到 bottom rail 之间的 2 行间隔, 不可访问)
+//!   y=13  ⨯ external gap
+//!   y=14  [bottom negative] 横向短路
+//!   y=15  [bottom positive] 横向短路
 //! ```
 
 use std::collections::{BTreeSet, HashMap};
@@ -457,6 +461,40 @@ impl Breadboard {
     pub fn region_of(&self, id: HoleId) -> Region {
         self.holes[id.0].region
     }
+
+    /// 主区到 power rail 之间的 "external gap" (不能插线的空行) 列表。
+    ///
+    /// 每个范围是闭区间 `(top, bottom)`, 按 y 升序排列。这些行:
+    /// - 在 `at(x, y)` 里返回 `None` (没有 HoleId)
+    /// - 跟 main board 的中央 blocked row 一样, 渲染时画成灰色带
+    /// - 物理意义: 电源轨跟主区之间必须有物理间隔, 不能放线
+    ///
+    /// 默认 [`standard_power_rails`] 会产生 2 个 gap: 顶 (top rail 下沿到主区)
+    /// 和底 (主区到 bottom rail 上沿), 各 2 行。
+    pub fn external_gaps(&self) -> Vec<(i32, i32)> {
+        let mut gaps = Vec::new();
+        let Some(pr) = &self.power_rails else {
+            return gaps;
+        };
+
+        // top gap: 在 top rail 的最大 y + 1 到 -1 之间
+        let top_rail_max_y = pr.top.rows.iter().map(|r| r.y).max().unwrap_or(-1);
+        if top_rail_max_y + 1 <= -1 {
+            gaps.push((top_rail_max_y + 1, -1));
+        }
+        // bottom gap: 在 main_rows 到 bottom rail 的最小 y - 1 之间
+        let bottom_rail_min_y = pr
+            .bottom
+            .rows
+            .iter()
+            .map(|r| r.y)
+            .min()
+            .unwrap_or(self.main_rows as i32);
+        if (self.main_rows as i32) <= bottom_rail_min_y - 1 {
+            gaps.push((self.main_rows as i32, bottom_rail_min_y - 1));
+        }
+        gaps
+    }
 }
 
 /// 返回从 `top` 开始的 vertical rail 长度 (含 top)。
@@ -473,10 +511,13 @@ fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize 
 /// 默认电源轨配置: 30 列, 每条 5 组 5 孔, 上下各一组 (4 行)。
 ///
 /// 排布 (相对 main board, y 从小到大):
-/// - y=-2: top negative (5 groups: 0..4, 6..10, 12..16, 18..22, 24..28)
-/// - y=-1: top positive
-/// - y=12: bottom negative
-/// - y=13: bottom positive
+/// - y=-4: top negative (5 groups: 0..4, 6..10, 12..16, 18..22, 24..28)
+/// - y=-3: top positive
+/// - y=14: bottom negative
+/// - y=15: bottom positive
+///
+/// 主区 (y=0..11) 到 rail 之间各有 2 行 gap (y=-2,-1 和 y=12,13), 不可插线,
+/// 跟中央通道同款。
 ///
 /// 同一极性 (负或正) 的 top + bottom 两条**合并**为同一个 rail_id
 /// (用户约定: 上下两组先简化, 短接 + 同一个 net)。
@@ -486,12 +527,12 @@ pub fn standard_power_rails(_cols: i32) -> PowerRails {
         top: PowerStrip {
             rows: [
                 PowerRail {
-                    y: -2,
+                    y: -4,
                     polarity: Polarity::Negative,
                     groups: groups.clone(),
                 },
                 PowerRail {
-                    y: -1,
+                    y: -3,
                     polarity: Polarity::Positive,
                     groups: groups.clone(),
                 },
@@ -500,12 +541,12 @@ pub fn standard_power_rails(_cols: i32) -> PowerRails {
         bottom: PowerStrip {
             rows: [
                 PowerRail {
-                    y: 12,
+                    y: 14,
                     polarity: Polarity::Negative,
                     groups: groups.clone(),
                 },
                 PowerRail {
-                    y: 13,
+                    y: 15,
                     polarity: Polarity::Positive,
                     groups,
                 },
@@ -587,22 +628,24 @@ mod tests {
     #[test]
     fn at_returns_some_for_power_rail_holes() {
         let b = board_full();
-        // top negative row y=-2
-        assert!(b.at(0, -2).is_some());
-        assert!(b.at(4, -2).is_some());
+        // top negative row y=-4 (现在距主区 2 行)
+        assert!(b.at(0, -4).is_some());
+        assert!(b.at(4, -4).is_some());
         // gap (col 5) in power rail
-        assert_eq!(b.at(5, -2), None);
-        assert!(b.at(6, -2).is_some());
-        // bottom positive row y=13
-        assert!(b.at(28, 13).is_some());
-        assert_eq!(b.at(29, 13), None); // col 29 是 unused
+        assert_eq!(b.at(5, -4), None);
+        assert!(b.at(6, -4).is_some());
+        // bottom positive row y=15
+        assert!(b.at(28, 15).is_some());
+        assert_eq!(b.at(29, 15), None); // col 29 是 unused
     }
 
     #[test]
     fn at_returns_none_for_garbage_y() {
         let b = board_full();
-        assert_eq!(b.at(0, -3), None);
-        assert_eq!(b.at(0, 14), None);
+        assert_eq!(b.at(0, -5), None); // 板外
+        assert_eq!(b.at(0, 16), None); // 板外
+        assert_eq!(b.at(0, -2), None); // external gap (不能插线)
+        assert_eq!(b.at(0, 13), None); // external gap
         assert_eq!(b.at(-1, 0), None);
         assert_eq!(b.at(30, 0), None);
     }
@@ -610,9 +653,9 @@ mod tests {
     #[test]
     fn power_rail_holes_have_region_power_rail() {
         let b = board_full();
-        let id = b.at(0, -2).unwrap();
+        let id = b.at(0, -4).unwrap();
         assert_eq!(b.region_of(id), Region::PowerRail);
-        let id = b.at(0, 13).unwrap();
+        let id = b.at(0, 15).unwrap();
         assert_eq!(b.region_of(id), Region::PowerRail);
         let id = b.at(0, 0).unwrap();
         assert_eq!(b.region_of(id), Region::MainRail);
@@ -646,9 +689,9 @@ mod tests {
     #[test]
     fn power_rail_top_negative_is_shorted_across_columns() {
         let b = board_full();
-        // top negative y=-2, 孔在 col 0 和 col 10
-        let a = b.at(0, -2).unwrap();
-        let c = b.at(10, -2).unwrap();
+        // top negative y=-4, 孔在 col 0 和 col 10
+        let a = b.at(0, -4).unwrap();
+        let c = b.at(10, -4).unwrap();
         let connected = b.connected_to(a);
         let ids: std::collections::HashSet<_> = connected.into_iter().collect();
         assert!(ids.contains(&c), "同 power rail 行的孔应该短接");
@@ -661,8 +704,8 @@ mod tests {
     fn power_rail_top_negative_and_bottom_negative_share_rail() {
         let b = board_full();
         // 用户约定: 上下两条同极性 shorted
-        let top_neg = b.at(0, -2).unwrap();
-        let bot_neg = b.at(0, 12).unwrap();
+        let top_neg = b.at(0, -4).unwrap();
+        let bot_neg = b.at(0, 14).unwrap();
         let connected = b.connected_to(top_neg);
         let ids: std::collections::HashSet<_> = connected.into_iter().collect();
         assert!(ids.contains(&bot_neg));
@@ -673,8 +716,8 @@ mod tests {
     #[test]
     fn positive_and_negative_rails_are_independent() {
         let b = board_full();
-        let neg = b.at(0, -2).unwrap();
-        let pos = b.at(0, -1).unwrap();
+        let neg = b.at(0, -4).unwrap();
+        let pos = b.at(0, -3).unwrap();
         let neg_ids: std::collections::HashSet<_> = b.connected_to(neg).into_iter().collect();
         let pos_ids: std::collections::HashSet<_> = b.connected_to(pos).into_iter().collect();
         assert!(neg_ids.is_disjoint(&pos_ids));
@@ -701,14 +744,14 @@ mod tests {
     #[test]
     fn power_rail_of_returns_correct_rail() {
         let b = board_full();
-        let id = b.at(0, -2).unwrap();
+        let id = b.at(0, -4).unwrap();
         let rail = b.power_rail_of(id).unwrap();
-        assert_eq!(rail.y, -2);
+        assert_eq!(rail.y, -4);
         assert_eq!(rail.polarity, Polarity::Negative);
 
-        let id = b.at(0, 13).unwrap();
+        let id = b.at(0, 15).unwrap();
         let rail = b.power_rail_of(id).unwrap();
-        assert_eq!(rail.y, 13);
+        assert_eq!(rail.y, 15);
         assert_eq!(rail.polarity, Polarity::Positive);
     }
 
@@ -778,14 +821,14 @@ mod tests {
     #[test]
     fn power_rail_anchor_returns_first_hole_in_top_rail() {
         let b = Breadboard::standard();
-        // 负极 anchor: top strip 的 y=-2 行, col 0
+        // 负极 anchor: top strip 的 y=-4 行, col 0
         let neg = b.power_rail_anchor(Polarity::Negative).unwrap();
         let neg_pos = b.hole(neg).position;
-        assert_eq!(neg_pos, Position { x: 0, y: -2 });
-        // 正极 anchor: top strip 的 y=-1 行, col 0
+        assert_eq!(neg_pos, Position { x: 0, y: -4 });
+        // 正极 anchor: top strip 的 y=-3 行, col 0
         let pos = b.power_rail_anchor(Polarity::Positive).unwrap();
         let pos_pos = b.hole(pos).position;
-        assert_eq!(pos_pos, Position { x: 0, y: -1 });
+        assert_eq!(pos_pos, Position { x: 0, y: -3 });
     }
 
     #[test]
@@ -793,5 +836,34 @@ mod tests {
         let b = Breadboard::new(30, 5);
         assert!(b.power_rail_anchor(Polarity::Negative).is_none());
         assert!(b.power_rail_anchor(Polarity::Positive).is_none());
+    }
+
+    // ============================================================
+    //  External gap (主区到 rail 之间的空行)
+    // ============================================================
+
+    #[test]
+    fn external_gaps_standard_board() {
+        let b = Breadboard::standard();
+        // top: y=-4, -3 是 rail, y=-2, -1 是 gap, y=0 是 main
+        // bottom: y=11 是 main, y=12, 13 是 gap, y=14, 15 是 rail
+        let gaps = b.external_gaps();
+        assert_eq!(gaps, vec![(-2, -1), (12, 13)]);
+    }
+
+    #[test]
+    fn external_gaps_in_at_returns_none() {
+        let b = Breadboard::standard();
+        // gap 行不能插线: at() 返回 None
+        assert_eq!(b.at(0, -2), None);
+        assert_eq!(b.at(15, -1), None);
+        assert_eq!(b.at(0, 12), None);
+        assert_eq!(b.at(28, 13), None);
+    }
+
+    #[test]
+    fn external_gaps_empty_without_rails() {
+        let b = Breadboard::new(30, 5);
+        assert!(b.external_gaps().is_empty());
     }
 }

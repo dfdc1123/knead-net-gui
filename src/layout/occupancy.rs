@@ -336,6 +336,7 @@ mod bbox_tests {
                 value: None,
                 pins: vec![PinId(0), PinId(1)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             }],
             pins: vec![
                 Pin {
@@ -365,7 +366,7 @@ mod bbox_tests {
         let mut layout = Layout::new(axial_circuit());
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -401,7 +402,7 @@ mod bbox_tests {
         let mut layout = Layout::new(axial_circuit());
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -445,6 +446,7 @@ mod bbox_tests {
             value: None,
             pins: vec![PinId(id * 2), PinId(id * 2 + 1)],
             footprint: Some(FootprintId(0)),
+                bridgeable: false,
         };
         let make_pin = |id: usize, comp_id: usize| Pin {
             id: PinId(id),
@@ -468,7 +470,7 @@ mod bbox_tests {
         // R1 摆在 (5, 2): bbox (5..=8, 2..=2), pin 在 (5,2) (8,2)
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -476,7 +478,7 @@ mod bbox_tests {
         // R2 摆在 (7, 2): bbox (7..=10, 2..=2), pin (7,2) 落在 R1 本体上
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 7, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -515,6 +517,7 @@ mod bbox_tests {
             value: None,
             pins: vec![PinId(id * 2), PinId(id * 2 + 1)],
             footprint: Some(FootprintId(0)),
+                bridgeable: false,
         };
         let make_pin = |id: usize, comp: usize, num: &str| Pin {
             id: PinId(id),
@@ -538,7 +541,7 @@ mod bbox_tests {
         // R1 bbox (5..=7, 2); pin 在 (5,2) (7,2)
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -547,7 +550,7 @@ mod bbox_tests {
         // (6,2) 是 R1 本体; (7,2) 是 R1 pin。
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 6, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -567,7 +570,7 @@ mod bbox_tests {
         let mut layout = Layout::new(&axial_circuit());
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 8, y: 2 },
                 rotation: Rotation::R180,
             },
@@ -635,6 +638,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(0), PinId(1), PinId(2)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             }],
             pins: vec![
                 crate::circuit::Pin {
@@ -690,14 +694,14 @@ mod tests {
         // two_component_fixture 的所有 pin 都 net: None
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 4 },
                 rotation: Rotation::R0,
             },
@@ -733,6 +737,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -741,6 +746,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -777,14 +783,14 @@ mod tests {
         // A 在 (0, 2), B 在 (0, 4) — 同 col 0, 不同 row, 不同 net
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 4 },
                 rotation: Rotation::R0,
             },
@@ -820,6 +826,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(0)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             }],
             pins: vec![Pin {
                 id: PinId(0),
@@ -838,7 +845,7 @@ mod tests {
         let mut layout = Layout::new(circuit);
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -881,6 +888,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -889,6 +897,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -924,14 +933,14 @@ mod tests {
         let mut layout = Layout::new(circuit);
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 4 },
                 rotation: Rotation::R0,
             },
@@ -952,7 +961,7 @@ mod tests {
         let mut layout = Layout::new(placed_q1_fixture());
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 10, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -1033,6 +1042,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1041,6 +1051,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(2), PinId(3)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1095,14 +1106,14 @@ mod tests {
         // 碰撞: (6,2) 是 R1.pin1 和 R2.pin0
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 6, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -1127,7 +1138,7 @@ mod tests {
         // 放 Q1, 占 (10,2) (11,2) (12,2)
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 10, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -1162,6 +1173,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1), PinId(2)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1170,6 +1182,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(3), PinId(4)],
                     footprint: Some(FootprintId(1)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1249,7 +1262,7 @@ mod tests {
         // Q1 在 (10, 2) R0 → 占 (10,2)(11,2)(12,2) (合法)
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 10, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -1257,7 +1270,7 @@ mod tests {
         // R1 在 (11, 2) R0 → 占 (11,2)(12,2) (跟 Q1 撞)
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 11, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -1294,6 +1307,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1302,6 +1316,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1338,14 +1353,14 @@ mod tests {
         // A 在上 rail: (0, 2), B 在下 rail: (0, 10) — 同 col, 不同 rail
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 10 },
                 rotation: Rotation::R0,
             },
@@ -1378,6 +1393,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1386,6 +1402,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1422,14 +1439,14 @@ mod tests {
         // A 在上 rail: (0, 2), B 在上 rail: (0, 4) — 同 col, 同 rail, 不同 net
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 4 },
                 rotation: Rotation::R0,
             },

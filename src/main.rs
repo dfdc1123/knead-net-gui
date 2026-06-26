@@ -1,9 +1,9 @@
 use std::fs;
 
 use knead_net::input::footprint::parse_many as parse_footprints;
-use knead_net::input::netlist::parse_netlist;
+use knead_net::input::netlist::{auto_mark_bridgeable, parse_netlist};
 use knead_net::{
-    Breadboard, Layout, Occupant, PathFinderRouter, PowerRailBinding, Router, SAConfig,
+    Breadboard, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router, SAConfig,
 };
 
 fn main() {
@@ -32,7 +32,18 @@ fn main() {
     let netlist = parse_netlist(&netlist_text).unwrap();
 
     // 3. 组合成 Circuit (footprint ref 在这一步自动连到 FootprintId)
-    let circuit = netlist.into_circuit(&footprints);
+    let mut circuit = netlist.into_circuit(&footprints);
+
+    // 3b. 自动标记可桥接元件: 2 pin + 一腿 power 一腿 signal
+    // 名字列表跟 power rail 的 positive/negative_names 一起用, 覆盖所有
+    // 可能出现的 power net 别名 (GND / +12V / VCC / 5V / 3V3 等)
+    let power_names = ["GND", "+12V", "VCC", "5V", "3V3"];
+    knead_net::input::netlist::auto_mark_bridgeable(&mut circuit, &power_names);
+    for c in circuit.components() {
+        if c.bridgeable {
+            eprintln!("  bridgeable: {} (kind={})", c.ref_(), c.kind());
+        }
+    }
 
     // 4. 布局: 模拟退火 + 压缩
     // 标准板: 30 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
@@ -86,15 +97,23 @@ fn main() {
             .map(|fp| fp.name())
             .unwrap_or("<none>");
         match layout.placement(c.id()) {
-            Some(p) => println!(
-                "  {:<3} ({:<4}) {:<48} -> ({:>2}, {}) {:?}",
-                c.ref_(),
-                c.kind(),
-                footprint_name,
-                p.position.x,
-                p.position.y,
-                p.rotation
-            ),
+            Some(p) => match p {
+                Placement::OnBoard { position, rotation } => println!(
+                    "  {:<3} ({:<4}) {:<48} -> ({:>2}, {}) {:?}",
+                    c.ref_(),
+                    c.kind(),
+                    footprint_name,
+                    position.x,
+                    position.y,
+                    rotation
+                ),
+                Placement::Bridged { .. } => println!(
+                    "  {:<3} ({:<4}) {:<48} -> 桥接",
+                    c.ref_(),
+                    c.kind(),
+                    footprint_name
+                ),
+            },
             None => println!(
                 "  {:<3} ({:<4}) {:<48} -> 未摆放",
                 c.ref_(),
@@ -106,13 +125,14 @@ fn main() {
 
     // 5. 接线: PathFinder 把所有 net 串起来。
     // 有冲突时, 不 return, 用 `from_layout_lossy` 尽力搭一个 occupancy 继续走。
+    let bridged_pins = layout.bridged_pins();
     let (wires, occ) = match layout.occupancy(&board) {
         Ok(occ) => {
             let router = PathFinderRouter {
                 max_iterations: 200,
                 history_increment: 1.0,
             };
-            let wires = router.route(&circuit, &board, &occ);
+            let wires = router.route(&circuit, &board, &occ, &bridged_pins);
             (wires, occ)
         }
         Err(errs) => {
@@ -125,7 +145,7 @@ fn main() {
                 max_iterations: 200,
                 history_increment: 1.0,
             };
-            let wires = router.route(&circuit, &board, &occ);
+            let wires = router.route(&circuit, &board, &occ, &bridged_pins);
             (wires, occ)
         }
     };

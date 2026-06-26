@@ -128,6 +128,22 @@ impl<'c> Layout<'c> {
         &self.wires
     }
 
+    /// 取出所有 bridged 元件的 pin-hole 对 (按 component 顺序展开成平铺列表)。
+    ///
+    /// 给 cost / 路由用: bridged 元件不进 SA, 但它的 pin 仍然要进 MST / rail
+    /// 冲突检查 (一个 bridged 电阻两端跨 rail, MST 必须包含它)。
+    pub fn bridged_pins(&self) -> Vec<(crate::circuit::PinId, HoleId)> {
+        let mut out = Vec::new();
+        for p in &self.placements {
+            if let Some(Placement::Bridged { pin_holes }) = p {
+                for &(hole_id, pin_id) in pin_holes {
+                    out.push((pin_id, hole_id));
+                }
+            }
+        }
+        out
+    }
+
     pub fn circuit(&self) -> &Circuit {
         self.circuit
     }
@@ -156,12 +172,24 @@ impl<'c> Layout<'c> {
         use crate::layout::cost::SAState;
         use crate::layout::sa;
 
+        // 跳 过已经摆好的 (用户手动 Bridged 或 OnBoard)。SA 只优化未摆的。
         let placeable: Vec<ComponentId> = self
             .circuit
             .components
             .iter()
-            .filter_map(|c| c.footprint.map(|_| c.id))
+            .filter_map(|c| {
+                if c.footprint.is_none() {
+                    return None;
+                }
+                if self.placements[c.id.0].is_some() {
+                    return None;
+                }
+                Some(c.id)
+            })
             .collect();
+
+        // bridged 元件的 pin 不进 SA, 但要进 cost / 路由 (跨 rail 时)
+        let bridged_pins = self.bridged_pins();
 
         if placeable.is_empty() {
             return self.validate(board);
@@ -177,8 +205,20 @@ impl<'c> Layout<'c> {
                 n_seeds: 1,
                 ..*config
             };
-            let state_s = sa::simulate(placeable.clone(), self.circuit, board, &cfg_s);
-            let cost_s = crate::layout::cost::cost(&state_s, self.circuit, board, &config.weights);
+            let state_s = sa::simulate(
+                placeable.clone(),
+                self.circuit,
+                board,
+                &cfg_s,
+                &bridged_pins,
+            );
+            let cost_s = crate::layout::cost::cost(
+                &state_s,
+                self.circuit,
+                board,
+                &bridged_pins,
+                &config.weights,
+            );
             if cost_s < best_cost {
                 best_cost = cost_s;
                 best_state = Some(state_s);
@@ -187,7 +227,7 @@ impl<'c> Layout<'c> {
         let best = best_state.expect("至少跑了一次");
 
         for (idx, &comp_id) in best.placeable.iter().enumerate() {
-            self.placements[comp_id.0] = Some(Placement {
+            self.placements[comp_id.0] = Some(Placement::OnBoard {
                 position: Position {
                     x: best.x[idx],
                     y: best.y[idx],
@@ -216,7 +256,7 @@ impl<'c> Layout<'c> {
             let footprint = &self.circuit.footprints[fid.0];
             let width = footprint_horizontal_width(footprint);
 
-            self.placements[component.id.0] = Some(Placement {
+            self.placements[component.id.0] = Some(Placement::OnBoard {
                 position: Position { x: col, y: row },
                 rotation: Rotation::R0,
             });
@@ -260,6 +300,7 @@ mod tests {
                 value: Some("BC547".to_string()),
                 pins: vec![PinId(0), PinId(1), PinId(2)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             }],
             pins: vec![
                 Pin {
@@ -323,7 +364,7 @@ mod tests {
     fn place_and_unplace() {
         let circuit = fixture();
         let mut layout = Layout::new(circuit);
-        let p = Placement {
+        let p = Placement::OnBoard {
             position: Position { x: 5, y: 2 },
             rotation: Rotation::R0,
         };
@@ -341,7 +382,7 @@ mod tests {
         let board = board();
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 10, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -361,7 +402,7 @@ mod tests {
         let board = board();
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 10, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -377,7 +418,7 @@ mod tests {
         // R90 at (0, 4): pin 2 落在 (0, 6) 越界
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 4 },
                 rotation: Rotation::R90,
             },
@@ -405,6 +446,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1), PinId(2)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -413,6 +455,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(3)],
                     footprint: None,
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -469,7 +512,7 @@ mod tests {
         // Q1 越界
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 4 },
                 rotation: Rotation::R90,
             },
@@ -477,7 +520,7 @@ mod tests {
         // ComponentId(1) 也摆上 (没 footprint 也能摆, 验证时才发现问题)
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 0 },
                 rotation: Rotation::R0,
             },
@@ -509,6 +552,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1), PinId(2)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -517,6 +561,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(3), PinId(4)],
                     footprint: Some(FootprintId(1)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -601,8 +646,13 @@ mod tests {
         layout.place_row(&board, 2).unwrap();
 
         let q1 = layout.placement(ComponentId(0)).unwrap();
-        assert_eq!(q1.position, Position { x: 0, y: 2 });
-        assert_eq!(q1.rotation, Rotation::R0);
+        match q1 {
+            Placement::OnBoard { position, rotation } => {
+                assert_eq!(position, Position { x: 0, y: 2 });
+                assert_eq!(rotation, Rotation::R0);
+            }
+            Placement::Bridged { .. } => panic!("期望 OnBoard, 实际 Bridged"),
+        }
     }
 
     #[test]
@@ -613,7 +663,12 @@ mod tests {
 
         // Q1 footprint 宽 3, 放 col 0, 下一个应从 col 3+1=4 开始
         let r1 = layout.placement(ComponentId(1)).unwrap();
-        assert_eq!(r1.position, Position { x: 4, y: 2 });
+        match r1 {
+            Placement::OnBoard { position, .. } => {
+                assert_eq!(position, Position { x: 4, y: 2 });
+            }
+            Placement::Bridged { .. } => panic!("期望 OnBoard, 实际 Bridged"),
+        }
     }
 
     #[test]
@@ -673,6 +728,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -681,6 +737,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: None,
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -725,7 +782,7 @@ mod tests {
         let board = board(); // 30x5
         let mut layout = Layout::new(fixture()); // 单 TO92, 宽 3
         // 手动把它放在 (28, 2) → pin 2 落在 (30, 2) 越界
-        layout.placements[ComponentId(0).0] = Some(Placement {
+        layout.placements[ComponentId(0).0] = Some(Placement::OnBoard {
             position: Position { x: 28, y: 2 },
             rotation: Rotation::R0,
         });
@@ -819,10 +876,16 @@ mod tests {
             for cid in [ComponentId(0), ComponentId(1)] {
                 let p = layout.placement(cid).unwrap();
                 assert!(
-                    matches!(p.rotation, Rotation::R0 | Rotation::R180),
+                    matches!(
+                        p,
+                        Placement::OnBoard {
+                            rotation: Rotation::R0 | Rotation::R180,
+                            ..
+                        }
+                    ),
                     "seed {seed}: cid {:?} 出现了 {:?}",
                     cid,
-                    p.rotation
+                    p
                 );
             }
         }
@@ -849,10 +912,113 @@ mod tests {
             max_iterations: 50,
             history_increment: 1.0,
         };
-        let wires = router.route(layout.circuit(), &board, &occ);
+        let wires = router.route(layout.circuit(), &board, &occ, &[]);
         for w in &wires {
             // 端点不能和 pin 撞
             assert!(occ.can_add_wire(w), "wire {:?} 跟 pin 撞了", w);
+        }
+    }
+
+    /// Bridged 跨 rail → 主区: 验证 bridged_pins 走通了整条链路
+    ///
+    /// 场景: 1 个 2-pin 电阻, 跨接 GND (负极轨) 和 主区某行。绑定 rail 到 GND net。
+    /// 期望:
+    /// - router 不在 bridged 两条腿之间生成 wire (它们物理上连好了)
+    /// - bridged 的主区那条腿的 net 跟其他 GND pin 一起, 走 rail 短接
+    /// - bridged 的 rail 那条腿不需要 wire 到 rail (已经在 rail 里)
+    #[test]
+    fn bridged_cross_rail_to_main_routes_correctly() {
+        use crate::Router;
+        use crate::circuit::{FootprintId, Net, NetId, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        // 2-pin 电阻, pin 1 (主区) + pin 2 (负极轨)
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R_BR".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 5, y: 0 },
+                },
+            ],
+        };
+        let r1 = Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+                bridgeable: false,
+        };
+        let r1_pins = vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            },
+        ];
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![r1],
+            pins: r1_pins,
+            nets: vec![Net {
+                id: NetId(0),
+                name: "GND".into(),
+                pins: vec![PinId(0), PinId(1)],
+            }],
+            footprints: vec![fp],
+        }));
+
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(0),
+        });
+        // pin 1 (主区) 在 (5, 0), pin 2 (负极轨) 在 (0, -4)
+        let h_main = board.at(5, 0).unwrap();
+        let h_rail = board.at(0, -4).unwrap();
+        let placement = Placement::Bridged {
+            pin_holes: [(h_main, PinId(0)), (h_rail, PinId(1))],
+        };
+
+        let mut layout = Layout::new(circuit);
+        layout.place(ComponentId(0), placement);
+        let occ = layout.occupancy(&board).expect("bridged layout 应该合法");
+
+        let router = PathFinderRouter {
+            max_iterations: 50,
+            history_increment: 1.0,
+        };
+        let wires = router.route(circuit, &board, &occ, &layout.bridged_pins());
+
+        // 验证: 没有任何 wire 走到 (0, -4) (rail 端点已经被 pin 占, 不能 wire)
+        for w in &wires {
+            let p1 = board.hole(w.from).position;
+            let p2 = board.hole(w.to).position;
+            // 都不该是 (0, -4) 这个孔
+            assert!(
+                !(p1.x == 0 && p1.y == -4),
+                "wire 端点不该在 rail 孔 (rail 上都是短接, 0, -4): {:?}",
+                p1
+            );
+            assert!(
+                !(p2.x == 0 && p2.y == -4),
+                "wire 端点不该在 rail 孔 (rail 上都是短接, 0, -4): {:?}",
+                p2
+            );
         }
     }
 
@@ -909,6 +1075,7 @@ mod tests {
                 value: None,
                 pins: vec![pin_id],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             });
             pins.push(Pin {
                 id: pin_id,
@@ -927,6 +1094,7 @@ mod tests {
                 value: None,
                 pins: vec![pin_id],
                 footprint: Some(FootprintId(1)),
+                bridgeable: false,
             });
             pins.push(Pin {
                 id: pin_id,
@@ -945,6 +1113,7 @@ mod tests {
                 value: None,
                 pins: vec![pin_id],
                 footprint: Some(FootprintId(2)),
+                bridgeable: false,
             });
             pins.push(Pin {
                 id: pin_id,

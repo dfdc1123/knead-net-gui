@@ -15,7 +15,7 @@ use std::fmt::Write;
 
 use crate::circuit::{Circuit, ComponentId, Position};
 use crate::layout::placement::BBox;
-use crate::layout::{Breadboard, Layout, Occupant, Placement, Polarity, Region, Wire};
+use crate::layout::{Breadboard, HoleId, Layout, Occupant, Placement, Polarity, Region, Wire};
 
 const CELL_X: f32 = 28.0; // 每列像素
 const CELL_Y: f32 = 44.0; // 每行像素 (比列宽, 给通道留地方)
@@ -52,6 +52,17 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
     // 画中央通道 (blocked row 拼接的带) — 面包板中线的简化表示。
     if let Some((gap_top, gap_bottom)) = gap_extent(board) {
         let gap_y = MARGIN + (gap_top as i32 + y_offset) as f32 * CELL_Y;
+        let gap_h = (gap_bottom - gap_top + 1) as f32 * CELL_Y;
+        let inner_w = board.cols() as f32 * CELL_X;
+        let _ = writeln!(
+            out,
+            r##"<rect x="{MARGIN}" y="{gap_y:.1}" width="{inner_w}" height="{gap_h:.1}" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.5"/>"##
+        );
+    }
+
+    // 画 external gap (主区到 power rail 之间的 2 行间隔, 同款灰带)
+    for (gap_top, gap_bottom) in board.external_gaps() {
+        let gap_y = MARGIN + (gap_top + y_offset) as f32 * CELL_Y;
         let gap_h = (gap_bottom - gap_top + 1) as f32 * CELL_Y;
         let inner_w = board.cols() as f32 * CELL_X;
         let _ = writeln!(
@@ -101,27 +112,41 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
         if component.footprint().is_none() {
             continue;
         }
-        let Some(bbox) = component_bbox(circuit, board, component.id(), placement) else {
-            continue;
-        };
+        match placement {
+            Placement::OnBoard { .. } => {
+                let Some(bbox) = component_bbox(circuit, board, component.id(), placement) else {
+                    continue;
+                };
 
-        let bx = MARGIN + bbox.min_x as f32 * CELL_X;
-        let by = MARGIN + (bbox.min_y + y_offset) as f32 * CELL_Y;
-        let bw = (bbox.max_x - bbox.min_x + 1) as f32 * CELL_X;
-        let bh = (bbox.max_y - bbox.min_y + 1) as f32 * CELL_Y;
-        let cx = bx + bw / 2.0;
-        let cy = by + bh / 2.0;
-        let color = component_color(i);
+                let bx = MARGIN + bbox.min_x as f32 * CELL_X;
+                let by = MARGIN + (bbox.min_y + y_offset) as f32 * CELL_Y;
+                let bw = (bbox.max_x - bbox.min_x + 1) as f32 * CELL_X;
+                let bh = (bbox.max_y - bbox.min_y + 1) as f32 * CELL_Y;
+                let cx = bx + bw / 2.0;
+                let cy = by + bh / 2.0;
+                let color = component_color(i);
 
-        let _ = writeln!(
-            out,
-            r#"<rect x="{bx:.1}" y="{by:.1}" width="{bw:.1}" height="{bh:.1}" rx="4" fill="{color}" fill-opacity="0.18" stroke="{color}" stroke-width="1.5"/>"#
-        );
-        let _ = writeln!(
-            out,
-            r#"<text x="{cx:.1}" y="{cy:.1}" font-size="13" font-weight="bold" fill="{color}" text-anchor="middle" dominant-baseline="central">{}</text>"#,
-            html_escape(component.ref_())
-        );
+                let _ = writeln!(
+                    out,
+                    r#"<rect x="{bx:.1}" y="{by:.1}" width="{bw:.1}" height="{bh:.1}" rx="4" fill="{color}" fill-opacity="0.18" stroke="{color}" stroke-width="1.5"/>"#
+                );
+                let _ = writeln!(
+                    out,
+                    r#"<text x="{cx:.1}" y="{cy:.1}" font-size="13" font-weight="bold" fill="{color}" text-anchor="middle" dominant-baseline="central">{}</text>"#,
+                    html_escape(component.ref_())
+                );
+            }
+            Placement::Bridged { pin_holes } => {
+                draw_bridged(
+                    &mut out,
+                    circuit,
+                    board,
+                    component.id(),
+                    &pin_holes,
+                    y_offset,
+                );
+            }
+        }
     }
 
     // 2) 接线 (同行 → Z 形通道, 跨行 → 直线)
@@ -403,4 +428,174 @@ fn component_bbox(
     let fp = &circuit.footprints()[fid.raw()];
     let placed = p.apply(comp, fp, board, circuit.pins()).ok()?;
     placed.bbox
+}
+
+/// 画一个 bridged 元件: 两根 leads (从 body 到两个 pin) + body (中点小矩形, 同 OnBoard 风格)。
+///
+/// `y_offset` 是把面包板 y 偏到画布像素 y 的偏移量。
+fn draw_bridged(
+    out: &mut String,
+    circuit: &Circuit,
+    board: &Breadboard,
+    cid: ComponentId,
+    pin_holes: &[(HoleId, crate::circuit::PinId); 2],
+    y_offset: i32,
+) {
+    let comp = &circuit.components()[cid.raw()];
+    let color = component_color(cid.raw());
+
+    let (h1, _) = pin_holes[0];
+    let (h2, _) = pin_holes[1];
+    let p1 = board.hole(h1).position;
+    let p2 = board.hole(h2).position;
+    let (x1, y1) = hole_px_from_pos(Position {
+        x: p1.x,
+        y: p1.y + y_offset,
+    });
+    let (x2, y2) = hole_px_from_pos(Position {
+        x: p2.x,
+        y: p2.y + y_offset,
+    });
+
+    // body: 在两点中点画小矩形, 旋转 90° 让它垂直于 leads (看起来像真电阻的 body)
+    let mx = (x1 + x2) / 2.0;
+    let my = (y1 + y2) / 2.0;
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let length = (dx * dx + dy * dy).sqrt();
+    // body 长度 = leads 长度的 40% (min 24, max 44), 宽度 14
+    let body_len = (length * 0.4).clamp(24.0, 44.0);
+    let body_w = 14.0_f32;
+    // 角度 (弧度): leads 方向
+    let angle = dy.atan2(dx).to_degrees();
+
+    // leads: 两根细线从 pin 孔到 body 端点
+    let _ = writeln!(
+        out,
+        r##"<line x1="{x1:.1}" y1="{y1:.1}" x2="{mx:.1}" y2="{my:.1}" stroke="{color}" stroke-width="2" stroke-linecap="round" opacity="0.85"/>"##,
+        x1 = x1,
+        y1 = y1,
+        mx = mx,
+        my = my,
+        color = color
+    );
+    let _ = writeln!(
+        out,
+        r##"<line x1="{x2:.1}" y1="{y2:.1}" x2="{mx:.1}" y2="{my:.1}" stroke="{color}" stroke-width="2" stroke-linecap="round" opacity="0.85"/>"##,
+        x2 = x2,
+        y2 = y2,
+        mx = mx,
+        my = my,
+        color = color
+    );
+
+    // body: 旋转矩形, 同 OnBoard 风格 (圆角 + 半透明 + 边线)
+    let _ = writeln!(
+        out,
+        r##"<rect x="{bx:.1}" y="{by:.1}" width="{bw:.1}" height="{bh:.1}" rx="3" fill="{color}" fill-opacity="0.30" stroke="{color}" stroke-width="1.5" transform="rotate({angle:.1} {mx:.1} {my:.1})"/>"##,
+        bx = mx - body_len / 2.0,
+        by = my - body_w / 2.0,
+        bw = body_len,
+        bh = body_w,
+        color = color,
+        angle = angle,
+        mx = mx,
+        my = my,
+    );
+    // ref 标签: 跟着 body 旋转 (保证文字始终朝上有点不现实, 这里直接水平画在 body 中心)
+    let _ = writeln!(
+        out,
+        r##"<text x="{mx:.1}" y="{my:.1}" font-size="10" font-weight="bold" fill="{color}" text-anchor="middle" dominant-baseline="central" stroke="#fafafa" stroke-width="2" paint-order="stroke">{ref_}</text>"##,
+        mx = mx,
+        my = my,
+        color = color,
+        ref_ = html_escape(comp.ref_())
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::circuit::{
+        Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin,
+        PinId,
+    };
+    use crate::layout::Layout;
+    use crate::layout::placement::Rotation;
+
+    fn board() -> Breadboard {
+        Breadboard::standard()
+    }
+
+    /// 验证 bridged 元件被画成: 2 根 leads + 1 个 body 矩形 + ref 标签
+    #[test]
+    fn bridged_renders_with_leads_and_body() {
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R_BR".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 5, y: 0 },
+                },
+            ],
+        };
+        let r1 = Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+                bridgeable: false,
+        };
+        let pins = vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                net: None,
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                net: None,
+            },
+        ];
+        let circuit = Circuit {
+            components: vec![r1],
+            pins,
+            nets: vec![Net {
+                id: NetId(0),
+                name: "n".into(),
+                pins: vec![],
+            }],
+            footprints: vec![fp],
+        };
+
+        let b = board();
+        let h_main = b.at(5, 0).unwrap();
+        let h_rail = b.at(0, -4).unwrap();
+        let placement = Placement::Bridged {
+            pin_holes: [(h_main, PinId(0)), (h_rail, PinId(1))],
+        };
+        let mut layout = Layout::new(&circuit);
+        layout.place(ComponentId(0), placement);
+        let svg = to_svg(&circuit, &b, &layout);
+
+        // 验证 SVG 里有 body 相关的 SVG 元素 (rect 旋转, 文字, leads 线)
+        assert!(svg.contains("R1"), "SVG 应该有 ref 标签 R1");
+        assert!(svg.contains("<line"), "SVG 应该有 leads (line 元素)");
+        assert!(
+            svg.contains("rotate("),
+            "SVG 里 body 矩形应该旋转 (rotate transform)"
+        );
+    }
 }

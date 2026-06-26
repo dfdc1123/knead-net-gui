@@ -539,7 +539,13 @@ impl Default for FDConfig {
 }
 
 /// 评估当前状态的 cost。
-pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights) -> f64 {
+pub fn cost(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    w: &Weights,
+) -> f64 {
     let cols_i = board.cols() as i32;
 
     // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
@@ -581,7 +587,16 @@ pub fn cost(state: &SAState, circuit: &Circuit, board: &Breadboard, w: &Weights)
         bboxes.push(BBox::from_points(world_positions));
     }
 
-    // 1b. 注入 power rail 虚拟 pin (如果用户绑定了 net)
+    // 1b. 注入 bridged 元件的 pin (Bridged 不进 SA, 但它的 pin 仍要进 MST / rail 冲突)
+    for &(pin_id, hole_id) in bridged_pins {
+        let pin = &circuit.pins[pin_id.0];
+        let pos = board.hole(hole_id).position;
+        let rail_id = board.rail_id_of(hole_id);
+        holes.push((pos.x, pos.y, rail_id));
+        nets.push(pin.net);
+    }
+
+    // 1c. 注入 power rail 虚拟 pin (如果用户绑定了 net)
     //    虚拟 pin 落在 rail 的 anchor 位置, 挂在绑定的 net 上。
     //    后续步骤会自然处理: 算 OOB 时它是有效 rail, 算 MST 时它跟同 net 的
     //    真实 pin 连边, 算 rail 冲突时它跟同 rail 的别 net pin 冲突。
@@ -841,6 +856,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0), PinId(1)],
             footprint: Some(FootprintId(0)),
+                bridgeable: false,
         };
         let pins = vec![
             Pin {
@@ -890,7 +906,7 @@ mod tests {
     fn empty_state_costs_zero() {
         let (circuit, _) = two_pin_in_net();
         let state = SAState::from_order(vec![], 2, &[]);
-        let c = cost(&state, &circuit, &board(), &Weights::default());
+        let c = cost(&state, &circuit, &board(), &[], &Weights::default());
         assert_eq!(c, 0.0);
     }
 
@@ -899,7 +915,7 @@ mod tests {
         // 2 pin 紧挨着 (0, 2) 和 (1, 2), 都在同一 net → HPWL = 1 - 0 = 1
         let (circuit, cid) = two_pin_in_net();
         let state = SAState::from_order(vec![cid], 2, &[2]);
-        let c = cost(&state, &circuit, &board(), &weights_legacy());
+        let c = cost(&state, &circuit, &board(), &[], &weights_legacy());
         assert!((c - 1.0).abs() < 1e-9, "expected 1.0, got {}", c);
     }
 
@@ -915,6 +931,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..2)
@@ -935,12 +952,12 @@ mod tests {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
         // 不撞: x = [0, 2]
         state.x = vec![0, 2];
-        let c_clean = cost(&state, &circuit, &board(), &weights_legacy());
+        let c_clean = cost(&state, &circuit, &board(), &[], &weights_legacy());
         assert_eq!(c_clean, 0.0);
 
         // 撞: x = [0, 0]
         state.x = vec![0, 0];
-        let c_coll = cost(&state, &circuit, &board(), &weights_legacy());
+        let c_coll = cost(&state, &circuit, &board(), &[], &weights_legacy());
         let expected = weights_legacy().pin_overlap + weights_legacy().b_box_overlap;
         assert!(
             (c_coll - expected).abs() < 1e-9,
@@ -962,6 +979,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..2)
@@ -991,13 +1009,13 @@ mod tests {
         // 不冲突: x = [0, 2]
         let mut s = state.clone();
         s.x = vec![0, 2];
-        let c_clean = cost(&s, &circuit, &board(), &weights_legacy());
+        let c_clean = cost(&s, &circuit, &board(), &[], &weights_legacy());
         assert_eq!(c_clean, 0.0);
 
         // 冲突: x = [0, 0] (同列, 同孔 → pin_collision + bbox_collision + column_conflict)
         let mut s = state.clone();
         s.x = vec![0, 0];
-        let c_coll = cost(&s, &circuit, &board(), &weights_legacy());
+        let c_coll = cost(&s, &circuit, &board(), &[], &weights_legacy());
         let expected = weights_legacy().pin_overlap
             + weights_legacy().b_box_overlap
             + weights_legacy().column_conflict;
@@ -1012,7 +1030,7 @@ mod tests {
         let mut s = state;
         s.x = vec![0, 0];
         s.y = vec![2, 3];
-        let c_col_only = cost(&s, &circuit, &board(), &weights_legacy());
+        let c_col_only = cost(&s, &circuit, &board(), &[], &weights_legacy());
         assert!(
             (c_col_only - weights_legacy().column_conflict).abs() < 1e-9,
             "expected only column_conflict penalty, got {}",
@@ -1033,6 +1051,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..2)
@@ -1061,7 +1080,7 @@ mod tests {
         // 同 col 0, C0 在上 rail (y=2), C1 在下 rail (y=10) — 物理不连通
         state.x = vec![0, 0];
         state.y = vec![2, 10];
-        let c = cost(&state, &circuit, &board, &weights_legacy());
+        let c = cost(&state, &circuit, &board, &[], &weights_legacy());
         assert_eq!(
             c, 0.0,
             "上下 rail 同列不同 net 不该被 cost 记为冲突, got {c}"
@@ -1078,6 +1097,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0)],
             footprint: Some(FootprintId(0)),
+                bridgeable: false,
         };
         let pins = vec![Pin {
             id: PinId(0),
@@ -1094,7 +1114,7 @@ mod tests {
         };
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
         state.y[0] = -5;
-        let c = cost(&state, &circuit, &board(), &Weights::default());
+        let c = cost(&state, &circuit, &board(), &[], &Weights::default());
         assert!(c >= Weights::default().out_of_bounds);
     }
 
@@ -1110,6 +1130,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i * 2), PinId(i * 2 + 1)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..10)
@@ -1162,6 +1183,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..4)
@@ -1203,6 +1225,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..3)
@@ -1251,6 +1274,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..3)
@@ -1293,6 +1317,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i * 2), PinId(i * 2 + 1)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..10)
@@ -1387,6 +1412,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i * 2), PinId(i * 2 + 1)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins: Vec<Pin> = (0..10)
@@ -1525,8 +1551,8 @@ mod tests {
     #[test]
     fn mst_same_power_rail_row_is_zero() {
         let b = Breadboard::standard();
-        // top negative y=-2, col 0 和 col 10
-        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 10, -2)]);
+        // top negative y=-4, col 0 和 col 10
+        let len = mst_wire_length(&[pin(&b, 0, -4), pin(&b, 10, -4)]);
         assert_eq!(len, 0.0, "同 power rail 行内应该 shorted, MST = 0");
     }
 
@@ -1534,7 +1560,7 @@ mod tests {
     #[test]
     fn mst_top_and_bottom_same_polarity_is_zero() {
         let b = Breadboard::standard();
-        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 0, 12)]);
+        let len = mst_wire_length(&[pin(&b, 0, -4), pin(&b, 0, 14)]);
         assert_eq!(len, 0.0, "上下两条同极性应该 shorted, MST = 0");
     }
 
@@ -1542,9 +1568,9 @@ mod tests {
     #[test]
     fn mst_positive_and_negative_is_manhattan() {
         let b = Breadboard::standard();
-        // (0, -2) negative, (6, -1) positive → |6| + |1| = 7
+        // (0, -4) negative, (6, -3) positive → |6| + |1| = 7
         // (6 是 group 第二个的开始: cols 6..10)
-        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 6, -1)]);
+        let len = mst_wire_length(&[pin(&b, 0, -4), pin(&b, 6, -3)]);
         assert_eq!(len, 7.0, "正负极不短接, MST = Manhattan");
     }
 
@@ -1552,19 +1578,19 @@ mod tests {
     #[test]
     fn mst_power_rail_to_main_is_manhattan() {
         let b = Breadboard::standard();
-        // top negative (0, -2) 跟 main upper (0, 0): |0| + |2| = 2
-        let len = mst_wire_length(&[pin(&b, 0, -2), pin(&b, 0, 0)]);
-        assert_eq!(len, 2.0);
+        // top negative (0, -4) 跟 main upper (0, 0): |0| + |4| = 4
+        let len = mst_wire_length(&[pin(&b, 0, -4), pin(&b, 0, 0)]);
+        assert_eq!(len, 4.0);
     }
 
     // ============================================================
     //  PowerRailBinding 虚拟 pin
     // ============================================================
 
-    /// 绑定 GND 到负极: 1 个 GND pin 在 (10, 0), 加上虚拟 pin 在 (0, -2)。
-    /// MST 距离 = |10| + |2| = 12 (主区到 rail 的 jumper 长度)。
+    /// 绑定 GND 到负极: 1 个 GND pin 在 (10, 0), 加上虚拟 pin 在 (0, -4)。
+    /// MST 距离 = |10| + |4| = 14 (主区到 rail 的 jumper 长度)。
     /// 不绑定时, 那个 pin 单独一个节点, MST = 0。
-    /// 用 delta 检验: cost(绑定) - cost(不绑定) 应该 = 12 * hpwl_weight。
+    /// 用 delta 检验: cost(绑定) - cost(不绑定) 应该 = 14 * hpwl_weight。
     #[test]
     fn cost_with_binding_reflects_rail_jumper() {
         use crate::circuit::{ComponentId, FootprintId, NetId, PinId};
@@ -1585,6 +1611,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0)],
             footprint: Some(FootprintId(0)),
+                bridgeable: false,
         };
         let pin = crate::circuit::Pin {
             id: PinId(0),
@@ -1611,20 +1638,20 @@ mod tests {
 
         // 不绑定
         let board_no_bind = Breadboard::standard();
-        let cost_no = cost(&state, &circuit, &board_no_bind, &w);
+        let cost_no = cost(&state, &circuit, &board_no_bind, &[], &w);
 
-        // 绑定: 虚拟 pin (0, -2) 加入 net, MST = |10| + |2| = 12
+        // 绑定: 虚拟 pin (0, -4) 加入 net, MST = |10| + |4| = 14
         let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
             positive: NetId(0),
             negative: NetId(0),
         });
-        let cost_with = cost(&state, &circuit, &board, &w);
+        let cost_with = cost(&state, &circuit, &board, &[], &w);
 
         let delta = cost_with - cost_no;
-        let expected_delta = 12.0 * w.hpwl; // 纯 MST 增量
+        let expected_delta = 14.0 * w.hpwl; // 纯 MST 增量
         assert!(
             (delta - expected_delta).abs() < 0.01,
-            "绑定后 cost 增量 = MST 12, 实际 delta = {delta}, 期望 = {expected_delta}"
+            "绑定后 cost 增量 = MST 14, 实际 delta = {delta}, 期望 = {expected_delta}"
         );
     }
 
@@ -1657,6 +1684,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0), PinId(1)],
             footprint: Some(FootprintId(0)),
+                bridgeable: false,
         };
         let pins = vec![
             crate::circuit::Pin {
@@ -1691,6 +1719,7 @@ mod tests {
             &state,
             &circuit,
             &board,
+            &[],
             &crate::layout::cost::Weights::default(),
         );
         // cost = MST 1 (同 rail 不同 col, |Δcol|=1) + compactness 1.0 (2×1×0.5) = 2.0
@@ -1716,6 +1745,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins: Vec<Pin> = (0..2)
@@ -1744,7 +1774,7 @@ mod tests {
             y: vec![0, 1],
             rotation: vec![Rotation::R0, Rotation::R0],
         };
-        let c = cost(&state, &circuit, &board(), &weights_legacy());
+        let c = cost(&state, &circuit, &board(), &[], &weights_legacy());
         assert!(c.abs() < 1e-9, "零跳线布局应该 cost = 0, got {}", c);
     }
 
@@ -1765,6 +1795,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..2)
@@ -1797,7 +1828,7 @@ mod tests {
             y: vec![2, 2],
             rotation: vec![Rotation::R0; 2],
         };
-        let c_tight = cost(&s_tight, &circuit, &board(), &w);
+        let c_tight = cost(&s_tight, &circuit, &board(), &[], &w);
         // 同 row 2, x 拉开 (0, 5) → bbox 6 × 1 = 6 → cost 3.0
         let s_wide = SAState {
             placeable: vec![ComponentId(0), ComponentId(1)],
@@ -1805,7 +1836,7 @@ mod tests {
             y: vec![2, 2],
             rotation: vec![Rotation::R0; 2],
         };
-        let c_wide = cost(&s_wide, &circuit, &board(), &w);
+        let c_wide = cost(&s_wide, &circuit, &board(), &[], &w);
         // 贴一起: bbox 2×1 = 2 → 1.0
         // 拉开 5 列: bbox 6×1 = 6 → 3.0
         assert!(
@@ -1831,6 +1862,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..2)
@@ -1863,7 +1895,7 @@ mod tests {
             y: vec![2, 2],
             rotation: vec![Rotation::R0; 2],
         };
-        let c_horiz = cost(&s_horiz, &circuit, &board(), &w);
+        let c_horiz = cost(&s_horiz, &circuit, &board(), &[], &w);
 
         // 拉开 5 cells (y 0..4, height 5) → cost = 0.5 * 1 * 5 = 2.5 (同 col)
         let s_vert = SAState {
@@ -1872,7 +1904,7 @@ mod tests {
             y: vec![0, 4],
             rotation: vec![Rotation::R0; 2],
         };
-        let c_vert = cost(&s_vert, &circuit, &board(), &w);
+        let c_vert = cost(&s_vert, &circuit, &board(), &[], &w);
 
         assert!(
             (c_horiz - c_vert).abs() < 1e-9,
@@ -1893,6 +1925,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..2)
@@ -1925,7 +1958,7 @@ mod tests {
             y: vec![0, 1], // 都是上 rail
             rotation: vec![Rotation::R0; 2],
         };
-        let c_same = cost(&s_same, &circuit, &board, &w);
+        let c_same = cost(&s_same, &circuit, &board, &[], &w);
 
         // 跨 rail (中央通道两侧): 加 rail_crossing
         let s_cross = SAState {
@@ -1934,7 +1967,7 @@ mod tests {
             y: vec![0, 10], // 上 + 下
             rotation: vec![Rotation::R0; 2],
         };
-        let c_cross = cost(&s_cross, &circuit, &board, &w);
+        let c_cross = cost(&s_cross, &circuit, &board, &[], &w);
 
         let delta = c_cross - c_same;
         assert!(
@@ -1959,6 +1992,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(i)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             })
             .collect();
         let pins = (0..3)
@@ -1991,7 +2025,7 @@ mod tests {
             y: vec![0, 1, 2],
             rotation: vec![Rotation::R0; 3],
         };
-        let c_all_upper = cost(&s_all_upper, &circuit, &board, &w);
+        let c_all_upper = cost(&s_all_upper, &circuit, &board, &[], &w);
 
         // 1 个下 rail (y=10), 2 个上 rail (y=0, 1)
         let s_split = SAState {
@@ -2000,7 +2034,7 @@ mod tests {
             y: vec![0, 1, 10],
             rotation: vec![Rotation::R0; 3],
         };
-        let c_split = cost(&s_split, &circuit, &board, &w);
+        let c_split = cost(&s_split, &circuit, &board, &[], &w);
 
         // 都上 rail: x=0..2, y=0..2, bbox = 3×3 = 9 → cost 4.5
         assert!(

@@ -45,8 +45,18 @@ impl Wire {
 /// - Wire 只用来跨列连接 (例如把列 5 的某孔连到列 10 的某孔)
 /// - 列内多点接到一个 net: 随便挑该列上的孔当 wire 端点, 面包板自动
 ///   把同列所有 pin 连在一起
+///
+/// `bridged_pins` 是 bridged 元件 (body 浮在板外) 的 pin-hole 对, 它们已经
+/// 物理连好了 (腿到腿的导通就是元件本身), 不需要 wire。**进 net dedup,
+/// 但不出 wire**。
 pub trait Router {
-    fn route(&self, circuit: &Circuit, board: &Breadboard, occupancy: &Occupancy) -> Vec<Wire>;
+    fn route(
+        &self,
+        circuit: &Circuit,
+        board: &Breadboard,
+        occupancy: &Occupancy,
+        bridged_pins: &[(crate::circuit::PinId, HoleId)],
+    ) -> Vec<Wire>;
 }
 
 // ============================================================
@@ -99,7 +109,13 @@ impl Default for PathFinderRouter {
 }
 
 impl Router for PathFinderRouter {
-    fn route(&self, circuit: &Circuit, board: &Breadboard, occupancy: &Occupancy) -> Vec<Wire> {
+    fn route(
+        &self,
+        circuit: &Circuit,
+        board: &Breadboard,
+        occupancy: &Occupancy,
+        bridged_pins: &[(crate::circuit::PinId, HoleId)],
+    ) -> Vec<Wire> {
         // PinId → HoleId 反查 (从 occupancy 派生, 包含 pin 和已存在的 wire)
         let pin_hole: HashMap<PinId, HoleId> = board
             .holes()
@@ -129,6 +145,23 @@ impl Router for PathFinderRouter {
             pins.sort_by_key(|&(x, y, r)| (r, x, y));
             pins.dedup_by_key(|&mut (_, _, r)| r);
             net_pins[net.id.0] = pins;
+        }
+
+        // 注入 bridged 元件的 pin: 这些 pin 已经在物理上连好了 (腿到腿)。
+        // 跟 OnBoard pin 一样进 net 的 pin 列表, 经过 dedup_by_key 后会跟同 rail
+        // 的其他 pin 合并 (因为 rail 内部 shorted)。
+        for &(pin_id, hole_id) in bridged_pins {
+            if let Some(pin) = circuit.pins().get(pin_id.0) {
+                if let Some(net) = pin.net {
+                    if (net.0) < net_pins.len() {
+                        let pos = board.hole(hole_id).position;
+                        let rail_id = board.rail_id_of(hole_id);
+                        net_pins[net.0].push((pos.x, pos.y, rail_id));
+                        net_pins[net.0].sort_by_key(|&(x, y, r)| (r, x, y));
+                        net_pins[net.0].dedup_by_key(|&mut (_, _, r)| r);
+                    }
+                }
+            }
         }
 
         // 注入 power rail 虚拟 pin: 每个 bound rail 加一个 anchor 位置的 pin,
@@ -433,6 +466,7 @@ mod tests {
                 value: None,
                 pins: vec![p1, p2],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             });
         }
         let nets = vec![Net {
@@ -455,7 +489,7 @@ mod tests {
         for i in 0..n {
             layout.place(
                 ComponentId(i),
-                Placement {
+                Placement::OnBoard {
                     position: Position { x: i as i32, y: 1 },
                     rotation: Rotation::R90,
                 },
@@ -474,7 +508,7 @@ mod tests {
         place_linear(&mut layout, 2);
         let occ = layout.occupancy(&b).unwrap();
 
-        let wires = PathFinderRouter::default().route(&circuit, &b, &occ);
+        let wires = PathFinderRouter::default().route(&circuit, &b, &occ, &[]);
         assert_eq!(wires.len(), 1, "2 columns → 1 wire");
         assert_eq!(wires[0].net, NetId(0));
     }
@@ -488,7 +522,7 @@ mod tests {
         place_linear(&mut layout, 3);
         let occ = layout.occupancy(&b).unwrap();
 
-        let wires = PathFinderRouter::default().route(&circuit, &b, &occ);
+        let wires = PathFinderRouter::default().route(&circuit, &b, &occ, &[]);
         assert_eq!(wires.len(), 2, "3 columns → 2 wires (tree)");
     }
 
@@ -508,6 +542,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(0)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             }],
             pins: vec![Pin {
                 id: PinId(0),
@@ -526,14 +561,14 @@ mod tests {
         let mut layout = Layout::new(&circuit);
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         let occ = layout.occupancy(&b).unwrap();
 
-        let wires = PathFinderRouter::default().route(&circuit, &b, &occ);
+        let wires = PathFinderRouter::default().route(&circuit, &b, &occ, &[]);
         assert_eq!(wires.len(), 0, "all pins in 1 column → 0 wires");
     }
 
@@ -581,6 +616,7 @@ mod tests {
                 value: None,
                 pins: vec![p1, p2],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             });
         }
         // 收集每个 net 的 pin
@@ -623,7 +659,7 @@ mod tests {
         for (i, &(x, y)) in positions.iter().enumerate() {
             layout.place(
                 ComponentId(i),
-                Placement {
+                Placement::OnBoard {
                     position: Position { x, y },
                     rotation: Rotation::R90,
                 },
@@ -631,7 +667,7 @@ mod tests {
         }
         let occ = layout.occupancy(&b).unwrap();
 
-        let wires = PathFinderRouter::default().route(&circuit, &b, &occ);
+        let wires = PathFinderRouter::default().route(&circuit, &b, &occ, &[]);
         // net 0: 3 cols → 2 wires; net 1: 2 cols → 1 wire; total 3
         assert_eq!(wires.len(), 3, "got wires: {wires:?}");
 
@@ -685,6 +721,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -693,6 +730,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(2)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -711,7 +749,7 @@ mod tests {
         // R1 摆在 (5, 2): bbox (5..=8, 2..=2), pin 在 (5,2)(8,2). blocked: (6,2)(7,2).
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 2 },
                 rotation: Rotation::R0,
             },
@@ -719,13 +757,13 @@ mod tests {
         // R2 摆在 (10, 2) R0: bbox (10..=13, 2..=2), pin 在 (10,2)(13,2). blocked: (11,2)(12,2).
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 10, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         let occ = layout.occupancy(&b).unwrap();
-        let wires = PathFinderRouter::default().route(circuit, &b, &occ);
+        let wires = PathFinderRouter::default().route(circuit, &b, &occ, &[]);
         // wire 端点 必须在空孔上, 不能落在 (6,2)(7,2)(11,2)(12,2) 这些 Blocked 孔上
         for w in &wires {
             for h in w.contacts() {
@@ -767,6 +805,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -775,6 +814,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
+                bridgeable: false,
                 },
             ],
             pins: vec![
@@ -804,20 +844,20 @@ mod tests {
         // A 在 (0, 2) 上 rail, B 在 (5, 10) 下 rail — 跨 rail 又跨 col
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 0, y: 2 },
                 rotation: Rotation::R0,
             },
         );
         layout.place(
             ComponentId(1),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 10 },
                 rotation: Rotation::R0,
             },
         );
         let occ = layout.occupancy(&b).unwrap();
-        let wires = PathFinderRouter::default().route(circuit, &b, &occ);
+        let wires = PathFinderRouter::default().route(circuit, &b, &occ, &[]);
         assert_eq!(wires.len(), 1, "跨 rail 跨 col 同 net → 1 根 wire");
         let w = &wires[0];
         let p1 = b.hole(w.from).position;
@@ -834,7 +874,7 @@ mod tests {
     // ============================================================
 
     /// 绑定 GND → 负极: 1 个 GND pin 在主区 (5, 0)。路由器必须生成 1 根 wire
-    /// 把这个 pin 连到负极轨 (y=-2 或 y=12, 同 rail_id)。
+    /// 把这个 pin 连到负极轨 (y=-4 或 y=14, 同 rail_id)。
     #[test]
     fn router_with_binding_runs_wire_to_rail() {
         let fp = Footprint {
@@ -853,6 +893,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(0)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             }],
             pins: vec![Pin {
                 id: PinId(0),
@@ -872,7 +913,7 @@ mod tests {
         let mut layout = Layout::new(circuit);
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 0 },
                 rotation: Rotation::R0,
             },
@@ -883,7 +924,7 @@ mod tests {
             negative: NetId(0),
         });
         let occ = layout.occupancy(&board).unwrap();
-        let wires = PathFinderRouter::default().route(circuit, &board, &occ);
+        let wires = PathFinderRouter::default().route(circuit, &board, &occ, &[]);
 
         // 应该有 1 根 wire (pin → rail)
         assert_eq!(
@@ -892,7 +933,7 @@ mod tests {
             "绑定 GND → 负极后, 路由必须生成 1 根 wire 连到 rail"
         );
         let w = &wires[0];
-        // 端点 1: 某个 power rail (y=-2 或 y=12, 同 rail_id)
+        // 端点 1: 某个 power rail (y=-4 或 y=14, 同 rail_id)
         // 端点 2: 某个 col 5 的 main rail 孔 (y in 0..5)
         // 注意: wire 端点不能在 (5, 0) (被 component pin 占), 所以同 rail 的
         // 其他孔 (y in 1..5) 都行 — rail 短接, 电气上等效。
@@ -940,6 +981,7 @@ mod tests {
                 value: None,
                 pins: vec![PinId(0)],
                 footprint: Some(FootprintId(0)),
+                bridgeable: false,
             }],
             pins: vec![Pin {
                 id: PinId(0),
@@ -959,14 +1001,14 @@ mod tests {
         let mut layout = Layout::new(circuit);
         layout.place(
             ComponentId(0),
-            Placement {
+            Placement::OnBoard {
                 position: Position { x: 5, y: 0 },
                 rotation: Rotation::R0,
             },
         );
         let board = Breadboard::standard(); // 不绑定
         let occ = layout.occupancy(&board).unwrap();
-        let wires = PathFinderRouter::default().route(circuit, &board, &occ);
+        let wires = PathFinderRouter::default().route(circuit, &board, &occ, &[]);
         assert_eq!(wires.len(), 0, "不绑定时, 1 个 pin 的 net 不用 wire (0 根)");
     }
 }

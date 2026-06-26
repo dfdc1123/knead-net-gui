@@ -71,6 +71,7 @@ impl From<CircuitInput> for Circuit {
                 value: None,
                 pins: comp_pin_ids,
                 footprint: None,
+                bridgeable: false,
             });
         }
 
