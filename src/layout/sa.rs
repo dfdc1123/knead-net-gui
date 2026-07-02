@@ -34,7 +34,11 @@
 
 use crate::circuit::{Circuit, ComponentId, NetId};
 use crate::layout::breadboard::Breadboard;
-use crate::layout::cost::{FDConfig, SAState, Weights, cost, populate_bridgeable_info};
+#[cfg(test)]
+use crate::layout::cost::cost;
+use crate::layout::cost::{
+    CostBuf, FDConfig, SAContext, SAState, Weights, cost_fast, populate_bridgeable_info,
+};
 use crate::layout::placement::Rotation;
 
 // 测试用: HashSet 和 rotate 只在下面的 mod tests 里用, 放到 cfg(test) 块里避免非测试
@@ -146,7 +150,7 @@ fn random_move(
     let p_toggle = config.p_toggle_bridge.clamp(0.0, 0.45); // 限制上限防误配
     let p_shiftx = (1.0 - p_toggle) * 0.45 / 0.85;
     let p_flip = (1.0 - p_toggle) * 0.20 / 0.85;
-    let p_shifty = (1.0 - p_toggle) * 0.20 / 0.85;
+    let _p_shifty = (1.0 - p_toggle) * 0.20 / 0.85;
     // 校验: p_shiftx + p_flip + p_shifty + p_toggle = (1 - p_toggle) + p_toggle = 1.0
 
     if r < p_shiftx {
@@ -212,7 +216,18 @@ pub(super) fn simulate(
         .map(|b| vec![b.negative, b.positive])
         .unwrap_or_default();
     populate_bridgeable_info(&mut state, circuit, board, &power_net_ids);
-    let mut current_cost = cost(&state, circuit, board, bridged_pins, &config.weights);
+    // 预计算 context (footprint pin offset, bbox) 和 reusable buffers
+    let ctx = SAContext::new(circuit, &state.placeable);
+    let mut buf = CostBuf::new(circuit.nets().len());
+    let mut current_cost = cost_fast(
+        &state,
+        circuit,
+        board,
+        bridged_pins,
+        &config.weights,
+        &ctx,
+        &mut buf,
+    );
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
     let mut t = config.t0;
@@ -238,7 +253,15 @@ pub(super) fn simulate(
                 let mut best_idx = candidate.active_bridge_idx[i];
                 for (j, _) in candidate.bridged_pin_pairs[i].iter().enumerate() {
                     candidate.active_bridge_idx[i] = j;
-                    let c = cost(&candidate, circuit, board, bridged_pins, &config.weights);
+                    let c = cost_fast(
+                        &candidate,
+                        circuit,
+                        board,
+                        bridged_pins,
+                        &config.weights,
+                        &ctx,
+                        &mut buf,
+                    );
                     if c < best_cost {
                         best_cost = c;
                         best_idx = j;
@@ -247,7 +270,15 @@ pub(super) fn simulate(
                 candidate.active_bridge_idx[i] = best_idx;
             }
         }
-        let new_cost = cost(&candidate, circuit, board, bridged_pins, &config.weights);
+        let new_cost = cost_fast(
+            &candidate,
+            circuit,
+            board,
+            bridged_pins,
+            &config.weights,
+            &ctx,
+            &mut buf,
+        );
         let delta = new_cost - current_cost;
 
         let accept = delta <= 0.0 || rng.f64() < (-delta / t).exp();

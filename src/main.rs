@@ -27,7 +27,7 @@ fn main() {
     let footprints = parse_footprints(footprint_texts).unwrap();
 
     // 2. 读 .net 文件
-    let netlist_path = format!("{kicad_dir}/bjt_led.net");
+    let netlist_path = format!("{kicad_dir}/h-bridge-power.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 
@@ -59,7 +59,7 @@ fn main() {
         if MASK_LOWER_HALF {
             blocked.extend(7..12); // 屏蔽下半
         }
-        Breadboard::with_power_rails(30, 12, blocked, knead_net::standard_power_rails(30))
+        Breadboard::with_power_rails(50, 12, blocked, knead_net::standard_power_rails(50))
     };
     if MASK_LOWER_HALF {
         eprintln!("⚠ 下半已屏蔽, 元件只能摆在 rows 0..5 (上半)");
@@ -93,9 +93,9 @@ fn main() {
         &SAConfig {
             use_force_directed: true,
             max_iters: 50000,
-            t0: 30.0,
-            cool_rate: 0.999,
-            n_seeds: 10,
+            t0: 40.0,
+            cool_rate: 0.99999,
+            n_seeds: 30,
             ..SAConfig::default()
         },
     ) {

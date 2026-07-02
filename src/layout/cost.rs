@@ -112,6 +112,127 @@ pub struct SAState {
     pub rotation: Vec<Rotation>,
 }
 
+// ============================================================
+//  预计算数据: 避免在 cost() 热路径里重复查 footprint / 算 bbox
+// ============================================================
+
+/// 每个 placeable 元件的预计算信息 (只依赖 circuit/footprint, 不随 SA 状态变)。
+#[derive(Debug, Clone)]
+pub struct CompInfo {
+    /// 每个 pin 的预计算数据, 按 component.pins 顺序。
+    /// (R0 local offset, R180 local offset, net)
+    pub pins: Vec<(Position, Position, Option<NetId>)>,
+    /// 该元件 footprint 在 R0 旋转下的局部坐标 bbox
+    pub bbox_r0: BBox,
+}
+
+/// SA 上下文: 预计算数据 + reusable buffers。
+/// 在 simulate() 入口构造一次, 所有 cost 调用复用。
+pub struct SAContext {
+    pub comp_infos: Vec<CompInfo>,
+}
+
+impl SAContext {
+    /// 从 circuit 和 placeable 列表预计算所有组件的 footprint 信息。
+    pub fn new(circuit: &Circuit, placeable: &[ComponentId]) -> Self {
+        let mut comp_infos = Vec::with_capacity(placeable.len());
+        for &comp_id in placeable {
+            let component = &circuit.components[comp_id.0];
+            let fid = component.footprint.expect("placeable 必有 footprint");
+            let footprint = &circuit.footprints[fid.0];
+
+            let mut pins = Vec::with_capacity(component.pins.len());
+            let mut world_positions: Vec<Position> = Vec::with_capacity(component.pins.len());
+
+            for &pin_id in &component.pins {
+                let pin = &circuit.pins[pin_id.0];
+                let physical = footprint
+                    .pins()
+                    .iter()
+                    .find(|pp| pp.name() == pin.num())
+                    .expect("footprint 缺 pin (解析阶段就该爆)");
+                let offset_r0 = physical.offset;
+                // R180: negate
+                let offset_r180 = Position {
+                    x: -offset_r0.x,
+                    y: -offset_r0.y,
+                };
+                pins.push((offset_r0, offset_r180, pin.net));
+                world_positions.push(offset_r0);
+            }
+
+            let bbox_r0 = BBox::from_points(world_positions).unwrap_or(BBox {
+                min_x: 0,
+                max_x: 0,
+                min_y: 0,
+                max_y: 0,
+            });
+
+            comp_infos.push(CompInfo { pins, bbox_r0 });
+        }
+
+        SAContext { comp_infos }
+    }
+}
+
+// ============================================================
+//  Reusable Buffers: 避免 cost() 内部重复分配
+// ============================================================
+
+/// 所有 cost 计算复用的缓冲区。
+/// 在 simulate() 里创建一次, 每次 cost 计算前 clear 后重用。
+pub(crate) struct CostBuf {
+    pub holes: Vec<(i32, i32, u32)>,
+    pub nets: Vec<Option<NetId>>,
+    pub is_virtual: Vec<bool>,
+    pub bboxes: Vec<Option<BBox>>,
+    /// net_id → pin 在 holes/nets 里的 index 列表 (按 net.0 索引)
+    pub net_buckets: Vec<Vec<usize>>,
+    /// rail_id → net 列表
+    pub rail_map: HashMap<u32, Vec<Option<NetId>>>,
+    /// rail_top → bbox 列表 (用于紧凑度)
+    pub compact_map: HashMap<i32, Vec<BBox>>,
+    /// 用于 pin 碰撞检测的 reusable set
+    pub pin_seen: HashSet<(i32, i32, u32)>,
+}
+
+impl CostBuf {
+    pub fn new(num_nets: usize) -> Self {
+        Self {
+            holes: Vec::new(),
+            nets: Vec::new(),
+            is_virtual: Vec::new(),
+            bboxes: Vec::new(),
+            net_buckets: vec![Vec::new(); num_nets],
+            rail_map: HashMap::new(),
+            compact_map: HashMap::new(),
+            pin_seen: HashSet::new(),
+        }
+    }
+
+    /// 清理所有 buffer 以便下一轮 cost 计算复用
+    fn clear(&mut self) {
+        self.holes.clear();
+        self.nets.clear();
+        self.is_virtual.clear();
+        self.bboxes.clear();
+        for bucket in &mut self.net_buckets {
+            bucket.clear();
+        }
+        for v in self.rail_map.values_mut() {
+            v.clear();
+        }
+        for v in self.compact_map.values_mut() {
+            v.clear();
+        }
+        self.pin_seen.clear();
+    }
+}
+
+// ============================================================
+//  SAState impl
+// ============================================================
+
 impl SAState {
     pub fn n(&self) -> usize {
         self.placeable.len()
@@ -129,7 +250,7 @@ impl SAState {
             .copied()
     }
 
-    /// 拼装辅助: 默认“所有元件不可桥接”的桥接字段。
+    /// 拼装辅助: 默认"所有元件不可桥接"的桥接字段。
     /// 给测试用 struct update 语法 `..SAState::no_bridging(n)`,
     /// 其中 n = placeable.len()。`placeable / x / y / rotation` 留空,
     /// 上面覆盖。
@@ -588,6 +709,10 @@ impl SAState {
     }
 }
 
+// ============================================================
+//  桥接探测
+// ============================================================
+
 /// 为 bridgeable 元件计算所有合法桥接 pin 对 (启发式)。
 ///
 /// **输入**: 一个 bridgeable 元件 (必有 2 pin, 一腿 power net, 一腿 signal net)。
@@ -906,7 +1031,12 @@ impl Default for FDConfig {
     }
 }
 
-/// 评估当前状态的 cost。
+// ============================================================
+//  成本函数 (优化版: 使用预计算 context + reusable buffers)
+// ============================================================
+
+/// 评估当前状态的 cost (向后兼容接口)。
+/// 内部构造临时 context/buffers, 推荐在热循环里直接用 `cost_fast`。
 pub fn cost(
     state: &SAState,
     circuit: &Circuit,
@@ -914,95 +1044,94 @@ pub fn cost(
     bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
     w: &Weights,
 ) -> f64 {
+    let ctx = SAContext::new(circuit, &state.placeable);
+    let mut buf = CostBuf::new(circuit.nets().len());
+    cost_fast(state, circuit, board, bridged_pins, w, &ctx, &mut buf)
+}
+
+/// 快速版本: 复用预计算的 context 和 buffers。
+/// 在 simulate() 的热循环里替代 `cost()`。
+pub(crate) fn cost_fast(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    w: &Weights,
+    ctx: &SAContext,
+    buf: &mut CostBuf,
+) -> f64 {
+    buf.clear();
+
     let cols_i = board.cols() as i32;
+    let n_comps = state.placeable.len();
 
     // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
-    //    rail_id = u32::MAX 表示"该位置没有 HoleId" (越界 / blocked / 电源轨 gap)
-    //    — 这些 pin 不参与 MST / 列冲突, 但算 OOB。
-    //
-    //    `state.bridged[idx] = true` 的元件走桥接路径: 不计 bbox (body 浮在板外),
-    //    pin 由 state.bridged_pin_pair 提供 (见 1b 之后 的 1b')。
-    //
-    //    `is_virtual[i] = true` 标记该 pin 是 power rail 虚拟节点 (1c 注入的)。
-    //    **虚拟 pin 不参与 pin 碰撞检查** —— 它是逻辑节点, 不是物理插针。
-    //    但保留在 MST / rail 冲突计算中 (它代表 "rail 在此 net 上")。
-    let mut holes: Vec<(i32, i32, u32)> = Vec::new();
-    let mut nets: Vec<Option<NetId>> = Vec::new();
-    let mut is_virtual: Vec<bool> = Vec::new();
-    let mut bboxes: Vec<Option<BBox>> = Vec::with_capacity(state.placeable.len());
-    for (idx, &comp_id) in state.placeable.iter().enumerate() {
+    for (idx, _comp_id) in state.placeable.iter().enumerate() {
         if state.bridged[idx] {
-            // Bridged 元件 body 占空间: 两 pin 间的轴对齐包围盒 (启发式 pair 给定)。
-            // 推入 `bboxes` 让 SA 跟 OnBoard 元件一起走 bbox 碰撞检查, 避免
-            // OnBoard 摆在 bridged body 上面造成物理重叠 (D1 桥接 col 0 时 R2 的
-            // bbox 越界就报)。“body 在板外”那个早期判断只适用于“连信号 net 都不在板上”
-            // 的情形；本启发式选的两孔一腿在 rail、一腿在主区, body 横跨 gap 行和
-            // 主区, 主区那段必须在 bbox 里。pin 注入见下面 1b'。
-            // 走 active_bridge_pair(idx): SA Toggle 到 bridge 时可能重选候选,
-            // 这里要读最新选定的那对, 不是启发式初始排序的索引 0。
             let bridged_bbox = state.active_bridge_pair(idx).map(|pair| {
                 let p0 = board.hole(pair[0].0).position;
                 let p1 = board.hole(pair[1].0).position;
-                let min_x = p0.x.min(p1.x);
-                let max_x = p0.x.max(p1.x);
-                let min_y = p0.y.min(p1.y);
-                let max_y = p0.y.max(p1.y);
                 BBox {
-                    min_x,
-                    max_x,
-                    min_y,
-                    max_y,
+                    min_x: p0.x.min(p1.x),
+                    max_x: p0.x.max(p1.x),
+                    min_y: p0.y.min(p1.y),
+                    max_y: p0.y.max(p1.y),
                 }
             });
-            bboxes.push(bridged_bbox);
+            buf.bboxes.push(bridged_bbox);
             continue;
         }
-        let component = &circuit.components[comp_id.0];
-        let fid = component.footprint.unwrap();
-        let footprint = &circuit.footprints[fid.0];
-        let rotation = state.rotation[idx];
-        let row_y = state.y[idx];
-        let px = state.x[idx];
 
-        let mut world_positions: Vec<crate::circuit::Position> =
-            Vec::with_capacity(component.pins.len());
-        for &pin_id in &component.pins {
-            let pin = &circuit.pins[pin_id.0];
-            let physical = footprint
-                .pins()
-                .iter()
-                .find(|pp| pp.name() == pin.num())
-                .expect("footprint 缺 pin (解析阶段就该爆)");
-            let r = rotate(physical.offset, rotation);
-            let x = px + r.x;
-            let y = row_y + r.y;
-            // 用 board.at 反查: 返回 None 意味着 OOB / blocked row / 电源轨 gap,
-            // 全部归为"不能放" (u32::MAX 是 sentinel, 不参与任何短路/冲突)
+        let comp_info = &ctx.comp_infos[idx];
+        let px = state.x[idx];
+        let py = state.y[idx];
+        let is_r180 = state.rotation[idx] == Rotation::R180;
+
+        for pin_data in &comp_info.pins {
+            let offset = if is_r180 { pin_data.1 } else { pin_data.0 };
+            let x = px + offset.x;
+            let y = py + offset.y;
             let rail_id = board
                 .at(x, y)
                 .map(|h| board.rail_id_of(h))
                 .unwrap_or(u32::MAX);
-            holes.push((x, y, rail_id));
-            nets.push(pin.net);
-            is_virtual.push(false);
-            world_positions.push(crate::circuit::Position { x, y });
+            buf.holes.push((x, y, rail_id));
+            buf.nets.push(pin_data.2);
+            buf.is_virtual.push(false);
         }
-        bboxes.push(BBox::from_points(world_positions));
+
+        // BBox: translate precomputed R0 bbox
+        let bbox_r0 = &comp_info.bbox_r0;
+        let world_bbox = if is_r180 {
+            BBox {
+                min_x: -bbox_r0.max_x + px,
+                max_x: -bbox_r0.min_x + px,
+                min_y: -bbox_r0.max_y + py,
+                max_y: -bbox_r0.min_y + py,
+            }
+        } else {
+            BBox {
+                min_x: bbox_r0.min_x + px,
+                max_x: bbox_r0.max_x + px,
+                min_y: bbox_r0.min_y + py,
+                max_y: bbox_r0.max_y + py,
+            }
+        };
+        buf.bboxes.push(Some(world_bbox));
     }
 
-    // 1b. 注入用户预摆的 bridged 元件的 pin (Bridged 不进 SA, 但 pin 仍要进 MST / rail 冲突)
+    // 1b. 注入用户预摆的 bridged 元件的 pin
     for &(pin_id, hole_id) in bridged_pins {
         let pin = &circuit.pins[pin_id.0];
         let pos = board.hole(hole_id).position;
         let rail_id = board.rail_id_of(hole_id);
-        holes.push((pos.x, pos.y, rail_id));
-        nets.push(pin.net);
-        is_virtual.push(false);
+        buf.holes.push((pos.x, pos.y, rail_id));
+        buf.nets.push(pin.net);
+        buf.is_virtual.push(false);
     }
 
-    // 1b'. 注入 SA Toggle 后的 bridged 元件的 pin。来源: `state.active_bridge_pair`。
-    //      `is_bridgeable[i] = true` 才能被 Toggle 命中, 所以这里 Some(pair) 总是有效。
-    for idx in 0..state.placeable.len() {
+    // 1b'. 注入 SA Toggle 后的 bridged 元件的 pin
+    for idx in 0..n_comps {
         if !state.bridged[idx] {
             continue;
         }
@@ -1013,19 +1142,13 @@ pub fn cost(
             let pin = &circuit.pins[pin_id.0];
             let pos = board.hole(h).position;
             let rail_id = board.rail_id_of(h);
-            holes.push((pos.x, pos.y, rail_id));
-            nets.push(pin.net);
-            is_virtual.push(false);
+            buf.holes.push((pos.x, pos.y, rail_id));
+            buf.nets.push(pin.net);
+            buf.is_virtual.push(false);
         }
     }
 
-    // 1c. 注入 power rail 虚拟 pin (如果用户绑定了 net)
-    //    虚拟 pin 落在 rail 的 anchor 位置, 挂在绑定的 net 上。
-    //    后续步骤会自然处理: 算 OOB 时它是有效 rail, 算 MST 时它跟同 net 的
-    //    真实 pin 连边, 算 rail 冲突时它跟同 rail 的别 net pin 冲突。
-    //
-    //    **虚拟 pin 不算 pin 碰撞** (见 is_virtual 与 collision check)——
-    //    否则 bridged power pin 落 在 rail anchor 上会与虚拟 pin "撞", 错误报碰撞。
+    // 1c. 注入 power rail 虚拟 pin
     if let Some(binding) = board.power_rail_binding() {
         for (polarity, net_id) in [
             (Polarity::Negative, binding.negative),
@@ -1034,44 +1157,38 @@ pub fn cost(
             if let Some(anchor) = board.power_rail_anchor(polarity) {
                 let pos = board.hole(anchor).position;
                 let rail_id = board.rail_id_of(anchor);
-                holes.push((pos.x, pos.y, rail_id));
-                nets.push(Some(net_id));
-                is_virtual.push(true);
+                buf.holes.push((pos.x, pos.y, rail_id));
+                buf.nets.push(Some(net_id));
+                buf.is_virtual.push(true);
             }
         }
     }
 
-    // 2. OOB: rail_id == u32::MAX 即"该位置没有 HoleId" — 越界 / blocked row / 电源轨 gap
-    let mut oob_count = 0;
-    for &(_, _, rail_id) in &holes {
+    // 2. OOB: rail_id == u32::MAX 即越界 / blocked row / 电源轨 gap
+    let mut oob_count = 0u32;
+    for &(_, _, rail_id) in &buf.holes {
         if rail_id == u32::MAX {
             oob_count += 1;
         }
     }
 
-    // 3. Pin 碰撞: 每个被多个 pin 占用的孔, 算 N-1 次 (SA 关心 Δcost, 系数 1 vs 系数 N 等价)。
-    //    **跳过虚拟 pin** (1c 注入)——它是逻辑节点, 不算物理插针。
-    let mut coll_count = 0;
-    let mut seen: HashMap<(i32, i32, u32), ()> = HashMap::new();
-    for (i, &hole) in holes.iter().enumerate() {
-        if hole.2 == u32::MAX {
-            continue; // OOB pin 不参与碰撞检查
+    // 3. Pin 碰撞: 每个被多个 pin 占用的孔, 算 N-1 次
+    let mut coll_count = 0u32;
+    for (i, &hole) in buf.holes.iter().enumerate() {
+        if hole.2 == u32::MAX || buf.is_virtual[i] {
+            continue;
         }
-        if is_virtual[i] {
-            continue; // 虚拟 pin 不参与碰撞
-        }
-        if seen.insert(hole, ()).is_some() {
+        if !buf.pin_seen.insert(hole) {
             coll_count += 1;
         }
     }
 
-    // 4. bbox 碰撞: 任意两个元件的 bbox 重叠的孔数 (含 pin-pin 重叠, 会和上面
-    //    pin 碰撞重叠计入, 但这是两个独立的成本来源, 让 SA 同时压低两者)。
-    let mut bbox_overlap_count = 0;
-    for i in 0..bboxes.len() {
-        let Some(bi) = bboxes[i] else { continue };
-        for j in (i + 1)..bboxes.len() {
-            let Some(bj) = bboxes[j] else { continue };
+    // 4. bbox 碰撞
+    let mut bbox_overlap_count = 0u32;
+    for i in 0..buf.bboxes.len() {
+        let Some(bi) = buf.bboxes[i] else { continue };
+        for j in (i + 1)..buf.bboxes.len() {
+            let Some(bj) = buf.bboxes[j] else { continue };
             if !bi.overlaps(&bj) {
                 continue;
             }
@@ -1084,37 +1201,37 @@ pub fn cost(
         }
     }
 
-    // 5. MST 走线估算: 按 net 聚合, 每个 net 算一次 Kruskal 最小生成树。
-    //    短路判定改用 rail_id: 同 rail_id = 0 (不管这是 vertical 还是 power rail)。
-    //    不同 rail_id = Manhattan 距离。
-    let mut by_net: HashMap<NetId, Vec<(i32, i32, u32)>> = HashMap::new();
-    for (i, &net_opt) in nets.iter().enumerate() {
-        let hole = holes[i];
+    // 5. MST 走线估算: 用 net_buckets (Vec<Vec<usize>>) 代替 HashMap
+    for (i, &net_opt) in buf.nets.iter().enumerate() {
+        let hole = buf.holes[i];
         if hole.2 == u32::MAX {
-            continue; // OOB pin 不参与 MST
+            continue;
         }
         if let Some(net) = net_opt {
-            by_net.entry(net).or_default().push(hole);
+            buf.net_buckets[net.0].push(i);
         }
     }
-    let mut mst_sum = 0.0;
-    for pins in by_net.values() {
-        mst_sum += mst_wire_length(pins);
+    let mut mst_sum = 0.0f64;
+    for bucket in &buf.net_buckets {
+        if bucket.len() < 2 {
+            continue;
+        }
+        mst_sum += mst_wire_length_fast(bucket, &buf.holes);
     }
 
-    // 6. 列冲突 (更准确叫 "rail 冲突"): 按 rail_id 聚合, 计数"不同 net" 的对数。
-    //    之前用 (col, rail_top) 作为 key, 引入电源轨后不够 — 电源轨里两个不同 col 的
-    //    孔在同一 rail_id (横向短接), 也会被这块板短路。统一用 rail_id。
-    let mut by_rail: HashMap<u32, Vec<Option<NetId>>> = HashMap::new();
-    for (i, &net_opt) in nets.iter().enumerate() {
-        let (_, _, rail_id) = holes[i];
+    // 6. 列冲突 (rail 冲突): 按 rail_id 聚合
+    for (i, &net_opt) in buf.nets.iter().enumerate() {
+        let (_, _, rail_id) = buf.holes[i];
         if rail_id == u32::MAX {
             continue;
         }
-        by_rail.entry(rail_id).or_default().push(net_opt);
+        buf.rail_map
+            .entry(rail_id)
+            .or_insert_with(|| Vec::with_capacity(4))
+            .push(net_opt);
     }
     let mut col_conflict_pairs = 0usize;
-    for rail_owners in by_rail.values() {
+    for rail_owners in buf.rail_map.values() {
         if rail_owners.len() < 2 {
             continue;
         }
@@ -1126,13 +1243,9 @@ pub fn cost(
         }
     }
 
-    // 7. 紧凑度: 按 rail 分组, 每组算 union bbox 面积, 加和; 跨 rail 再加一个固定惩罚。
-    //    阻止 SA 停在"cost=0 但留白大"的状态。
-    //    跳过 OOB / blocked row 的 bbox: 那些是被 OOB / state_y_valid 硬卡掉的, 进了 union
-    //    反而把面积算虚了; 反正 cost 会被 OOB 惩罚主导, 不影响 SA 走向。
-    //    bbox 在 main board 的 vertical rail 上: 用 rail_top 做 key (同 rail 的所有 row 汇到一处)
-    let mut by_rail: HashMap<i32, Vec<BBox>> = HashMap::new();
-    for bbox in bboxes.iter().flatten() {
+    // 7. 紧凑度: 按 rail 分组
+    for bbox_opt in buf.bboxes.iter() {
+        let Some(bbox) = bbox_opt else { continue };
         if bbox.min_x < 0
             || bbox.max_x >= cols_i
             || bbox.min_y < 0
@@ -1141,16 +1254,18 @@ pub fn cost(
         {
             continue;
         }
-        // 拿 bbox 所在 rail 的"顶行"做 bucket key, 同 rail 的所有 row 都汇到一处。
         let rail_top = board
             .rail_rows(bbox.min_y)
             .first()
             .copied()
             .unwrap_or(bbox.min_y);
-        by_rail.entry(rail_top).or_default().push(*bbox);
+        buf.compact_map
+            .entry(rail_top)
+            .or_insert_with(|| Vec::with_capacity(4))
+            .push(*bbox);
     }
-    let mut area_sum = 0.0;
-    for cells in by_rail.values() {
+    let mut area_sum = 0.0f64;
+    for cells in buf.compact_map.values() {
         let mut min_x = i32::MAX;
         let mut max_x = i32::MIN;
         let mut min_y = i32::MAX;
@@ -1162,15 +1277,12 @@ pub fn cost(
             max_y = max_y.max(b.max_y);
         }
         if min_x <= max_x && min_y <= max_y {
-            // width × height 自然对待 x / y: 1 cell 宽 = 1 cell 高的"成本贡献"。
-            // (单 rail 内所有元件 1 行高时, height = 1, area 退化为 width。)
             let width = (max_x - min_x + 1) as f64;
             let height = (max_y - min_y + 1) as f64;
             area_sum += width * height;
         }
     }
-    // 用 2+ rail: 固定惩罚一项, 不乘以 rail 数 (不是"跨得越多越贵", 是"跨就有成本")。
-    let rail_cross = if by_rail.len() >= 2 {
+    let rail_cross = if buf.compact_map.len() >= 2 {
         w.rail_crossing
     } else {
         0.0
@@ -1193,6 +1305,103 @@ pub fn cost(
 ///
 /// 这是 wire 长度的下界 — 实际走线可能更长 (绕障碍), 但 SA 用它做优化目标。
 fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
+    mst_wire_length_slow(pins)
+}
+
+/// 快速版本: 使用 index 引用 buf.holes 而不是复制数据。
+/// 对于 ≤3 pins 用直接公式, ≥4 用 Kruskal (本地向量, 不借用 buf)。
+fn mst_wire_length_fast(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
+    let n = indices.len();
+    match n {
+        0..=1 => return 0.0,
+        2 => {
+            let a = holes[indices[0]];
+            let b = holes[indices[1]];
+            if a.2 == b.2 {
+                return 0.0;
+            }
+            return ((a.0 - b.0).abs() + (a.1 - b.1).abs()) as f64;
+        }
+        3 => {
+            // 3 pins: 3 种可能的 spanning tree (选 2 条边), 取 min
+            let p0 = holes[indices[0]];
+            let p1 = holes[indices[1]];
+            let p2 = holes[indices[2]];
+            let d01 = if p0.2 == p1.2 {
+                0
+            } else {
+                (p0.0 - p1.0).abs() + (p0.1 - p1.1).abs()
+            };
+            let d02 = if p0.2 == p2.2 {
+                0
+            } else {
+                (p0.0 - p2.0).abs() + (p0.1 - p2.1).abs()
+            };
+            let d12 = if p1.2 == p2.2 {
+                0
+            } else {
+                (p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()
+            };
+            let min_d = (d01 + d02).min(d01 + d12).min(d02 + d12);
+            return min_d as f64;
+        }
+        _ => {
+            // 4+ pins: Kruskal with local allocations
+            return mst_wire_length_fast_kruskal(indices, holes);
+        }
+    }
+}
+
+/// Kruskal MST for ≥4 pin nets. Allocates locally (nets with ≥4 pins are rare).
+fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
+    let n = indices.len();
+
+    // Generate edges
+    let mut edges: Vec<(i32, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
+    for a in 0..n {
+        for b in (a + 1)..n {
+            let ha = holes[indices[a]];
+            let hb = holes[indices[b]];
+            let d = if ha.2 == hb.2 {
+                0
+            } else {
+                (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()
+            };
+            edges.push((d, a, b));
+        }
+    }
+    edges.sort_by_key(|e| e.0);
+
+    // Union-find
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    let find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    };
+
+    let mut total: i32 = 0;
+    let mut edges_used = 0;
+    for &(d, i, j) in &edges {
+        let ri = find(&mut parent, i);
+        let rj = find(&mut parent, j);
+        if ri != rj {
+            parent[ri] = rj;
+            total += d;
+            edges_used += 1;
+            if edges_used == n - 1 {
+                break;
+            }
+        }
+    }
+    total as f64
+}
+
+/// 旧的 mst_wire_length (兼容测试)
+fn mst_wire_length_slow(pins: &[(i32, i32, u32)]) -> f64 {
     let n = pins.len();
     if n < 2 {
         return 0.0;
@@ -1200,13 +1409,12 @@ fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
 
     let dist = |a: (i32, i32, u32), b: (i32, i32, u32)| -> i32 {
         if a.2 == b.2 {
-            0 // 同 rail (vertical 或 power) 短接
+            0
         } else {
             (a.0 - b.0).abs() + (a.1 - b.1).abs()
         }
     };
 
-    // Kruskal: 列所有候选边 → 排序 → 贪心加边 (union-find 判环)
     let mut edges: Vec<(i32, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
     for i in 0..n {
         for j in (i + 1)..n {
@@ -1216,7 +1424,7 @@ fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
     edges.sort_by_key(|e| e.0);
 
     let mut parent: Vec<usize> = (0..n).collect();
-    let mut find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
+    let find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
         while parent[x] != x {
             parent[x] = parent[parent[x]];
             x = parent[x];
@@ -1241,7 +1449,6 @@ fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
     total as f64
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::circuit::{
