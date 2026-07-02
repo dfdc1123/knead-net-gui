@@ -66,6 +66,7 @@ pub struct Component {
     /// libsource 里的 part, 例如 "R", "NPN", "LED"
     pub(crate) kind: String,
     /// KiCad (value ...) 字段: 电阻的阻值 ("220"), IC 的型号等
+    #[allow(dead_code)]
     pub(crate) value: Option<String>,
     pub(crate) pins: Vec<PinId>,
     pub(crate) footprint: Option<FootprintId>,

@@ -281,7 +281,7 @@ impl Breadboard {
                 })
                 .expect("每个非 blocked y 都属于某个 vertical rail");
             let rail_index = vertical_rails.iter().position(|&t| t == rail_top).unwrap();
-            let rail_id = next_rail_id + (rail_index as u32) * (cols as u32) + 0; // 后面按 col 加
+            let rail_id = next_rail_id + (rail_index as u32) * (cols as u32); // 后面按 col 加
             for x in 0..cols {
                 let id_rail = rail_id + x as u32;
                 let pos = Position {
@@ -479,7 +479,7 @@ impl Breadboard {
 
         // top gap: 在 top rail 的最大 y + 1 到 -1 之间
         let top_rail_max_y = pr.top.rows.iter().map(|r| r.y).max().unwrap_or(-1);
-        if top_rail_max_y + 1 <= -1 {
+        if top_rail_max_y < -1 {
             gaps.push((top_rail_max_y + 1, -1));
         }
         // bottom gap: 在 main_rows 到 bottom rail 的最小 y - 1 之间
@@ -490,7 +490,7 @@ impl Breadboard {
             .map(|r| r.y)
             .min()
             .unwrap_or(self.main_rows as i32);
-        if (self.main_rows as i32) <= bottom_rail_min_y - 1 {
+        if (self.main_rows as i32) < bottom_rail_min_y {
             gaps.push((self.main_rows as i32, bottom_rail_min_y - 1));
         }
         gaps

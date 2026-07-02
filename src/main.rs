@@ -1,7 +1,7 @@
 use std::fs;
 
 use knead_net::input::footprint::parse_many as parse_footprints;
-use knead_net::input::netlist::{auto_mark_bridgeable, parse_netlist};
+use knead_net::input::netlist::parse_netlist;
 use knead_net::{
     Breadboard, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router, SAConfig,
 };

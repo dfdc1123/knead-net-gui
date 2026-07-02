@@ -189,25 +189,25 @@ pub fn parse_netlist(text: &str) -> Result<NetlistInput, ParseError> {
     let mut nets = Vec::new();
 
     for item in &top {
-        if let Sexp::List(items) = item {
-            if let Some(Sexp::Atom(head)) = items.first() {
-                match head.as_str() {
-                    "components" => {
-                        for sub in &items[1..] {
-                            if let Some(comp) = extract_comp(sub) {
-                                components.push(comp);
-                            }
+        if let Sexp::List(items) = item
+            && let Some(Sexp::Atom(head)) = items.first()
+        {
+            match head.as_str() {
+                "components" => {
+                    for sub in &items[1..] {
+                        if let Some(comp) = extract_comp(sub) {
+                            components.push(comp);
                         }
                     }
-                    "nets" => {
-                        for sub in &items[1..] {
-                            if let Some(net) = extract_net(sub) {
-                                nets.push(net);
-                            }
-                        }
-                    }
-                    _ => {}
                 }
+                "nets" => {
+                    for sub in &items[1..] {
+                        if let Some(net) = extract_net(sub) {
+                            nets.push(net);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -231,16 +231,16 @@ fn extract_comp(sexp: &Sexp) -> Option<NetlistComp> {
     let mut pin_nums = Vec::new();
 
     for item in &items[1..] {
-        if let Sexp::List(sub) = item {
-            if let Some(Sexp::Atom(head)) = sub.first() {
-                match head.as_str() {
-                    "ref" => ref_ = atom_value(&sub[1..]),
-                    "footprint" => footprint_ref = atom_value(&sub[1..]),
-                    "value" => value = atom_value(&sub[1..]),
-                    "libsource" => libsource_part = extract_libsource_part(item),
-                    "units" => pin_nums = extract_pin_nums(item),
-                    _ => {}
-                }
+        if let Sexp::List(sub) = item
+            && let Some(Sexp::Atom(head)) = sub.first()
+        {
+            match head.as_str() {
+                "ref" => ref_ = atom_value(&sub[1..]),
+                "footprint" => footprint_ref = atom_value(&sub[1..]),
+                "value" => value = atom_value(&sub[1..]),
+                "libsource" => libsource_part = extract_libsource_part(item),
+                "units" => pin_nums = extract_pin_nums(item),
+                _ => {}
             }
         }
     }
@@ -260,10 +260,10 @@ fn extract_libsource_part(sexp: &Sexp) -> Option<String> {
         _ => return None,
     };
     for sub in items {
-        if let Sexp::List(sub_items) = sub {
-            if matches!(sub_items.first(), Some(Sexp::Atom(s)) if s == "part") {
-                return atom_value(&sub_items[1..]);
-            }
+        if let Sexp::List(sub_items) = sub
+            && matches!(sub_items.first(), Some(Sexp::Atom(s)) if s == "part")
+        {
+            return atom_value(&sub_items[1..]);
         }
     }
     None
@@ -281,12 +281,11 @@ fn walk_pins(sexp: &Sexp, out: &mut Vec<String>) {
         if matches!(items.first(), Some(Sexp::Atom(s)) if s == "pin") {
             // 这个 list 就是一个 (pin ...) form
             for sub in &items[1..] {
-                if let Sexp::List(sub_items) = sub {
-                    if matches!(sub_items.first(), Some(Sexp::Atom(s)) if s == "num") {
-                        if let Some(n) = atom_value(&sub_items[1..]) {
-                            out.push(n);
-                        }
-                    }
+                if let Sexp::List(sub_items) = sub
+                    && matches!(sub_items.first(), Some(Sexp::Atom(s)) if s == "num")
+                    && let Some(n) = atom_value(&sub_items[1..])
+                {
+                    out.push(n);
                 }
             }
             return;
@@ -311,17 +310,17 @@ fn extract_net(sexp: &Sexp) -> Option<NetlistNet> {
     let mut nodes = Vec::new();
 
     for item in &items[1..] {
-        if let Sexp::List(sub) = item {
-            if let Some(Sexp::Atom(head)) = sub.first() {
-                match head.as_str() {
-                    "name" => name = atom_value(&sub[1..]),
-                    "node" => {
-                        if let Some(node) = extract_node(item) {
-                            nodes.push(node);
-                        }
+        if let Sexp::List(sub) = item
+            && let Some(Sexp::Atom(head)) = sub.first()
+        {
+            match head.as_str() {
+                "name" => name = atom_value(&sub[1..]),
+                "node" => {
+                    if let Some(node) = extract_node(item) {
+                        nodes.push(node);
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
     }
@@ -337,15 +336,15 @@ fn extract_node(sexp: &Sexp) -> Option<NetlistNode> {
     let mut ref_ = None;
     let mut pin_num = None;
     let mut pinfunction = None;
-    for item in items {
-        if let Sexp::List(sub) = item {
-            if let Some(Sexp::Atom(head)) = sub.first() {
-                match head.as_str() {
-                    "ref" => ref_ = atom_value(&sub[1..]),
-                    "pin" => pin_num = atom_value(&sub[1..]),
-                    "pinfunction" => pinfunction = atom_value(&sub[1..]),
-                    _ => {}
-                }
+    for item in &items[1..] {
+        if let Sexp::List(sub) = item
+            && let Some(Sexp::Atom(head)) = sub.first()
+        {
+            match head.as_str() {
+                "ref" => ref_ = atom_value(&sub[1..]),
+                "pin" => pin_num = atom_value(&sub[1..]),
+                "pinfunction" => pinfunction = atom_value(&sub[1..]),
+                _ => {}
             }
         }
     }

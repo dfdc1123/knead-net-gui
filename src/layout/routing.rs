@@ -151,16 +151,15 @@ impl Router for PathFinderRouter {
         // 跟 OnBoard pin 一样进 net 的 pin 列表, 经过 dedup_by_key 后会跟同 rail
         // 的其他 pin 合并 (因为 rail 内部 shorted)。
         for &(pin_id, hole_id) in bridged_pins {
-            if let Some(pin) = circuit.pins().get(pin_id.0) {
-                if let Some(net) = pin.net {
-                    if (net.0) < net_pins.len() {
-                        let pos = board.hole(hole_id).position;
-                        let rail_id = board.rail_id_of(hole_id);
-                        net_pins[net.0].push((pos.x, pos.y, rail_id));
-                        net_pins[net.0].sort_by_key(|&(x, y, r)| (r, x, y));
-                        net_pins[net.0].dedup_by_key(|&mut (_, _, r)| r);
-                    }
-                }
+            if let Some(pin) = circuit.pins().get(pin_id.0)
+                && let Some(net) = pin.net
+                && (net.0) < net_pins.len()
+            {
+                let pos = board.hole(hole_id).position;
+                let rail_id = board.rail_id_of(hole_id);
+                net_pins[net.0].push((pos.x, pos.y, rail_id));
+                net_pins[net.0].sort_by_key(|&(x, y, r)| (r, x, y));
+                net_pins[net.0].dedup_by_key(|&mut (_, _, r)| r);
             }
         }
 
@@ -171,14 +170,14 @@ impl Router for PathFinderRouter {
                 (crate::layout::Polarity::Negative, binding.negative),
                 (crate::layout::Polarity::Positive, binding.positive),
             ] {
-                if (net_id.0) < net_pins.len() {
-                    if let Some(anchor) = board.power_rail_anchor(polarity) {
-                        let pos = board.hole(anchor).position;
-                        let rail_id = board.rail_id_of(anchor);
-                        net_pins[net_id.0].push((pos.x, pos.y, rail_id));
-                        net_pins[net_id.0].sort_by_key(|&(x, y, r)| (r, x, y));
-                        net_pins[net_id.0].dedup_by_key(|&mut (_, _, r)| r);
-                    }
+                if (net_id.0) < net_pins.len()
+                    && let Some(anchor) = board.power_rail_anchor(polarity)
+                {
+                    let pos = board.hole(anchor).position;
+                    let rail_id = board.rail_id_of(anchor);
+                    net_pins[net_id.0].push((pos.x, pos.y, rail_id));
+                    net_pins[net_id.0].sort_by_key(|&(x, y, r)| (r, x, y));
+                    net_pins[net_id.0].dedup_by_key(|&mut (_, _, r)| r);
                 }
                 // net_id 越界 (不在 circuit 里) 静默忽略
             }
@@ -352,7 +351,7 @@ fn best_wire_avoiding(
             let pos_b = board.hole(hb).position;
             let dist = (pos_a.x - pos_b.x).unsigned_abs() + (pos_a.y - pos_b.y).unsigned_abs();
             let cost = dist as f64 + history[ha.0] + history[hb.0];
-            if best.map_or(true, |(c, _, _)| cost < c) {
+            if best.is_none_or(|(c, _, _)| cost < c) {
                 best = Some((cost, ha, hb));
             }
         }
@@ -721,7 +720,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -730,7 +729,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(2)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -805,7 +804,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -814,7 +813,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![

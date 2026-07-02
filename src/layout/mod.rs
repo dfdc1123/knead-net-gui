@@ -1,10 +1,10 @@
 //! 面包板布局: 把 Circuit 投影到 Breadboard 上。
 //!
 //! 模块组织:
-//! - [`breadboard`]: 物理结构 (30×5 矩形, 每列纵向连通, 无电源轨)
+//! - [`breadboard`][]: 物理结构 (30×5 矩形, 每列纵向连通, 无电源轨)
 //! - [`placement`]: 摆放 (位置 + 旋转) → 投影到具体 HoleId
-//! - [`occupancy`]: 当前孔占用 (派生, 不缓存)
-//! - [`routing`]: 接线 (Wire, Router trait)
+//! - [`occupancy`][]: 当前孔占用 (派生, 不缓存)
+//! - [`routing`][]: 接线 (Wire, Router trait)
 //! - [`Layout`]: 顶层容器, 持有 Circuit 引用 + placements + wires
 
 pub mod breadboard;
@@ -178,9 +178,7 @@ impl<'c> Layout<'c> {
             .components
             .iter()
             .filter_map(|c| {
-                if c.footprint.is_none() {
-                    return None;
-                }
+                c.footprint?;
                 if self.placements[c.id.0].is_some() {
                     return None;
                 }
@@ -1439,15 +1437,14 @@ mod tests {
         for seed in 0..20u64 {
             let mut layout = Layout::new(circuit);
             let cfg = SAConfig { seed, ..config };
-            if layout.place_sa(&board, &cfg).is_ok() {
-                if matches!(
+            if layout.place_sa(&board, &cfg).is_ok()
+                && matches!(
                     layout.placement(ComponentId(0)),
                     Some(Placement::Bridged { .. })
                 ) {
                     any_bridged = true;
                     break;
                 }
-            }
         }
         assert!(
             any_bridged,

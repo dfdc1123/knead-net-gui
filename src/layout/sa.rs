@@ -247,28 +247,29 @@ pub(super) fn simulate(
         // "signal pin 离同 net 中心最近" 预排序的结果, 这里选 cost 最低是真正的
         // 优化。候选数 K 一般 < 8, 额外 cost 调用次数可接受。
         // 翻到 OnBoard 时不用管 active_bridge_idx (cost 函数忽略它)。
-        if let Move::ToggleBridging(i) = m {
-            if candidate.bridged[i] && candidate.bridged_pin_pairs[i].len() > 1 {
-                let mut best_cost = f64::INFINITY;
-                let mut best_idx = candidate.active_bridge_idx[i];
-                for (j, _) in candidate.bridged_pin_pairs[i].iter().enumerate() {
-                    candidate.active_bridge_idx[i] = j;
-                    let c = cost_fast(
-                        &candidate,
-                        circuit,
-                        board,
-                        bridged_pins,
-                        &config.weights,
-                        &ctx,
-                        &mut buf,
-                    );
-                    if c < best_cost {
-                        best_cost = c;
-                        best_idx = j;
-                    }
+        if let Move::ToggleBridging(i) = m
+            && candidate.bridged[i]
+            && candidate.bridged_pin_pairs[i].len() > 1
+        {
+            let mut best_cost = f64::INFINITY;
+            let mut best_idx = candidate.active_bridge_idx[i];
+            for (j, _) in candidate.bridged_pin_pairs[i].iter().enumerate() {
+                candidate.active_bridge_idx[i] = j;
+                let c = cost_fast(
+                    &candidate,
+                    circuit,
+                    board,
+                    bridged_pins,
+                    &config.weights,
+                    &ctx,
+                    &mut buf,
+                );
+                if c < best_cost {
+                    best_cost = c;
+                    best_idx = j;
                 }
-                candidate.active_bridge_idx[i] = best_idx;
             }
+            candidate.active_bridge_idx[i] = best_idx;
         }
         let new_cost = cost_fast(
             &candidate,
@@ -606,6 +607,7 @@ mod tests {
         let xs = best.x.clone();
         // 检查 pin 不撞
         let mut holes: HashSet<(i32, i32)> = HashSet::new();
+        #[allow(clippy::needless_range_loop)]
         for idx in 0..best.n() {
             let comp = &circuit.components[best.placeable[idx].0];
             let footprint = &circuit.footprints[comp.footprint.unwrap().0];

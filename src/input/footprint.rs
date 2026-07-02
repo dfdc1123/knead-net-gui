@@ -82,12 +82,11 @@ pub fn parse_one(text: &str) -> Result<FootprintDraft, ParseError> {
 
 /// 判断一个 sexp 是不是 (attr smd)
 fn is_smd_attr(sexp: &Sexp) -> bool {
-    if let Sexp::List(items) = sexp {
-        if matches!(items.first(), Some(Sexp::Atom(s)) if s == "attr") {
-            if let Some(Sexp::Atom(s)) = items.get(1) {
-                return s == "smd";
-            }
-        }
+    if let Sexp::List(items) = sexp
+        && matches!(items.first(), Some(Sexp::Atom(s)) if s == "attr")
+        && let Some(Sexp::Atom(s)) = items.get(1)
+    {
+        return s == "smd";
     }
     false
 }
@@ -143,14 +142,13 @@ fn extract_pad(sexp: &Sexp) -> Option<PhysicalPin> {
 /// 在一个列表里找 (at X Y), 返回 (x, y)
 fn find_at(items: &[Sexp]) -> Option<(f64, f64)> {
     for item in items {
-        if let Sexp::List(sub) = item {
-            if let Some(Sexp::Atom(head)) = sub.first() {
-                if head == "at" && sub.len() >= 3 {
-                    if let (Some(x), Some(y)) = (parse_f64(&sub[1]), parse_f64(&sub[2])) {
-                        return Some((x, y));
-                    }
-                }
-            }
+        if let Sexp::List(sub) = item
+            && let Some(Sexp::Atom(head)) = sub.first()
+            && head == "at"
+            && sub.len() >= 3
+            && let (Some(x), Some(y)) = (parse_f64(&sub[1]), parse_f64(&sub[2]))
+        {
+            return Some((x, y));
         }
     }
     None

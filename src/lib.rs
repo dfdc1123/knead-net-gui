@@ -1,9 +1,9 @@
 //! knead-net: 电路解析与建模 + 面包板布局。
 //!
 //! 模块组织:
-//! - [`circuit`]: 领域模型 (格式无关,只有数据结构)
+//! - [`circuit`][]: 领域模型 (格式无关,只有数据结构)
 //! - [`input`]:   各种文件格式的解析器, 每个都把自己的格式转成 [`Circuit`]
-//! - [`layout`]:  面包板布局 (把 Circuit 投影到 Breadboard 上)
+//! - [`layout`][]:  面包板布局 (把 Circuit 投影到 Breadboard 上)
 
 pub mod circuit;
 pub mod input;

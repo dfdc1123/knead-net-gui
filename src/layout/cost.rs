@@ -7,6 +7,7 @@
 //!   - **同 rail 不同 col: |Δcol|** (走 jumper wire 在同一行)
 //!   - **同 col 不同 rail: |Δrow|** (跨中央通道)
 //!   - **不同 col 不同 rail: |Δcol| + |Δrow|** (Manhattan)
+//!
 //!   比 2D HPWL 准 — 普通 HPWL 把 "同列不同 row 同 rail" 算成 Δrow, MST 直接 0,
 //!   推动 SA 主动寻找 rail 短接的零跳线布局。
 //! - **紧凑度**: 按 rail 分组算 union bbox 面积加和, 阻止 SA 停在"零冲突但留白大"的状态。
@@ -811,10 +812,10 @@ pub(crate) fn propose_bridged_pairs(
                 x: h_pos.x + rotated.x,
                 y: h_pos.y + rotated.y,
             };
-            if let Some(signal_h) = board.at(signal_pos.x, signal_pos.y) {
-                if board.region_of(signal_h) == Region::MainRail {
-                    out.push([(h, power_pin_id), (signal_h, signal_pin_id)]);
-                }
+            if let Some(signal_h) = board.at(signal_pos.x, signal_pos.y)
+                && board.region_of(signal_h) == Region::MainRail
+            {
+                out.push([(h, power_pin_id), (signal_h, signal_pin_id)]);
             }
         }
     }
@@ -1236,8 +1237,8 @@ pub(crate) fn cost_fast(
             continue;
         }
         let base = rail_owners[0];
-        for i in 1..rail_owners.len() {
-            if rail_owners[i] != base {
+        for owner in &rail_owners[1..] {
+            if *owner != base {
                 col_conflict_pairs += 1;
             }
         }
@@ -1304,8 +1305,9 @@ pub(crate) fn cost_fast(
 /// - 不同 `rail_id`: Manhattan |Δcol| + |Δrow|
 ///
 /// 这是 wire 长度的下界 — 实际走线可能更长 (绕障碍), 但 SA 用它做优化目标。
+#[cfg(test)]
 fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
-    mst_wire_length_slow(pins)
+    mst_wire_length_fast(&(0..pins.len()).collect::<Vec<_>>(), pins)
 }
 
 /// 快速版本: 使用 index 引用 buf.holes 而不是复制数据。
@@ -1313,14 +1315,15 @@ fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
 fn mst_wire_length_fast(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
     let n = indices.len();
     match n {
-        0..=1 => return 0.0,
+        0..=1 => 0.0,
         2 => {
             let a = holes[indices[0]];
             let b = holes[indices[1]];
             if a.2 == b.2 {
-                return 0.0;
+                0.0
+            } else {
+                ((a.0 - b.0).abs() + (a.1 - b.1).abs()) as f64
             }
-            return ((a.0 - b.0).abs() + (a.1 - b.1).abs()) as f64;
         }
         3 => {
             // 3 pins: 3 种可能的 spanning tree (选 2 条边), 取 min
@@ -1343,11 +1346,11 @@ fn mst_wire_length_fast(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
                 (p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()
             };
             let min_d = (d01 + d02).min(d01 + d12).min(d02 + d12);
-            return min_d as f64;
+            min_d as f64
         }
         _ => {
             // 4+ pins: Kruskal with local allocations
-            return mst_wire_length_fast_kruskal(indices, holes);
+            mst_wire_length_fast_kruskal(indices, holes)
         }
     }
 }
@@ -1400,55 +1403,7 @@ fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32, u32)]) ->
     total as f64
 }
 
-/// 旧的 mst_wire_length (兼容测试)
-fn mst_wire_length_slow(pins: &[(i32, i32, u32)]) -> f64 {
-    let n = pins.len();
-    if n < 2 {
-        return 0.0;
-    }
-
-    let dist = |a: (i32, i32, u32), b: (i32, i32, u32)| -> i32 {
-        if a.2 == b.2 {
-            0
-        } else {
-            (a.0 - b.0).abs() + (a.1 - b.1).abs()
-        }
-    };
-
-    let mut edges: Vec<(i32, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
-    for i in 0..n {
-        for j in (i + 1)..n {
-            edges.push((dist(pins[i], pins[j]), i, j));
-        }
-    }
-    edges.sort_by_key(|e| e.0);
-
-    let mut parent: Vec<usize> = (0..n).collect();
-    let find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    };
-
-    let mut total: i32 = 0;
-    let mut edges_used = 0;
-    for (d, i, j) in edges {
-        let ri = find(&mut parent, i);
-        let rj = find(&mut parent, j);
-        if ri != rj {
-            parent[ri] = rj;
-            total += d;
-            edges_used += 1;
-            if edges_used == n - 1 {
-                break;
-            }
-        }
-    }
-    total as f64
-}
-
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::circuit::{
@@ -1893,7 +1848,7 @@ mod tests {
         let state =
             SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
         // 3 个连通的 1-pin 元件, FD 应该把它们聚在一起 (col 间距 ≤ 3)
-        let xs: Vec<i32> = state.x.iter().copied().collect();
+        let xs: Vec<i32> = state.x.to_vec();
         let x_min = *xs.iter().min().unwrap();
         let x_max = *xs.iter().max().unwrap();
         assert!(
@@ -1937,7 +1892,7 @@ mod tests {
         let state =
             SAState::from_force_directed(placeable, &circuit, &board(), &FDConfig::default());
         // 3 个 1-pin 元件无连接, 应散开 (最远 col 间距 ≥ 2)
-        let xs: Vec<i32> = state.x.iter().copied().collect();
+        let xs: Vec<i32> = state.x.to_vec();
         let x_min = *xs.iter().min().unwrap();
         let x_max = *xs.iter().max().unwrap();
         assert!(
@@ -2002,13 +1957,13 @@ mod tests {
                 let abs_x = state.x[idx] + p.offset.x;
                 let abs_y = state.y[idx] + p.offset.y;
                 assert!(
-                    abs_x >= 0 && abs_x < 30,
+                    (0..30).contains(&abs_x),
                     "x OOB: {} from {}",
                     abs_x,
                     state.x[idx]
                 );
                 assert!(
-                    abs_y >= 0 && abs_y < 5,
+                    (0..5).contains(&abs_y),
                     "y OOB: {} from {}",
                     abs_y,
                     state.y[idx]
@@ -2104,7 +2059,7 @@ mod tests {
                     .unwrap();
                 let abs_x = state.x[idx] + physical.offset.x;
                 let abs_y = state.y[idx] + physical.offset.y;
-                if abs_x < 0 || abs_x >= 30 || abs_y < 0 || abs_y >= 5 {
+                if !(0..30).contains(&abs_x) || !(0..5).contains(&abs_y) {
                     continue;
                 }
                 let rail_top = board().rail_rows(abs_y).first().copied().unwrap_or(abs_y);
@@ -2117,8 +2072,8 @@ mod tests {
                 continue;
             }
             let base = col_owners[0];
-            for i in 1..col_owners.len() {
-                if col_owners[i] != base {
+            for owner in &col_owners[1..] {
+                if *owner != base {
                     col_conflict_pairs += 1;
                 }
             }

@@ -451,7 +451,7 @@ mod bbox_tests {
         let make_pin = |id: usize, comp_id: usize| Pin {
             id: PinId(id),
             component: ComponentId(comp_id),
-            num: if id % 2 == 0 { "1" } else { "2" }.into(),
+            num: if id.is_multiple_of(2) { "1" } else { "2" }.into(),
             pinfunction: None,
             net: None,
         };
@@ -567,7 +567,7 @@ mod bbox_tests {
     #[test]
     fn bbox_handles_r180() {
         let b = board();
-        let mut layout = Layout::new(&axial_circuit());
+        let mut layout = Layout::new(axial_circuit());
         layout.place(
             ComponentId(0),
             Placement::OnBoard {

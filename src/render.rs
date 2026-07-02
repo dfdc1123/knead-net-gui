@@ -521,7 +521,6 @@ mod tests {
         PinId,
     };
     use crate::layout::Layout;
-    use crate::layout::placement::Rotation;
 
     fn board() -> Breadboard {
         Breadboard::standard()
@@ -551,7 +550,7 @@ mod tests {
             value: None,
             pins: vec![PinId(0), PinId(1)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let pins = vec![
             Pin {
