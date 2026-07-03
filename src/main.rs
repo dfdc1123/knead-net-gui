@@ -3,7 +3,8 @@ use std::fs;
 use knead_net::input::footprint::parse_many as parse_footprints;
 use knead_net::input::netlist::parse_netlist;
 use knead_net::{
-    Breadboard, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router, SAConfig,
+    Breadboard, FDConfig, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router,
+    SAConfig, fd_debug_positions,
 };
 
 fn main() {
@@ -87,6 +88,55 @@ fn main() {
         eprintln!("(电路里没找到 GND / +12V net, 电源轨不绑定)");
     }
     let mut layout = Layout::new(&circuit);
+
+    // ============================================================
+    // FD 调试: 输出连续力导向结果 + 吸附后结果
+    // ============================================================
+    {
+        let fd_config = FDConfig::default();
+        let (fd_positions, fd_placements) = fd_debug_positions(&circuit, &board, &fd_config);
+
+        // FD 连续阶段: 画拓扑聚类
+        if !fd_positions.is_empty() {
+            // 收集有 footprint 的元件列表 (对应 fd_positions 的索引)
+            let placeable: Vec<_> = circuit
+                .components()
+                .iter()
+                .filter_map(|c| {
+                    c.footprint()?;
+                    Some(c.id())
+                })
+                .collect();
+            let svg_fd_cts = knead_net::render::to_svg_fd_continuous(
+                &circuit,
+                &board,
+                &placeable,
+                &fd_positions,
+            );
+            let fd_cts_path = format!("{kicad_dir}/layout-fd-continuous.svg");
+            fs::write(&fd_cts_path, &svg_fd_cts).expect("写 FD continuous SVG 失败");
+            eprintln!(
+                "FD continuous SVG → {fd_cts_path} ({} 字节)",
+                svg_fd_cts.len()
+            );
+
+            // FD 吸附后: 用 snapped placement 建 Layout 渲染
+            let mut fd_layout = Layout::new(&circuit);
+            for (i, slot) in fd_placements.iter().enumerate() {
+                if let Some(p) = slot {
+                    fd_layout.place(circuit.components()[i].id(), *p);
+                }
+            }
+            let svg_fd_snap = knead_net::render::to_svg(&circuit, &board, &fd_layout);
+            let fd_snap_path = format!("{kicad_dir}/layout-fd-snapped.svg");
+            fs::write(&fd_snap_path, &svg_fd_snap).expect("写 FD snapped SVG 失败");
+            eprintln!(
+                "FD snapped SVG    → {fd_snap_path} ({} 字节)",
+                svg_fd_snap.len()
+            );
+        }
+    }
+
     // SA 是随机算法; 跑 10 次取最低 cost (MST cost 下大部分能找到 cost=0 的零跳线布局)
     if let Err(errors) = layout.place_sa(
         &board,

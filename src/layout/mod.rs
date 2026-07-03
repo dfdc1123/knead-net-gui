@@ -26,6 +26,308 @@ pub use sa::SAConfig;
 
 use crate::circuit::{Circuit, ComponentId, Footprint, NetId, PinId, Position};
 
+/// FD 调试输出: 连续力导向位置 + 吸附后的 placement 列表。
+///
+/// 同一个 FD 运行, 先保存连续位置, 再执行贪心 snap, 最后打印每个元件的 FD→snap 位移。
+/// 返回 `(连续位置, 吸附后 placement)`。`连续位置` 跟 `placeable` 同索引,
+/// `吸附后 placement` 跟 `circuit.components()` 同索引 (未摆放为 `None`)。
+pub fn fd_debug_positions(
+    circuit: &Circuit,
+    board: &Breadboard,
+    fd_config: &FDConfig,
+) -> (Vec<(f64, f64)>, Vec<Option<Placement>>) {
+    use crate::circuit::Position;
+    use std::collections::{HashMap, HashSet};
+
+    // 收集所有有 footprint 的元件 (跟 place_sa 一样的逻辑)
+    let placeable: Vec<ComponentId> = circuit
+        .components()
+        .iter()
+        .filter_map(|c| {
+            c.footprint()?;
+            Some(c.id())
+        })
+        .collect();
+
+    if placeable.is_empty() {
+        return (vec![], vec![None; circuit.components().len()]);
+    }
+
+    let n = placeable.len();
+
+    // ========== Phase 1: FD 连续迭代 ==========
+
+    // 1. 邻接权重
+    let mut weights = vec![vec![0.0f64; n]; n];
+    for net in circuit.nets() {
+        let mut comps: Vec<usize> = net
+            .pins()
+            .iter()
+            .map(|&pid| circuit.pins()[pid.raw()].component().raw())
+            .collect();
+        comps.sort();
+        comps.dedup();
+        for &i in &comps {
+            for &j in &comps {
+                if i != j {
+                    weights[i][j] += 1.0;
+                }
+            }
+        }
+    }
+
+    // 2. 初值: 圆周
+    let cols_f = board.cols() as f64;
+    let rows_f = board.rows() as f64;
+    let mut pos: Vec<(f64, f64)> = (0..n)
+        .map(|i| {
+            let angle = i as f64 * 2.0 * std::f64::consts::PI / n as f64;
+            let r = cols_f.min(rows_f) * 0.4;
+            (
+                cols_f / 2.0 + r * angle.cos(),
+                rows_f / 2.0 + r * angle.sin(),
+            )
+        })
+        .collect();
+
+    // 3. FD 迭代
+    let k = fd_config.k;
+    let mut temp = fd_config.initial_temp;
+    for _ in 0..fd_config.max_iters {
+        let mut forces = vec![(0.0f64, 0.0f64); n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let dx = pos[j].0 - pos[i].0;
+                let dy = pos[j].1 - pos[i].1;
+                let dist = (dx * dx + dy * dy).sqrt().max(0.01);
+                let ux = dx / dist;
+                let uy = dy / dist;
+
+                let f_repel = k * k / dist;
+                forces[i].0 -= ux * f_repel;
+                forces[i].1 -= uy * f_repel;
+                forces[j].0 += ux * f_repel;
+                forces[j].1 += uy * f_repel;
+
+                let w = weights[i][j];
+                if w > 0.0 {
+                    let f_attr = dist * dist / k * w;
+                    forces[i].0 += ux * f_attr;
+                    forces[i].1 += uy * f_attr;
+                    forces[j].0 -= ux * f_attr;
+                    forces[j].1 -= uy * f_attr;
+                }
+            }
+        }
+
+        for i in 0..n {
+            let (fx, fy) = forces[i];
+            let fmag = (fx * fx + fy * fy).sqrt();
+            if fmag < 1e-9 {
+                continue;
+            }
+            let scale = fmag.min(temp) / fmag;
+            pos[i].0 += fx * scale;
+            pos[i].1 += fy * scale;
+            pos[i].0 = pos[i].0.clamp(0.0, cols_f - 1.0);
+            let mut y = pos[i].1.clamp(0.0, rows_f - 1.0);
+            if board.is_blocked(y as usize) {
+                let mut best_y = y as i32;
+                let mut best_dist = f64::INFINITY;
+                for r in 0..board.rows() {
+                    if board.is_blocked(r) {
+                        continue;
+                    }
+                    let d = (r as f64 - y).abs();
+                    if d < best_dist {
+                        best_dist = d;
+                        best_y = r as i32;
+                    }
+                }
+                y = best_y as f64;
+            }
+            pos[i].1 = y;
+        }
+
+        temp *= fd_config.cool_rate;
+        if temp < 0.05 {
+            break;
+        }
+    }
+
+    // 4. 保存连续位置 (snap 前的快照)
+    let fd_continuous = pos.clone();
+
+    // ========== Phase 2: 贪心 snap 到格点 ==========
+
+    // 按 FD x 排序
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        pos[a]
+            .0
+            .partial_cmp(&pos[b].0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut snapped_x = vec![0i32; n];
+    let mut snapped_y = vec![0i32; n];
+    let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+    let mut col_owner: HashMap<(i32, i32), Option<NetId>> = HashMap::new();
+
+    for &idx in &order {
+        let comp_id = placeable[idx];
+        let component = &circuit.components()[comp_id.raw()];
+        let fid = component.footprint().expect("placeable 必有 footprint");
+        let fp = &circuit.footprints()[fid.raw()];
+
+        let pin_info: Vec<(i32, i32, Option<NetId>)> = component
+            .pins()
+            .iter()
+            .map(|&pin_id| {
+                let pin = &circuit.pins()[pin_id.raw()];
+                let physical = fp
+                    .pins()
+                    .iter()
+                    .find(|p| p.name() == pin.num())
+                    .expect("footprint 缺 pin");
+                (physical.offset.x, physical.offset.y, pin.net)
+            })
+            .collect();
+
+        let (min_x, max_x, min_y, max_y) = fp.pins().iter().fold(
+            (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
+            |(lx, rx, ly, ry), p| {
+                (
+                    lx.min(p.offset.x),
+                    rx.max(p.offset.x),
+                    ly.min(p.offset.y),
+                    ry.max(p.offset.y),
+                )
+            },
+        );
+        let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
+            .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
+            .collect();
+
+        let target_x = pos[idx].0;
+        let target_y = pos[idx].1;
+
+        let mut best: Option<(i32, i32)> = None;
+        let mut best_dist_sq = f64::INFINITY;
+        for try_y in 0..board.rows() as i32 {
+            if board.is_blocked(try_y as usize) {
+                continue;
+            }
+            for try_x in 0..board.cols() as i32 {
+                let oob_or_blocked = bbox_cells.iter().any(|&(dx, dy)| {
+                    let x = try_x + dx;
+                    let y = try_y + dy;
+                    x < 0
+                        || x >= board.cols() as i32
+                        || y < 0
+                        || y >= board.rows() as i32
+                        || board.is_blocked(y as usize)
+                });
+                if oob_or_blocked {
+                    continue;
+                }
+                let collides = bbox_cells
+                    .iter()
+                    .any(|&(dx, dy)| occupied.contains(&(try_x + dx, try_y + dy)));
+                if collides {
+                    continue;
+                }
+                let col_conflict = pin_info.iter().any(|&(lx, ly, pin_net)| {
+                    let abs_x = try_x + lx;
+                    let abs_y = try_y + ly;
+                    if abs_x < 0
+                        || abs_x >= board.cols() as i32
+                        || abs_y < 0
+                        || abs_y >= board.rows() as i32
+                        || board.is_blocked(abs_y as usize)
+                    {
+                        return true;
+                    }
+                    let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                    match col_owner.get(&(abs_x, rail_top)) {
+                        Some(existing) => *existing != pin_net,
+                        None => false,
+                    }
+                });
+                if col_conflict {
+                    continue;
+                }
+                let dx = try_x as f64 - target_x;
+                let dy = try_y as f64 - target_y;
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq < best_dist_sq {
+                    best_dist_sq = dist_sq;
+                    best = Some((try_x, try_y));
+                }
+            }
+        }
+
+        let (fx, fy) = best.expect("板太小, 装不下所有元件");
+        snapped_x[idx] = fx;
+        snapped_y[idx] = fy;
+        for &(dx, dy) in &bbox_cells {
+            occupied.insert((fx + dx, fy + dy));
+        }
+        for &(lx, ly, pin_net) in &pin_info {
+            let abs_x = fx + lx;
+            let abs_y = fy + ly;
+            if abs_x >= 0
+                && abs_x < board.cols() as i32
+                && abs_y >= 0
+                && abs_y < board.rows() as i32
+                && !board.is_blocked(abs_y as usize)
+            {
+                let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                col_owner.entry((abs_x, rail_top)).or_insert(pin_net);
+            }
+        }
+    }
+
+    // ========== 打印调试表格 ==========
+    eprintln!("\n=== FD → snap 位移 (按 snap x 排序) ===");
+    eprintln!(
+        "{:<6} {:<16} {:<16} {:<8}",
+        "ref", "FD (x,y)", "snap (x,y)", "Δdist"
+    );
+    let mut debug_order: Vec<usize> = (0..n).collect();
+    debug_order.sort_by_key(|&i| snapped_x[i]);
+    for &idx in &debug_order {
+        let comp = &circuit.components()[placeable[idx].raw()];
+        let (fx, fy) = fd_continuous[idx];
+        let (sx, sy) = (snapped_x[idx], snapped_y[idx]);
+        let dist = ((sx as f64 - fx).powi(2) + (sy as f64 - fy).powi(2)).sqrt();
+        eprintln!(
+            "{:<6} ({:>5.1},{:>5.1})     ({:>3},{:>3})        {:.1}",
+            comp.ref_(),
+            fx,
+            fy,
+            sx,
+            sy,
+            dist
+        );
+    }
+    eprintln!();
+
+    // ========== 写回 placement 列表 ==========
+    let mut placements: Vec<Option<Placement>> = vec![None; circuit.components().len()];
+    for (idx, &comp_id) in placeable.iter().enumerate() {
+        placements[comp_id.raw()] = Some(Placement::OnBoard {
+            position: Position {
+                x: snapped_x[idx],
+                y: snapped_y[idx],
+            },
+            rotation: Rotation::R0,
+        });
+    }
+
+    (fd_continuous, placements)
+}
+
 /// 一列上的某个 pin / wire 端点, 捎带它的 net 信息。
 ///
 /// [`LayoutError::ColumnConflict`] 用这个告诉你 "col X 的 a 和 b 被纵向 rail 连起来了,
@@ -1441,10 +1743,11 @@ mod tests {
                 && matches!(
                     layout.placement(ComponentId(0)),
                     Some(Placement::Bridged { .. })
-                ) {
-                    any_bridged = true;
-                    break;
-                }
+                )
+            {
+                any_bridged = true;
+                break;
+            }
         }
         assert!(
             any_bridged,
