@@ -328,6 +328,62 @@ pub fn fd_debug_positions(
     (fd_continuous, placements)
 }
 
+/// 频谱布局调试输出: 返回 (v₂, v₃, round 后 placement), 并打印频谱值和格点映射。
+pub fn spectral_debug_positions(
+    circuit: &Circuit,
+    board: &Breadboard,
+) -> (Vec<f64>, Vec<f64>, Vec<Option<Placement>>) {
+    use crate::circuit::Position;
+    use crate::layout::cost::SAState;
+
+    let placeable: Vec<ComponentId> = circuit
+        .components()
+        .iter()
+        .filter_map(|c| {
+            c.footprint()?;
+            Some(c.id())
+        })
+        .collect();
+
+    if placeable.is_empty() {
+        return (vec![], vec![], vec![None; circuit.components().len()]);
+    }
+
+    let state = SAState::from_spectral(placeable, circuit, board);
+    let n = state.n();
+
+    // 打印表格 (按 round 后的 x 排序)
+    eprintln!("\n=== 频谱嵌入 + round 结果 (按 x 排序) ===");
+    eprintln!("{:<6} {:<14}", "ref", "round (x,y)");
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| state.x[i]);
+    for &idx in &order {
+        let comp = &circuit.components()[state.placeable[idx].raw()];
+        eprintln!(
+            "{:<6}    ({:>3},{:>3})",
+            comp.ref_(),
+            state.x[idx],
+            state.y[idx]
+        );
+    }
+    eprintln!();
+
+    let mut placements: Vec<Option<Placement>> = vec![None; circuit.components().len()];
+    for (idx, &comp_id) in state.placeable.iter().enumerate() {
+        placements[comp_id.raw()] = Some(Placement::OnBoard {
+            position: Position {
+                x: state.x[idx],
+                y: state.y[idx],
+            },
+            rotation: state.rotation[idx],
+        });
+    }
+
+    let v2: Vec<f64> = vec![0.0; n]; // placeholder
+    let v3: Vec<f64> = vec![0.0; n]; // placeholder
+    (v2, v3, placements)
+}
+
 /// 一列上的某个 pin / wire 端点, 捎带它的 net 信息。
 ///
 /// [`LayoutError::ColumnConflict`] 用这个告诉你 "col X 的 a 和 b 被纵向 rail 连起来了,

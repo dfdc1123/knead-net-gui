@@ -4,7 +4,7 @@ use knead_net::input::footprint::parse_many as parse_footprints;
 use knead_net::input::netlist::parse_netlist;
 use knead_net::{
     Breadboard, FDConfig, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router,
-    SAConfig, fd_debug_positions,
+    SAConfig, fd_debug_positions, spectral_debug_positions,
 };
 
 fn main() {
@@ -90,15 +90,29 @@ fn main() {
     let mut layout = Layout::new(&circuit);
 
     // ============================================================
-    // FD 调试: 输出连续力导向结果 + 吸附后结果
+    // 频谱 + FD 调试: 输出两种初始化策略的对比
     // ============================================================
     {
+        // --- 频谱布局调试 ---
+        eprintln!("=== 频谱布局初排 ===");
+        let (_v2, _v3, spectral_placements) = spectral_debug_positions(&circuit, &board);
+        if !spectral_placements.is_empty() {
+            let mut sl_layout = Layout::new(&circuit);
+            for (i, slot) in spectral_placements.iter().enumerate() {
+                if let Some(p) = slot {
+                    sl_layout.place(circuit.components()[i].id(), *p);
+                }
+            }
+            let svg = knead_net::render::to_svg(&circuit, &board, &sl_layout);
+            let path = format!("{kicad_dir}/layout-spectral.svg");
+            fs::write(&path, &svg).expect("写 spectral SVG 失败");
+            eprintln!("Spectral SVG → {path} ({} 字节)", svg.len());
+        }
+
+        // --- FD 调试 (保留对比) ---
         let fd_config = FDConfig::default();
         let (fd_positions, fd_placements) = fd_debug_positions(&circuit, &board, &fd_config);
-
-        // FD 连续阶段: 画拓扑聚类
         if !fd_positions.is_empty() {
-            // 收集有 footprint 的元件列表 (对应 fd_positions 的索引)
             let placeable: Vec<_> = circuit
                 .components()
                 .iter()
@@ -120,7 +134,6 @@ fn main() {
                 svg_fd_cts.len()
             );
 
-            // FD 吸附后: 用 snapped placement 建 Layout 渲染
             let mut fd_layout = Layout::new(&circuit);
             for (i, slot) in fd_placements.iter().enumerate() {
                 if let Some(p) = slot {
@@ -137,11 +150,11 @@ fn main() {
         }
     }
 
-    // SA 是随机算法; 跑 10 次取最低 cost (MST cost 下大部分能找到 cost=0 的零跳线布局)
+    // SA 是随机算法; 跑 n_seeds 次独立模拟, 取 cost 最低的解
     if let Err(errors) = layout.place_sa(
         &board,
         &SAConfig {
-            use_force_directed: true,
+            use_spectral: true,
             max_iters: 50000,
             t0: 40.0,
             cool_rate: 0.99999,

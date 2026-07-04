@@ -60,12 +60,15 @@ pub struct SAConfig {
     pub weights: Weights,
     /// 决定随机扰动序列; 改 seed 可重新跑一遍出不同结果。
     pub seed: u64,
-    /// 跑多少次取最低 cost 的解。SA 是随机算法, 单次可能卡在 local optimum;
-    /// MST cost 下多 seed 跑出来大部分能找到 cost=0 (零跳线)。默认 1。
+    /// 跑多少次取最低 cost 的解。SA 是随机算法, 单次可能卡在 local optimum。
+    /// 多 seed 独立跑, 取 cost 最低的。默认 1。
     pub n_seeds: usize,
     /// `true` 用 [`SAState::from_force_directed`] 做初排 (比 `from_greedy` 慢,
     /// 但对强耦合电路起点好得多); `false` 用贪心 first-fit。
     pub use_force_directed: bool,
+    /// `true` 用 [`SAState::from_spectral`] 做初排 (频谱嵌入, 无参数, 一步到位)。
+    /// 优先于 `use_force_directed`。
+    pub use_spectral: bool,
     /// 仅在 `use_force_directed = true` 时使用。
     pub fd_config: FDConfig,
     /// `random_move` 生成 `Move::ToggleBridging` 的目标概率。
@@ -86,6 +89,7 @@ impl Default for SAConfig {
             seed: 0xCAFE_F00D,
             n_seeds: 1,
             use_force_directed: false,
+            use_spectral: false,
             fd_config: FDConfig::default(),
             p_toggle_bridge: 0.15,
         }
@@ -203,7 +207,9 @@ pub(super) fn simulate(
     bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
-    let mut state = if config.use_force_directed {
+    let mut state = if config.use_spectral {
+        SAState::from_spectral(placeable, circuit, board)
+    } else if config.use_force_directed {
         SAState::from_force_directed(placeable, circuit, board, &config.fd_config)
     } else {
         SAState::from_greedy(placeable, circuit, board)

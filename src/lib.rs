@@ -19,5 +19,5 @@ pub use layout::{
     Breadboard, FDConfig, Hole, HoleId, Layout, LayoutError, Occupancy, Occupant, PathFinderRouter,
     PinHole, PlacedFootprint, Placement, Polarity, PowerRail, PowerRailBinding, PowerRails,
     PowerStrip, Region, Rotation, Router, SAConfig, Weights, Wire, WireId, fd_debug_positions,
-    standard_power_rails,
+    spectral_debug_positions, standard_power_rails,
 };

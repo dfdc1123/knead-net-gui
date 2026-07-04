@@ -9,7 +9,7 @@
 //!   - **不同 col 不同 rail: |Δcol| + |Δrow|** (Manhattan)
 //!
 //!   比 2D HPWL 准 — 普通 HPWL 把 "同列不同 row 同 rail" 算成 Δrow, MST 直接 0,
-//!   推动 SA 主动寻找 rail 短接的零跳线布局。
+//!   推动 SA 主动寻找 rail 短接的低跳线数布局。
 //! - **紧凑度**: 按 rail 分组算 union bbox 面积加和, 阻止 SA 停在"零冲突但留白大"的状态。
 //!   按 rail 切分避免中央通道把"实际占 1 行"的布局算成跨 2 行。
 //! - 成本是各项**加权和**, 权在 [`Weights`] 里调。
@@ -55,8 +55,7 @@ pub struct Weights {
 impl Default for Weights {
     fn default() -> Self {
         Self {
-            // 一根 5 孔 wire 省下 ~25 成本 (mst=5); 大权重让 SA 冲过
-            // "中间态变差" 的 barrier, 主动去找零跳线布局。
+            // 一根 5 孔 wire 省下 ~25 成本 (mst=5); 大权重推动 SA 压低跳线数。
             mst: 5.0,
             // 一次 pin 碰撞 = 让 SA 宁愿多绕 50-100 孔也不撞
             pin_overlap: 100.0,
@@ -708,6 +707,228 @@ impl SAState {
             rotation,
         }
     }
+
+    /// 频谱布局初排: 图拉普拉斯 2D 嵌入 → 网格填充。
+    ///
+    /// 流程:
+    /// 1. 拉普拉斯 + 幂迭代 → v₂, v₃
+    /// 2. 按 v₂ 排序, 根据 v₂ 间距自动分组 (间隙大的 = 分组边界)
+    /// 3. 每组分配一个列, 组内按 v₃ 排序分配到不同行
+    /// 4. 检查列冲突, 必要时微调
+    ///
+    /// 核心思想: v₂ 相近的元件 (同 net 或强耦合) 天生该在同一列,
+    /// v₃ 的差异自然把它们分配到不同行 (同列不同行 = 零跳线)。
+    pub fn from_spectral(
+        placeable: Vec<ComponentId>,
+        circuit: &Circuit,
+        board: &Breadboard,
+    ) -> Self {
+        let n = placeable.len();
+        if n <= 2 {
+            return Self::from_greedy(placeable, circuit, board);
+        }
+
+        // ============================================================
+        // Phase 1: 邻接权重 + 拉普拉斯
+        // ============================================================
+        let mut w = vec![vec![0.0f64; n]; n];
+        for net in circuit.nets() {
+            let mut comps: Vec<usize> = net
+                .pins()
+                .iter()
+                .map(|&pid| circuit.pins[pid.0].component.0)
+                .collect();
+            comps.sort();
+            comps.dedup();
+            for &i in &comps {
+                for &j in &comps {
+                    if i != j {
+                        w[i][j] += 1.0;
+                    }
+                }
+            }
+        }
+
+        let mut l = vec![vec![0.0f64; n]; n];
+        for i in 0..n {
+            let deg: f64 = w[i].iter().sum();
+            l[i][i] = deg;
+            for j in 0..n {
+                l[i][j] -= w[i][j];
+            }
+        }
+
+        // ============================================================
+        // Phase 2: 幂迭代求 v₂, v₃
+        // ============================================================
+        let v2 = compute_fiedler(&l, n);
+        let v3 = compute_second_evec(&l, &v2, n);
+
+        // ============================================================
+        // Phase 3: rank-based 映射 → 格点 (每元件独享一列)
+        // ============================================================
+        let (x, y) = grid_fill_2d(&v2, &v3, board, n, &placeable, circuit);
+
+        Self {
+            placeable,
+            is_bridgeable: vec![false; n],
+            bridged: vec![false; n],
+            bridged_pin_pairs: vec![Vec::new(); n],
+            active_bridge_idx: vec![0; n],
+            x,
+            y,
+            rotation: vec![Rotation::R0; n],
+        }
+    }
+}
+
+// ============================================================
+//  频谱布局辅助函数
+// ============================================================
+
+/// 幂迭代求 Fiedler 向量 (拉普拉斯 L 的第二小特征向量)。
+///
+/// L 的最小特征值为 0, 对应常向量 [1,1,...,1]。
+/// 对 M = cI - L 做幂迭代, 投射掉常向量分量, 收敛到 Fiedler。
+fn compute_fiedler(l: &[Vec<f64>], n: usize) -> Vec<f64> {
+    // c > λ_max(L)。λ_max ≤ 2·max_degree
+    let max_deg = (0..n).map(|i| l[i][i]).fold(0.0f64, f64::max);
+    let c = if max_deg > 0.0 { 2.0 * max_deg } else { 1.0 };
+
+    let mut v: Vec<f64> = (0..n).map(|_| fastrand::f64() - 0.5).collect();
+    project_out_constant(&mut v, n);
+    normalize_vec(&mut v);
+
+    for _ in 0..300 {
+        let mut w = mat_vec_mul_shifted(l, &v, c, n);
+        project_out_constant(&mut w, n);
+        if !normalize_vec(&mut w) {
+            break;
+        }
+        v = w;
+    }
+    v
+}
+
+/// 幂迭代求第三特征向量 v₃ (正交于常向量和 v₂)。
+fn compute_second_evec(l: &[Vec<f64>], v2: &[f64], n: usize) -> Vec<f64> {
+    let max_deg = (0..n).map(|i| l[i][i]).fold(0.0f64, f64::max);
+    let c = if max_deg > 0.0 { 2.0 * max_deg } else { 1.0 };
+
+    let mut v: Vec<f64> = (0..n).map(|_| fastrand::f64() - 0.5).collect();
+    project_out_two(&mut v, v2, n);
+    normalize_vec(&mut v);
+
+    for _ in 0..300 {
+        let mut w = mat_vec_mul_shifted(l, &v, c, n);
+        project_out_two(&mut w, v2, n);
+        if !normalize_vec(&mut w) {
+            break;
+        }
+        v = w;
+    }
+    v
+}
+
+/// (cI - L) * v
+fn mat_vec_mul_shifted(l: &[Vec<f64>], v: &[f64], c: f64, n: usize) -> Vec<f64> {
+    let mut w = vec![0.0; n];
+    for i in 0..n {
+        w[i] = c * v[i];
+        for j in 0..n {
+            w[i] -= l[i][j] * v[j];
+        }
+    }
+    w
+}
+
+/// 投射掉常向量分量: v ← v - mean(v)·1
+fn project_out_constant(v: &mut [f64], n: usize) {
+    let mean: f64 = v.iter().sum::<f64>() / n as f64;
+    for vi in v.iter_mut() {
+        *vi -= mean;
+    }
+}
+
+/// 投射掉常向量和 v2 分量
+fn project_out_two(v: &mut [f64], v2: &[f64], n: usize) {
+    let mean: f64 = v.iter().sum::<f64>() / n as f64;
+    let dot_v2: f64 = v.iter().zip(v2).map(|(a, b)| a * b).sum();
+    for (i, vi) in v.iter_mut().enumerate() {
+        *vi = *vi - mean - dot_v2 * v2[i];
+    }
+}
+
+/// 归一化, 返回是否成功 (norm > 0)
+fn normalize_vec(v: &mut [f64]) -> bool {
+    let norm_sq: f64 = v.iter().map(|x| x * x).sum();
+    if norm_sq < 1e-24 {
+        return false;
+    }
+    let inv = 1.0 / norm_sq.sqrt();
+    for vi in v.iter_mut() {
+        *vi *= inv;
+    }
+    true
+}
+
+/// 频谱 → 格点映射: v₂ rank → x 均匀分布, v₃ rank → y 在可用行上分布。
+/// 每个元件独享一列, 无列冲突。v₂ 相邻的 → x 相邻 → 同 net 自然靠近。
+fn grid_fill_2d(
+    v2: &[f64],
+    v3: &[f64],
+    board: &Breadboard,
+    n: usize,
+    _placeable: &[ComponentId],
+    _circuit: &Circuit,
+) -> (Vec<i32>, Vec<i32>) {
+    let valid_rows: Vec<i32> = (0..board.rows() as i32)
+        .filter(|&r| !board.is_blocked(r as usize))
+        .collect();
+    let n_rows = valid_rows.len().max(1);
+
+    // 按 v₂ 排序 → x rank
+    let mut order_x: Vec<usize> = (0..n).collect();
+    order_x.sort_by(|&a, &b| {
+        v2[a]
+            .partial_cmp(&v2[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut rank_x = vec![0usize; n];
+    for (rank, &idx) in order_x.iter().enumerate() {
+        rank_x[idx] = rank;
+    }
+
+    // 按 v₃ 排序 → y rank
+    let mut order_y: Vec<usize> = (0..n).collect();
+    order_y.sort_by(|&a, &b| {
+        v3[a]
+            .partial_cmp(&v3[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut rank_y = vec![0usize; n];
+    for (rank, &idx) in order_y.iter().enumerate() {
+        rank_y[idx] = rank;
+    }
+
+    let cols = board.cols() as i32;
+    let mut x = vec![0i32; n];
+    let mut y = vec![0i32; n];
+    for i in 0..n {
+        // x: 按 v₂ rank 均匀分布在 [1, cols-1]
+        let frac = if n > 1 {
+            rank_x[i] as f64 / (n - 1) as f64
+        } else {
+            0.5
+        };
+        x[i] = (1.0 + frac * (cols - 2) as f64) as i32;
+        x[i] = x[i].clamp(0, cols - 1);
+
+        // y: 按 v₃ rank 映射到可用行
+        y[i] = valid_rows[rank_y[i] % n_rows];
+    }
+
+    (x, y)
 }
 
 // ============================================================
