@@ -100,7 +100,7 @@ impl Default for SAConfig {
 //  扰动
 // ============================================================
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Move {
     /// 翻转单个元件的旋转 (R0 ↔ R180)
     Flip(usize),
@@ -111,6 +111,9 @@ enum Move {
     /// 翻转 `state.bridged[i]` (bridgeable 元件在 OnBoard ↔ Bridged 之间切换)。
     /// 仅当 `state.is_bridgeable[i] = true` 时生成 (见 `random_move`)。
     ToggleBridging(usize),
+    /// 同 rail 内一组紧邻元件整体左移 1 列, 填桥接留下的空洞。
+    /// 组由密度聚类决定 (gap ≤ 2 算同组)。
+    ShiftGroup(Vec<usize>),
 }
 
 fn random_move(
@@ -119,6 +122,7 @@ fn random_move(
     t: f64,
     t0: f64,
     config: &SAConfig,
+    board: &Breadboard,
 ) -> Move {
     let n = state.n();
     if n == 0 {
@@ -136,36 +140,36 @@ fn random_move(
     } else {
         1
     };
-    // 用 max_n=1 时 rng.usize(0..1) 仍消耗一个随机数 (始终返回 0),
-    // 保持不同温度下 rng 序列的可比性 — 避免"高温多消费随机数"污染种子复现性。
     let n_amp = 1 + rng.usize(0..max_n) as i32;
     let dx_sign = if rng.f64() < 0.5 { -1 } else { 1 };
     let dy_sign = if rng.f64() < 0.5 { -1 } else { 1 };
     let dx = dx_sign * n_amp;
     let dy = dy_sign * n_amp;
 
-    // v6 分布: ShiftX 45% / Flip 20% / ShiftY 20% / ToggleBridging 15% (默认)。
-    // 调高 ShiftY 从 v5 的 8% → 20%, 主动探索 row 0/1 混合的布局
-    // (避免卡在 "所有元件一行" 的 local optimum, 那个局部最优 MST=2
-    // 跟全局 MST=0 之间需要穿过中间态 MST=4)。
-    // ShiftX 同步 55% → 45%, Flip 30% → 20% 给 ShiftY 让位。
-    // Toggle 占 15%, p_toggle_bridge 默认 0.15。
-    // base 比例 0.45/0.20/0.20 求和 = 0.85, (1 - p_toggle) 重新归一化时除以 0.85。
-    let p_toggle = config.p_toggle_bridge.clamp(0.0, 0.45); // 限制上限防误配
-    let p_shiftx = (1.0 - p_toggle) * 0.45 / 0.85;
+    // v7 分布: ShiftX 37% / Flip 20% / ShiftY 20% / ToggleBridging 15% / ShiftGroup 8%。
+    // ShiftX 从 45% → 37%, 匀 8% 给 ShiftGroup。
+    let p_toggle = config.p_toggle_bridge.clamp(0.0, 0.45);
+    let p_shiftx = (1.0 - p_toggle) * 0.37 / 0.85;
     let p_flip = (1.0 - p_toggle) * 0.20 / 0.85;
+    let p_shiftg = (1.0 - p_toggle) * 0.08 / 0.85;
     let _p_shifty = (1.0 - p_toggle) * 0.20 / 0.85;
-    // 校验: p_shiftx + p_flip + p_shifty + p_toggle = (1 - p_toggle) + p_toggle = 1.0
+    // 校验: p_shiftx + p_flip + p_shifty + p_toggle + p_shiftg = (1-p_toggle) + p_toggle = 1
 
     if r < p_shiftx {
         Move::ShiftX(p, dx)
     } else if r < p_shiftx + p_flip {
         Move::Flip(p)
     } else if r < p_shiftx + p_flip + p_toggle {
-        // Toggle 分支: 仅当 `p` 是 bridgeable 才真正生成 Toggle,
-        // 否则退回 ShiftX (保持 RNG 消费序列对 seed 可复现)。
         if state.is_bridgeable[p] {
             Move::ToggleBridging(p)
+        } else {
+            Move::ShiftX(p, dx)
+        }
+    } else if r < p_shiftx + p_flip + p_toggle + p_shiftg {
+        // ShiftGroup: 找 p 所在同 rail 密度聚类, 整组左移 1 列填洞。
+        // 找不到可用组就退回单个 ShiftX。
+        if let Some(group) = find_left_shiftable_group(state, board, p) {
+            Move::ShiftGroup(group)
         } else {
             Move::ShiftX(p, dx)
         }
@@ -174,19 +178,114 @@ fn random_move(
     }
 }
 
-fn apply_move(state: &mut SAState, m: Move) {
+/// 同一 rail 内密度聚类, 找到 `i` 所在的组。
+///
+/// 聚类规则: 同 rail 的 OnBoard 元件按 x 排序,
+/// 相邻间距 ≤ 2 列为同组。返回的组**不含** bridged 元件。
+/// 若组左侧有空隙 (组最左 > 0, 且左边有非组元件或板边空隙), 返回 Some(组)。
+/// 若整组已贴左壁或组内只有 1 个元件 (走单个 ShiftX 就好), 返回 None。
+fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> Option<Vec<usize>> {
+    if state.bridged[i] {
+        return None; // bridged 元件不参与组移
+    }
+    let rail_top_i = board
+        .rail_rows(state.y[i])
+        .first()
+        .copied()
+        .unwrap_or(state.y[i]);
+
+    // 收集同 rail 的所有 OnBoard 元件
+    let mut same_rail: Vec<(usize, i32)> = (0..state.n())
+        .filter(|&j| !state.bridged[j])
+        .filter(|&j| {
+            let rj = board
+                .rail_rows(state.y[j])
+                .first()
+                .copied()
+                .unwrap_or(state.y[j]);
+            rj == rail_top_i
+        })
+        .map(|j| (j, state.x[j]))
+        .collect();
+
+    if same_rail.len() < 2 {
+        return None; // 就一个元件, 单个 ShiftX 就好
+    }
+
+    same_rail.sort_by(|a, b| a.1.cmp(&b.1));
+
+    // 密度聚类: gap > 2 切分
+    let threshold: i32 = 2;
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = vec![same_rail[0].0];
+    for w in same_rail.windows(2) {
+        let (_prev_j, prev_x) = w[0];
+        let (next_j, next_x) = w[1];
+        if next_x - prev_x - 1 <= threshold {
+            // gap 小: 同组
+            cur.push(next_j);
+        } else {
+            // gap 大: 切开
+            groups.push(std::mem::take(&mut cur));
+            cur.push(next_j);
+        }
+    }
+    if !cur.is_empty() {
+        groups.push(cur);
+    }
+
+    // 找到 i 所属的组
+    let Some(group_idx) = groups.iter().position(|g| g.contains(&i)) else {
+        return None;
+    };
+    let group = &groups[group_idx];
+
+    if group.len() < 2 {
+        return None; // 单人组, 单个 ShiftX 更有效
+    }
+
+    // 检查组左移 1 列后是否越界 / 撞左边非组元件
+    let leftmost_x = group.iter().map(|&j| state.x[j]).min().unwrap_or(i32::MAX);
+
+    if leftmost_x <= 0 {
+        return None; // 贴左壁了, 移不动
+    }
+
+    // 查找左边最近的**非组** OnBoard 元件
+    let left_neighbor_x = same_rail
+        .iter()
+        .filter(|(j, _)| !group.contains(j))
+        .filter(|(_, x)| *x < leftmost_x)
+        .map(|(_, x)| *x)
+        .max();
+
+    if let Some(lx) = left_neighbor_x {
+        if leftmost_x - lx - 1 <= 0 {
+            return None; // 紧贴左边元件, 没空隙
+        }
+    }
+
+    Some(group.clone())
+}
+
+fn apply_move(state: &mut SAState, m: &Move) {
     match m {
         Move::Flip(i) => {
-            state.rotation[i] = match state.rotation[i] {
+            state.rotation[*i] = match state.rotation[*i] {
                 Rotation::R0 => Rotation::R180,
                 Rotation::R180 => Rotation::R0,
                 other => panic!("SA 只用 R0/R180, 不该出现 {:?}", other),
             };
         }
-        Move::ShiftX(i, dx) => state.x[i] += dx,
-        Move::ShiftY(i, dy) => state.y[i] += dy,
+        Move::ShiftX(i, dx) => state.x[*i] += dx,
+        Move::ShiftY(i, dy) => state.y[*i] += dy,
         Move::ToggleBridging(i) => {
-            state.bridged[i] = !state.bridged[i];
+            state.bridged[*i] = !state.bridged[*i];
+        }
+        Move::ShiftGroup(indices) => {
+            for &i in indices {
+                state.x[i] -= 1;
+            }
         }
     }
 }
@@ -239,9 +338,9 @@ pub(super) fn simulate(
     let mut t = config.t0;
 
     for _ in 0..config.max_iters {
-        let m = random_move(&state, &mut rng, t, config.t0, config);
+        let m = random_move(&state, &mut rng, t, config.t0, config, board);
         let mut candidate = state.clone();
-        apply_move(&mut candidate, m);
+        apply_move(&mut candidate, &m);
         // 拒绝任何产生越界 / blocked row y 的候选 — 物理上不该考虑的状态。
         // (cost 会扣 OOB 惩罚让 SA 远离开, 但放在这里少跑 cost 计算。
         // 另外, 若初始状态本身就合法, SA 也不会被锁定到 "都是 OOB 的同代价态"。)
@@ -403,7 +502,6 @@ mod tests {
 
     #[test]
     fn random_move_returns_valid_index() {
-        let _circuit = simple_circuit();
         let state = SAState::from_greedy(
             vec![ComponentId(0), ComponentId(1)],
             &simple_circuit(),
@@ -411,16 +509,22 @@ mod tests {
         );
         let cfg = SAConfig::default();
         let mut rng = fastrand::Rng::with_seed(0);
+        let b = board();
         // T0=30, T 在 [0.3, 30] 区间走过, 涵盖 max_n=3/2/1 三档。
         for k in 0..200 {
             let t = 30.0_f64 * (1.0 - k as f64 / 200.0) + 0.3;
-            let m = random_move(&state, &mut rng, t, 30.0, &cfg);
+            let m = random_move(&state, &mut rng, t, 30.0, &cfg, &b);
             match m {
                 Move::Flip(i)
                 | Move::ShiftX(i, _)
                 | Move::ShiftY(i, _)
                 | Move::ToggleBridging(i) => {
                     assert!(i < state.n(), "index {i} out of range {}", state.n());
+                }
+                Move::ShiftGroup(indices) => {
+                    for &i in &indices {
+                        assert!(i < state.n(), "index {i} out of range {}", state.n());
+                    }
                 }
             }
         }
@@ -435,11 +539,12 @@ mod tests {
         let mut rng_lo = fastrand::Rng::with_seed(0);
         let mut hi_max = 0i32;
         let mut lo_max = 0i32;
+        let b = board();
         for _ in 0..2000 {
-            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_hi, 30.0, 30.0, &cfg) {
+            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_hi, 30.0, 30.0, &cfg, &b) {
                 hi_max = hi_max.max(dx.abs());
             }
-            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_lo, 0.5, 30.0, &cfg) {
+            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_lo, 0.5, 30.0, &cfg, &b) {
                 lo_max = lo_max.max(dx.abs());
             }
         }
@@ -450,27 +555,27 @@ mod tests {
     #[test]
     fn apply_flip_toggles_rotation() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
-        apply_move(&mut state, Move::Flip(0));
+        apply_move(&mut state, &Move::Flip(0));
         assert_eq!(state.rotation[0], Rotation::R180);
-        apply_move(&mut state, Move::Flip(0));
+        apply_move(&mut state, &Move::Flip(0));
         assert_eq!(state.rotation[0], Rotation::R0);
     }
 
     #[test]
     fn apply_shift_x_increments_x() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
-        apply_move(&mut state, Move::ShiftX(0, 1));
+        apply_move(&mut state, &Move::ShiftX(0, 1));
         assert_eq!(state.x[0], 1);
-        apply_move(&mut state, Move::ShiftX(0, -2));
+        apply_move(&mut state, &Move::ShiftX(0, -2));
         assert_eq!(state.x[0], -1);
     }
 
     #[test]
     fn apply_shift_y_increments_y() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
-        apply_move(&mut state, Move::ShiftY(0, 1));
+        apply_move(&mut state, &Move::ShiftY(0, 1));
         assert_eq!(state.y[0], 3);
-        apply_move(&mut state, Move::ShiftY(0, -2));
+        apply_move(&mut state, &Move::ShiftY(0, -2));
         assert_eq!(state.y[0], 1);
     }
 
@@ -479,14 +584,12 @@ mod tests {
     fn apply_toggle_bridging_flips_bridged() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
         assert!(!state.bridged[0], "初始 bridged 必为 false");
-        apply_move(&mut state, Move::ToggleBridging(0));
+        apply_move(&mut state, &Move::ToggleBridging(0));
         assert!(state.bridged[0], "Toggle 一次后应 = true");
-        apply_move(&mut state, Move::ToggleBridging(0));
+        apply_move(&mut state, &Move::ToggleBridging(0));
         assert!(!state.bridged[0], "Toggle 两次后应 = false");
     }
 
-    /// random_move 选到 Toggle 区间但 p 不是 bridgeable 时, 退回 ShiftX (不返 ToggleBridging)。
-    /// 验证: 跑大量采样, 不应出现 ToggleBridging (因为测试 state 全 is_bridgeable=false)。
     #[test]
     fn random_move_toggle_falls_back_when_not_bridgeable() {
         let state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
@@ -497,8 +600,9 @@ mod tests {
             ..SAConfig::default()
         };
         let mut rng = fastrand::Rng::with_seed(0);
+        let b = board();
         for _ in 0..2000 {
-            let m = random_move(&state, &mut rng, 10.0, 10.0, &cfg);
+            let m = random_move(&state, &mut rng, 10.0, 10.0, &cfg, &b);
             assert!(
                 !matches!(m, Move::ToggleBridging(_)),
                 "is_bridgeable=false 时 random_move 不应返 ToggleBridging"
@@ -508,7 +612,7 @@ mod tests {
 
     /// random_move 选到 Toggle 区间 且 p 是 bridgeable 时, 返 ToggleBridging(p)。
     /// 注: `p_toggle_bridge` 在 `random_move` 里被 clamp 到 0.45 (防误配超过 45%)。
-    /// 设 0.25 → 期望 ~25% = 500/2000, 留 100 偏差。
+    /// 设 0.25 期望 ~25% = 500/2000, 留 100 偏差。
     #[test]
     fn random_move_toggle_emits_when_bridgeable() {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
@@ -519,8 +623,9 @@ mod tests {
         };
         let mut rng = fastrand::Rng::with_seed(0);
         let mut toggle_count = 0;
+        let b = board();
         for _ in 0..2000 {
-            if let Move::ToggleBridging(_) = random_move(&state, &mut rng, 10.0, 10.0, &cfg) {
+            if let Move::ToggleBridging(_) = random_move(&state, &mut rng, 10.0, 10.0, &cfg, &b) {
                 toggle_count += 1;
             }
         }
@@ -540,8 +645,9 @@ mod tests {
             ..SAConfig::default()
         };
         let mut rng = fastrand::Rng::with_seed(0);
+        let b = board();
         for _ in 0..2000 {
-            let m = random_move(&state, &mut rng, 10.0, 10.0, &cfg);
+            let m = random_move(&state, &mut rng, 10.0, 10.0, &cfg, &b);
             assert!(
                 !matches!(m, Move::ToggleBridging(_)),
                 "p_toggle_bridge=0 时不应返 Toggle"

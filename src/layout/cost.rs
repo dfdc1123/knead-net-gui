@@ -50,6 +50,10 @@ pub struct Weights {
     /// 同时使用 2+ 个 rail 时的额外固定惩罚, 鼓励同 rail 排布。
     /// 跨 rail 至少要一根 ~3 孔 jumper, 这项比单 cell 紧凑更贵。
     pub rail_crossing: f64,
+    /// 纵向利用率惩罚: 同一 rail 内, 元件数量 vs 实际占用的行数。
+    /// `penalty = Σ max(0, n_comps - unique_rows)`, 推 SA 把元件散布到不同行,
+    /// 避免所有元件挤在同一行导致水平跨度过大。
+    pub row_squash: f64,
 }
 
 impl Default for Weights {
@@ -72,6 +76,9 @@ impl Default for Weights {
             // 跨 rail = 多一根 jumper + 视觉割裂, 取约 5 cell MST, 比单 cell 紧凑贵
             // 但比 column_conflict 软得多, 不会让 SA 为了"必须跨 rail 的电路"去撞列冲突。
             rail_crossing: 5.0,
+            // 纵向挤压: 同一 rail 内元件挤在少量行 → 加罚。
+            // 1.0 等价于 ~2 cell² 紧凑度, 比 MST 的 5.0 轻, 给 SA 温和推力。
+            row_squash: 1.0,
         }
     }
 }
@@ -452,13 +459,19 @@ impl SAState {
             };
         }
 
-        // 1. Build adjacency: weights[i][j] = 同一网的连接数 (高 = 强耦合)
+        // 1. Build comp_id → placeable_idx mapping
+        let mut comp_to_idx: HashMap<ComponentId, usize> = HashMap::with_capacity(n);
+        for (i, &cid) in placeable.iter().enumerate() {
+            comp_to_idx.insert(cid, i);
+        }
+
+        // 2. Build adjacency: weights[i][j] = 同一网的连接数 (高 = 强耦合)
         let mut weights = vec![vec![0.0f64; n]; n];
         for net in circuit.nets() {
             let mut comps: Vec<usize> = net
                 .pins()
                 .iter()
-                .map(|&pid| circuit.pins[pid.0].component.0)
+                .filter_map(|&pid| comp_to_idx.get(&circuit.pins[pid.0].component).copied())
                 .collect();
             comps.sort();
             comps.dedup();
@@ -711,13 +724,15 @@ impl SAState {
     /// 频谱布局初排: 图拉普拉斯 2D 嵌入 → 网格填充。
     ///
     /// 流程:
-    /// 1. 拉普拉斯 + 幂迭代 → v₂, v₃
-    /// 2. 按 v₂ 排序, 根据 v₂ 间距自动分组 (间隙大的 = 分组边界)
-    /// 3. 每组分配一个列, 组内按 v₃ 排序分配到不同行
-    /// 4. 检查列冲突, 必要时微调
+    /// 1. Net-star 图: 每个 net 作为虚拟节点, 元件只连到所属 net
+    ///    (避免 pairwise 展开形成的虚假吸引团)
+    /// 2. 拉普拉斯 + 幂迭代 → v₂, v₃ (只取元件节点对应分量)
+    /// 3. v₂ 值 → x 目标, 贪心碰撞解决 → 紧凑格点
     ///
-    /// 核心思想: v₂ 相近的元件 (同 net 或强耦合) 天生该在同一列,
-    /// v₃ 的差异自然把它们分配到不同行 (同列不同行 = 零跳线)。
+    /// Net-star 比 pairwise 好的地方:
+    /// - 大 net (6+ pin) 不会变成 O(k²) 边的团
+    /// - net 权重 1/(k-1) 自动衰减大 net 的影响 (Rent-like scaling)
+    /// - 电源网不再把 GND/+12V 侧元件强行聚在一起
     pub fn from_spectral(
         placeable: Vec<ComponentId>,
         circuit: &Circuit,
@@ -728,44 +743,63 @@ impl SAState {
             return Self::from_greedy(placeable, circuit, board);
         }
 
-        // ============================================================
-        // Phase 1: 邻接权重 + 拉普拉斯
-        // ============================================================
-        let mut w = vec![vec![0.0f64; n]; n];
+        // ── comp_id → placeable_idx 映射 ──
+        let mut comp_to_idx: HashMap<ComponentId, usize> = HashMap::with_capacity(n);
+        for (i, &cid) in placeable.iter().enumerate() {
+            comp_to_idx.insert(cid, i);
+        }
+
+        // ── 收集 ≥2 个 placeable 元件的 net, 附带 1/(k-1) 权重 ──
+        let mut active_nets: Vec<(Vec<usize>, f64)> = Vec::with_capacity(circuit.nets().len());
         for net in circuit.nets() {
             let mut comps: Vec<usize> = net
                 .pins()
                 .iter()
-                .map(|&pid| circuit.pins[pid.0].component.0)
+                .filter_map(|&pid| comp_to_idx.get(&circuit.pins[pid.0].component).copied())
                 .collect();
             comps.sort();
             comps.dedup();
-            for &i in &comps {
-                for &j in &comps {
-                    if i != j {
-                        w[i][j] += 1.0;
-                    }
-                }
+            let k = comps.len();
+            if k >= 2 {
+                let weight = 1.0 / (k - 1) as f64; // Rent-like: 大 net 权重小
+                active_nets.push((comps, weight));
             }
         }
 
-        let mut l = vec![vec![0.0f64; n]; n];
-        for i in 0..n {
+        let n_nets = active_nets.len();
+        let total_n = n + n_nets;
+
+        // ============================================================
+        // Phase 1: Net-star 图 — 元件 ↔ net (不做元件间 pairwise)
+        // ============================================================
+        let mut w = vec![vec![0.0f64; total_n]; total_n];
+        for (net_idx, (comps, weight)) in active_nets.iter().enumerate() {
+            let vnet = n + net_idx;
+            for &c in comps {
+                w[c][vnet] += weight;
+                w[vnet][c] += weight;
+            }
+        }
+
+        let mut l = vec![vec![0.0f64; total_n]; total_n];
+        for i in 0..total_n {
             let deg: f64 = w[i].iter().sum();
             l[i][i] = deg;
-            for j in 0..n {
+            for j in 0..total_n {
                 l[i][j] -= w[i][j];
             }
         }
 
         // ============================================================
-        // Phase 2: 幂迭代求 v₂, v₃
+        // Phase 2: 幂迭代求 v₂, v₃ (全图), 只取前 n 个分量 (元件)
         // ============================================================
-        let v2 = compute_fiedler(&l, n);
-        let v3 = compute_second_evec(&l, &v2, n);
+        let v2_all = compute_fiedler(&l, total_n);
+        let v3_all = compute_second_evec(&l, &v2_all, total_n);
+        let v2: Vec<f64> = v2_all[..n].to_vec();
+        let v3: Vec<f64> = v3_all[..n].to_vec();
 
         // ============================================================
-        // Phase 3: rank-based 映射 → 格点 (每元件独享一列)
+        // Phase 3: v₂ 值 → 目标 x, 贪心碰撞解决 → 紧凑格点
         // ============================================================
         let (x, y) = grid_fill_2d(&v2, &v3, board, n, &placeable, circuit);
 
@@ -872,34 +906,31 @@ fn normalize_vec(v: &mut [f64]) -> bool {
     true
 }
 
-/// 频谱 → 格点映射: v₂ rank → x 均匀分布, v₃ rank → y 在可用行上分布。
-/// 每个元件独享一列, 无列冲突。v₂ 相邻的 → x 相邻 → 同 net 自然靠近。
+/// 频谱 → 格点映射: v₂ 值 → x 目标位置 (保聚类), v₃ rank → y 分布,
+/// 然后贪心左紧排消碰撞。
+///
+/// v₂ 相近的元件 (同 net / 强耦合) 自然映射到相近的 x, 不像 rank 均匀分布
+/// 那样把 5 个元件也摊满 60 列。`effective_width = min(n * 3, cols - 2)`
+/// 进一步防止过散, 贪心碰撞解决保证无 pin/bbox/列冲突。
 fn grid_fill_2d(
     v2: &[f64],
     v3: &[f64],
     board: &Breadboard,
     n: usize,
-    _placeable: &[ComponentId],
-    _circuit: &Circuit,
+    placeable: &[ComponentId],
+    circuit: &Circuit,
 ) -> (Vec<i32>, Vec<i32>) {
     let valid_rows: Vec<i32> = (0..board.rows() as i32)
         .filter(|&r| !board.is_blocked(r as usize))
         .collect();
     let n_rows = valid_rows.len().max(1);
 
-    // 按 v₂ 排序 → x rank
-    let mut order_x: Vec<usize> = (0..n).collect();
-    order_x.sort_by(|&a, &b| {
-        v2[a]
-            .partial_cmp(&v2[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut rank_x = vec![0usize; n];
-    for (rank, &idx) in order_x.iter().enumerate() {
-        rank_x[idx] = rank;
-    }
+    // ── v₂ 归一化到 [0, 1] (保留聚类信息) ──
+    let v2_min = v2.iter().cloned().fold(f64::INFINITY, f64::min);
+    let v2_max = v2.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let v2_range = (v2_max - v2_min).max(1e-9);
 
-    // 按 v₃ 排序 → y rank
+    // ── v₃ rank → y ──
     let mut order_y: Vec<usize> = (0..n).collect();
     order_y.sort_by(|&a, &b| {
         v3[a]
@@ -911,21 +942,165 @@ fn grid_fill_2d(
         rank_y[idx] = rank;
     }
 
+    // ── v₂ 排序决定从左到右的贪心放置顺序 ──
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        v2[a]
+            .partial_cmp(&v2[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     let cols = board.cols() as i32;
+
+    // 有效宽度: 每个元件 ~3 列 (自身 + 间距), 上限为板宽
+    let effective_width = (n as i32 * 3).max(2).min(cols - 2);
+
+    // 目标 x: 由 v₂ 值决定, 缩放至有效宽度
+    let mut target_x = vec![0i32; n];
+    for i in 0..n {
+        let frac = (v2[i] - v2_min) / v2_range;
+        target_x[i] = (1.0 + frac * effective_width as f64) as i32;
+        target_x[i] = target_x[i].clamp(0, cols - 1);
+    }
+
+    // 目标 y
+    let mut target_y = vec![0i32; n];
+    for i in 0..n {
+        target_y[i] = valid_rows[rank_y[i] % n_rows];
+    }
+
+    // ── 贪心碰撞解决: v₂ 顺序, 从目标位置向右扫 (保持聚类顺序) ──
     let mut x = vec![0i32; n];
     let mut y = vec![0i32; n];
-    for i in 0..n {
-        // x: 按 v₂ rank 均匀分布在 [1, cols-1]
-        let frac = if n > 1 {
-            rank_x[i] as f64 / (n - 1) as f64
-        } else {
-            0.5
-        };
-        x[i] = (1.0 + frac * (cols - 2) as f64) as i32;
-        x[i] = x[i].clamp(0, cols - 1);
+    let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+    let mut col_owner: HashMap<(i32, i32), Option<NetId>> = HashMap::new();
 
-        // y: 按 v₃ rank 映射到可用行
-        y[i] = valid_rows[rank_y[i] % n_rows];
+    for &idx in &order {
+        let comp_id = placeable[idx];
+        let component = &circuit.components[comp_id.0];
+        let fid = component.footprint.expect("placeable 必有 footprint");
+        let footprint = &circuit.footprints[fid.0];
+
+        // pin 信息：(本地 offset, net) — 用于列冲突检查
+        let pin_info: Vec<(i32, i32, Option<NetId>)> = component
+            .pins
+            .iter()
+            .map(|&pin_id| {
+                let pin = &circuit.pins[pin_id.0];
+                let physical = footprint
+                    .pins()
+                    .iter()
+                    .find(|p| p.name() == pin.num())
+                    .expect("footprint 缺 pin");
+                (physical.offset.x, physical.offset.y, pin.net)
+            })
+            .collect();
+
+        // bbox 用 footprint 全部物理 pin 算
+        let (min_x, max_x, min_y, max_y) = footprint.pins().iter().fold(
+            (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
+            |(lx, rx, ly, ry), p| {
+                (
+                    lx.min(p.offset.x),
+                    rx.max(p.offset.x),
+                    ly.min(p.offset.y),
+                    ry.max(p.offset.y),
+                )
+            },
+        );
+        let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
+            .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
+            .collect();
+
+        // 从目标位置出发, 左右交替扩展, 同 row 优先, 再换行
+        let mut best: Option<(i32, i32)> = None;
+        'search: for dx in 0..=cols {
+            for &x_sign in &[1i32, -1i32] {
+                if dx == 0 && x_sign == -1 {
+                    continue; // 跳过 dx=0 的重复
+                }
+                let try_x = target_x[idx] + x_sign * dx;
+                if try_x < 0 || try_x >= cols {
+                    continue;
+                }
+                // 优先目标行, 然后上下轮替
+                for dy in 0..n_rows as i32 {
+                    for &dy_sign in &[0i32, 1i32, -1i32] {
+                        if dy == 0 && dy_sign != 0 {
+                            continue;
+                        }
+                        let try_y_idx =
+                            (rank_y[idx] as i32 + dy_sign * dy).rem_euclid(n_rows as i32) as usize;
+                        let try_y = valid_rows[try_y_idx];
+
+                        // OOB / blocked
+                        let oob_or_blocked = bbox_cells.iter().any(|&(ox, oy)| {
+                            let ax = try_x + ox;
+                            let ay = try_y + oy;
+                            ax < 0
+                                || ax >= cols
+                                || ay < 0
+                                || ay >= board.rows() as i32
+                                || board.is_blocked(ay as usize)
+                        });
+                        if oob_or_blocked {
+                            continue;
+                        }
+                        // bbox 碰撞
+                        let collides = bbox_cells
+                            .iter()
+                            .any(|&(ox, oy)| occupied.contains(&(try_x + ox, try_y + oy)));
+                        if collides {
+                            continue;
+                        }
+                        // 列冲突
+                        let col_conflict = pin_info.iter().any(|&(lx, ly, pin_net)| {
+                            let abs_x = try_x + lx;
+                            let abs_y = try_y + ly;
+                            if abs_x < 0
+                                || abs_x >= cols
+                                || abs_y < 0
+                                || abs_y >= board.rows() as i32
+                                || board.is_blocked(abs_y as usize)
+                            {
+                                return true;
+                            }
+                            let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                            match col_owner.get(&(abs_x, rail_top)) {
+                                Some(existing) => *existing != pin_net,
+                                None => false,
+                            }
+                        });
+                        if col_conflict {
+                            continue;
+                        }
+                        best = Some((try_x, try_y));
+                        break 'search;
+                    }
+                }
+            }
+        }
+
+        let (fx, fy) =
+            best.unwrap_or_else(|| panic!("板太小, 装不下元件 {} (spectral grid fill)", comp_id.0));
+        x[idx] = fx;
+        y[idx] = fy;
+        for &(ox, oy) in &bbox_cells {
+            occupied.insert((fx + ox, fy + oy));
+        }
+        for &(lx, ly, pin_net) in &pin_info {
+            let abs_x = fx + lx;
+            let abs_y = fy + ly;
+            if abs_x >= 0
+                && abs_x < cols
+                && abs_y >= 0
+                && abs_y < board.rows() as i32
+                && !board.is_blocked(abs_y as usize)
+            {
+                let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
+                col_owner.entry((abs_x, rail_top)).or_insert(pin_net);
+            }
+        }
     }
 
     (x, y)
@@ -1487,21 +1662,30 @@ pub(crate) fn cost_fast(
             .push(*bbox);
     }
     let mut area_sum = 0.0f64;
+    let mut row_squash_penalty = 0.0f64;
     for cells in buf.compact_map.values() {
         let mut min_x = i32::MAX;
         let mut max_x = i32::MIN;
         let mut min_y = i32::MAX;
         let mut max_y = i32::MIN;
+        let mut seen_y: HashSet<i32> = HashSet::with_capacity(4);
         for b in cells {
             min_x = min_x.min(b.min_x);
             max_x = max_x.max(b.max_x);
             min_y = min_y.min(b.min_y);
             max_y = max_y.max(b.max_y);
+            seen_y.insert(b.min_y);
         }
         if min_x <= max_x && min_y <= max_y {
             let width = (max_x - min_x + 1) as f64;
             let height = (max_y - min_y + 1) as f64;
             area_sum += width * height;
+        }
+        // 纵向挤压: 元件数 n vs 实际占用行数 ny
+        let ny = seen_y.len();
+        let n = cells.len();
+        if n > ny {
+            row_squash_penalty += (n - ny) as f64;
         }
     }
     let rail_cross = if buf.compact_map.len() >= 2 {
@@ -1516,6 +1700,7 @@ pub(crate) fn cost_fast(
         + w.column_conflict * col_conflict_pairs as f64
         + w.out_of_bounds * oob_count as f64
         + w.compactness * area_sum
+        + w.row_squash * row_squash_penalty
         + rail_cross
 }
 
@@ -1715,6 +1900,7 @@ mod tests {
             mst: 1.0,
             compactness: 0.0,
             rail_crossing: 0.0,
+            row_squash: 0.0,
             ..Weights::default()
         }
     }
@@ -2632,12 +2818,13 @@ mod tests {
             nets: vec![],
             footprints: vec![fp],
         };
-        // 屏蔽 MST / pin / bbox / column, 只看 compactness
+        // 屏蔽 MST / pin / bbox / column / row_squash, 只看 compactness
         let w = Weights {
             mst: 0.0,
             pin_overlap: 0.0,
             b_box_overlap: 0.0,
             column_conflict: 0.0,
+            row_squash: 0.0,
             ..Weights::default()
         };
         // 都同 row 2, x 贴在一起 (但不同 col, 不撞 pin)
@@ -2706,6 +2893,7 @@ mod tests {
             pin_overlap: 0.0,
             b_box_overlap: 0.0,
             column_conflict: 0.0,
+            row_squash: 0.0,
             ..Weights::default()
         };
 

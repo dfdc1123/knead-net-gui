@@ -2,6 +2,7 @@
 name = "knead-net"
 version = "0.1.0"
 edition = "2024"
+default-run = "knead-net"
 
 [dependencies]
 fastrand = "2.4.1"
