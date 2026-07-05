@@ -566,39 +566,42 @@ impl<'c> Layout<'c> {
         }
 
         // SA 是随机算法, 单次可能卡在 local optimum; 跑 n_seeds 次取最低 cost 的。
+        //
+        // 并行: 每个 seed 互相独立 (输入全 &T 只读, 输出是新 SAState, 局部 RNG),
+        // 用 rayon 的 `par_iter` 跨核跑。n_seeds = 100 一般远超核数, 池子喂得饱。
         let n_seeds = config.n_seeds.max(1);
-        let mut best_state: Option<SAState> = None;
-        let mut best_cost = f64::INFINITY;
-        let mut per_seed_costs: Vec<f64> = Vec::with_capacity(n_seeds);
-        let mut per_seed_states: Vec<SAState> = Vec::with_capacity(n_seeds);
-        for s in 0..n_seeds as u64 {
-            let cfg_s = SAConfig {
-                seed: config.seed.wrapping_add(s),
-                n_seeds: 1,
-                ..*config
-            };
-            let state_s = sa::simulate(
-                placeable.clone(),
-                self.circuit,
-                board,
-                &cfg_s,
-                &bridged_pins,
-            );
-            let cost_s = crate::layout::cost::cost(
-                &state_s,
-                self.circuit,
-                board,
-                &bridged_pins,
-                &config.weights,
-            );
-            per_seed_costs.push(cost_s);
-            per_seed_states.push(state_s.clone());
-            if cost_s < best_cost {
-                best_cost = cost_s;
-                best_state = Some(state_s);
-            }
-        }
-        let best = best_state.expect("至少跑过一次");
+        use rayon::prelude::*;
+        let results: Vec<(f64, SAState)> = (0..n_seeds as u64)
+            .into_par_iter()
+            .map(|s| {
+                let cfg_s = SAConfig {
+                    seed: config.seed.wrapping_add(s),
+                    n_seeds: 1,
+                    ..*config
+                };
+                let state_s = sa::simulate(
+                    placeable.clone(),
+                    self.circuit,
+                    board,
+                    &cfg_s,
+                    &bridged_pins,
+                );
+                let cost_s = crate::layout::cost::cost(
+                    &state_s,
+                    self.circuit,
+                    board,
+                    &bridged_pins,
+                    &config.weights,
+                );
+                (cost_s, state_s)
+            })
+            .collect();
+        let per_seed_costs: Vec<f64> = results.iter().map(|(c, _)| *c).collect();
+        let per_seed_states: Vec<SAState> = results.iter().map(|(_, s)| s.clone()).collect();
+        let (best_cost, best) = results
+            .into_iter()
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            .expect("至少跑过一次");
 
         // 报告 30 个 seed 各自的 cost, 帮调试看到 SA 收敛分布。
         // main 以外不是生产路径 (如测试), 调用者不会看到这些输出。
