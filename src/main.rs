@@ -3,8 +3,8 @@ use std::fs;
 use knead_net::input::footprint::parse_many as parse_footprints;
 use knead_net::input::netlist::parse_netlist;
 use knead_net::{
-    Breadboard, FDConfig, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router,
-    SAConfig, fd_debug_positions, spectral_debug_positions,
+    Breadboard, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router, SAConfig,
+    spectral_debug_positions,
 };
 
 fn main() {
@@ -90,7 +90,7 @@ fn main() {
     let mut layout = Layout::new(&circuit);
 
     // ============================================================
-    // 频谱 + FD 调试: 输出两种初始化策略的对比
+    // 频谱调试: 输出 spectral 初始化策略的初排 SVG
     // ============================================================
     {
         // --- 频谱布局调试 ---
@@ -107,46 +107,6 @@ fn main() {
             let path = format!("{kicad_dir}/layout-spectral.svg");
             fs::write(&path, &svg).expect("写 spectral SVG 失败");
             eprintln!("Spectral SVG → {path} ({} 字节)", svg.len());
-        }
-
-        // --- FD 调试 (保留对比) ---
-        let fd_config = FDConfig::default();
-        let (fd_positions, fd_placements) = fd_debug_positions(&circuit, &board, &fd_config);
-        if !fd_positions.is_empty() {
-            let placeable: Vec<_> = circuit
-                .components()
-                .iter()
-                .filter_map(|c| {
-                    c.footprint()?;
-                    Some(c.id())
-                })
-                .collect();
-            let svg_fd_cts = knead_net::render::to_svg_fd_continuous(
-                &circuit,
-                &board,
-                &placeable,
-                &fd_positions,
-            );
-            let fd_cts_path = format!("{kicad_dir}/layout-fd-continuous.svg");
-            fs::write(&fd_cts_path, &svg_fd_cts).expect("写 FD continuous SVG 失败");
-            eprintln!(
-                "FD continuous SVG → {fd_cts_path} ({} 字节)",
-                svg_fd_cts.len()
-            );
-
-            let mut fd_layout = Layout::new(&circuit);
-            for (i, slot) in fd_placements.iter().enumerate() {
-                if let Some(p) = slot {
-                    fd_layout.place(circuit.components()[i].id(), *p);
-                }
-            }
-            let svg_fd_snap = knead_net::render::to_svg(&circuit, &board, &fd_layout);
-            let fd_snap_path = format!("{kicad_dir}/layout-fd-snapped.svg");
-            fs::write(&fd_snap_path, &svg_fd_snap).expect("写 FD snapped SVG 失败");
-            eprintln!(
-                "FD snapped SVG    → {fd_snap_path} ({} 字节)",
-                svg_fd_snap.len()
-            );
         }
     }
 
