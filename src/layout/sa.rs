@@ -4,19 +4,35 @@
 //! 紧凑度已折进 [`cost::cost`], SA 一次跑完搞定。
 //!
 //! 扰动集 (v7, 概率, 默认 `p_toggle_bridge = 0.15` 时生效):
-//! - 37% `ShiftX`         —— 单个元件左右微调; 高温期幅度可达 ±3 col, 低温退到 ±1
-//! - 20% `Flip`           —— 翻转单个元件的方向 (R0 ↔ R180); OnBoard 路径专用
-//! - 15% `ToggleBridging` —— 翻转 bridgeable 元件是否走桥接; 见下文
-//! -  8% `ShiftGroup`     —— 同 rail 内一组紧邻元件整体左移 1 列, 填桥接留下的空洞
-//! - 20% `ShiftY`         —— 单个元件上下微调; 高温期幅度可达 ±3 row, 低温退到 ±1
+//! - 37% `ShiftX` —— 单个元件左右微调; OnBoard 改 `state.x`, bridged 在 cache
+//!   里找 `(±dx)` 偏移的 pin pair; 找不到时退一步 `dx+sign(dx)` 跳过电源轨 gap
+//!   (e.g. dx=+1 撞 gap → 自动变 dx=+2)。
+//! - 20% `Flip` —— 翻转单个元件的方向 (R0 ↔ R180); 仅 OnBoard 生效。
+//! - 20% `ShiftY` —— 单个元件上下微调; 仅 OnBoard 生效。
+//! - 15% `ToggleBridging` —— 翻转 bridgeable 元件是否走桥接; 见下文。
+//! - 8% `ShiftGroup` —— 同 rail 内一组紧邻元件整体左移 1 列, 填桥接留下的空洞;
+//!   bridged 元件**也参与** (按 signal pin rail 归组), 但必须能严格左移 1 列 —
+//!   gap 处的 bridged 成员会过滤掉进而让整个组被拒, 不会"跳 gap"。
+//!
+//! 高温期 `ShiftX`/`ShiftY` 幅度可达 ±3 col/row, 低温退到 ±1。
 //!
 //! v7 相对之前的核心改动 (分布与扰动集都重排):
-//! - 新增 `ShiftGroup` 扰动: 把同 rail 一组 OnBoard 元件左移 1 列, 专门填补
-//!   桥接留下的横向空洞。组由 `find_left_shiftable_group` 计算: 同 rail 按 x
-//!   排序, 相邻间距 ≤ 2 列同组; bridged 元件不参与; 组 ≥2 人或单人左 gap > 3
+//! - 新增 `ShiftGroup` 扰动: 把同 rail 一组紧邻元件左移 1 列, 专门填补
+//!   桥接留下的横向空洞。组由 `find_left_shiftable_group` 计算: 同 rail 按
+//!   逻辑 x (`state.x` 对 OnBoard / signal pin hole 对 bridged) 排序,
+//!   相邻间距 ≤ 2 列同组; 组内每个成员均验证"可左移 1"; 组 ≥2 人或单人左 gap > 3
 //!   列才算可用组。
 //! - 分布重排: `ShiftX` 从 45% → 37%, 让出 8% 给 `ShiftGroup`; `Flip` 30 → 20,
 //!   `ShiftY` 8 → 20, `ToggleBridging` 7 → 15。
+//!
+//! bridged 在扰动集里的行为总结:
+//! - `Flip` / `ShiftY` 命中 bridged → `apply_move` 返 `false`, Move 静默放弃
+//!   (保持 RNG 序列, 现有 reproducibility 测不破)。
+//! - `ShiftX` 命中 bridged → 在 `state.bridged_pin_pairs[i]` cache 里查找
+//!   `(power.x+dx, signal.x+dx)` 的 pair; 失败时按 `dx + sign(dx)` 跳 gap 再试;
+//!   仍未命中则返 `false`。
+//! - `ShiftGroup` 命中 bridged → 走"按 signal pin 位置归组", 严格左移 1 列;
+//!   撞 gap 的 bridged 在 `find_left_shiftable_group` 阶段就被过滤掉。
 //!
 //! `ToggleBridging` 选 index 的逻辑: `random_move` 选 `p ∈ [0, n)`, 然后按
 //! 分布表决定 move 类型; 只有落到 Toggle 区间且 `state.is_bridgeable[p] = true`
@@ -185,33 +201,22 @@ fn random_move(
 
 /// 同一 rail 内密度聚类, 找到 `i` 所在的组。
 ///
-/// 聚类规则: 同 rail 的 OnBoard 元件按 x 排序,
-/// 相邻间距 ≤ 2 列为同组。返回的组**不含** bridged 元件。
-/// 若组左侧有空隙, 返回 Some(组)。
-/// 组 ≥2 人总是有效; 单人组仅在左边 gap > 3 列时有效
-/// (落单元件也该被拉近, 填补桥接留下的大空洞)。
+/// 聚类规则: 同 vertical rail 的所有元件 (bridged + OnBoard) 按逻辑 x 排序,
+/// 相邻间距 ≤ 2 列为同组。**左移 1 列严格语义**: 任一组成员不能严格左移
+/// (bridged 撞 gap 或 OnBoard 贴左壁) → 整个组被拒, 不留半成品。
+///
+/// 组成员数 + 左边 gap 规则:
+/// - 组 ≥2 人总是有效
+/// - 单人组仅在左边 gap > 3 列时有效 (落单元件也该被拉近, 填补桥接留下的大空洞)
 fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> Option<Vec<usize>> {
-    if state.bridged[i] {
-        return None; // bridged 元件不参与组移
-    }
-    let rail_top_i = board
-        .rail_rows(state.y[i])
-        .first()
-        .copied()
-        .unwrap_or(state.y[i]);
+    let anchor_rail_top = rail_top(state, board, i)?;
 
-    // 收集同 rail 的所有 OnBoard 元件
+    // 收集同 rail 的所有元件 (bridged 也算, 按 signal pin 的 rail 归组)
     let mut same_rail: Vec<(usize, i32)> = (0..state.n())
-        .filter(|&j| !state.bridged[j])
-        .filter(|&j| {
-            let rj = board
-                .rail_rows(state.y[j])
-                .first()
-                .copied()
-                .unwrap_or(state.y[j]);
-            rj == rail_top_i
+        .filter_map(|j| {
+            let rj = rail_top(state, board, j)?;
+            (rj == anchor_rail_top).then_some((j, logical_x(state, board, j)))
         })
-        .map(|j| (j, state.x[j]))
         .collect();
 
     if same_rail.len() < 2 {
@@ -244,14 +249,19 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
     let group_idx = groups.iter().position(|g| g.contains(&i))?;
     let group = &groups[group_idx];
 
-    // 检查组左移 1 列后是否越界 / 撞左边非组元件
-    let leftmost_x = group.iter().map(|&j| state.x[j]).min().unwrap_or(i32::MAX);
-
-    if leftmost_x <= 0 {
-        return None; // 贴左壁了, 移不动
+    // 全部成员都能严格左移 1 列才让组成立 (撞 gap 的 bridged 排除 → 整组被拒)
+    if !group.iter().all(|&j| can_shift_left_one(state, board, j)) {
+        return None;
     }
 
-    // 查找左边最近的**非组** OnBoard 元件
+    // 查 leftmost 的逻辑 x, 算 left gap (用于单 / 多成员判定)
+    let leftmost_x = group
+        .iter()
+        .map(|&j| logical_x(state, board, j))
+        .min()
+        .unwrap_or(i32::MAX);
+
+    // 查找左边最近的**非组**同 rail 元件 (按逻辑 x)
     let left_neighbor_x = same_rail
         .iter()
         .filter(|(j, _)| !group.contains(j))
@@ -272,25 +282,203 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
     Some(group.clone())
 }
 
-fn apply_move(state: &mut SAState, m: &Move) {
+/// 应用一个 Move 到状态上, 返回 `true` 表示状态已变更, `false` 表示该 Move
+/// 在当前状态下不应落地 (典型的例子: bridged 元素上的 `Flip`/`ShiftY`,
+/// bridged `ShiftX` 在 cache 里找不到匹配 pair, `ShiftGroup` 任何一个成员
+/// 不可左移)。返回 `false` 时**保证 0 修改**, 调用方应把该候选丢弃。
+///
+/// 设计要点:
+/// - `Flip` / `ShiftY` 在 bridged 上是 dead-field mutation, 直接返 `false`
+///   避免后续 `state_y_valid` 被 stale `state.y` 误导。
+/// - `ShiftX` 在 bridged 上: 在 cache 里找 (power.x+dx, signal.x+dx); 没找到时
+///   退一步 (dx + sign(dx)) 跳过电源轨 gap 再试一次, 仍失败再返 `false`。
+/// - `ShiftGroup` 见 `apply_group_shift_x`: 两段式验证 / 落写, 任何成员失败
+///   则全组放弃, 不留半成品。
+fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> bool {
     match m {
         Move::Flip(i) => {
+            if state.bridged[*i] {
+                return false;
+            }
             state.rotation[*i] = match state.rotation[*i] {
                 Rotation::R0 => Rotation::R180,
                 Rotation::R180 => Rotation::R0,
                 other => panic!("SA 只用 R0/R180, 不该出现 {:?}", other),
             };
+            true
         }
-        Move::ShiftX(i, dx) => state.x[*i] += dx,
-        Move::ShiftY(i, dy) => state.y[*i] += dy,
-        Move::ToggleBridging(i) => {
-            state.bridged[*i] = !state.bridged[*i];
+        Move::ShiftY(i, dy) => {
+            if state.bridged[*i] {
+                return false;
+            }
+            state.y[*i] += dy;
+            true
         }
-        Move::ShiftGroup(indices) => {
-            for &i in indices {
-                state.x[i] -= 1;
+        Move::ShiftX(i, dx) => {
+            if state.bridged[*i] {
+                try_bridged_shift_x(state, board, *i, *dx)
+            } else {
+                state.x[*i] += dx;
+                true
             }
         }
+        Move::ShiftGroup(indices) => apply_group_shift_x(state, board, indices, -1),
+        Move::ToggleBridging(i) => {
+            state.bridged[*i] = !state.bridged[*i];
+            true
+        }
+    }
+}
+
+/// bridged 元件: 尝试在 cache 里找 (power+dx, signal+dx), 找不到时按
+/// `dx + sign(dx)` 跳 gap 再试。两次都失败 → 返 `false` (state 不变)。
+///
+/// "跳 gap" 的物理意义: 电源轨每 5 孔一断开, group 边界 (e.g. x=4 右移 +1)
+/// 必撞 gap; 这里让 `ShiftX(+1)` 在 x=4 时自动变 `+2` 落到下一 group 起点
+/// (e.g. x=6), 避免电源轨邻接永远过不去。`ShiftGroup` 不会触发此回退 —
+/// 严格左移 1 列的语义更紧凑。
+fn try_bridged_shift_x(state: &mut SAState, board: &Breadboard, i: usize, dx: i32) -> bool {
+    let cur = match state.active_bridge_pair(i) {
+        Some(p) => p,
+        None => return false,
+    };
+    let old_power = board.hole(cur[0].0).position;
+    let old_signal = board.hole(cur[1].0).position;
+
+    if try_shift_to(state, board, i, old_power, old_signal, dx) {
+        return true;
+    }
+    if dx != 0 {
+        let bumped = dx + dx.signum();
+        return try_shift_to(state, board, i, old_power, old_signal, bumped);
+    }
+    false
+}
+
+fn try_shift_to(
+    state: &mut SAState,
+    board: &Breadboard,
+    i: usize,
+    old_power: crate::circuit::Position,
+    old_signal: crate::circuit::Position,
+    dx: i32,
+) -> bool {
+    let tgt_power = crate::circuit::Position {
+        x: old_power.x + dx,
+        y: old_power.y,
+    };
+    let tgt_signal = crate::circuit::Position {
+        x: old_signal.x + dx,
+        y: old_signal.y,
+    };
+    if let Some(j) = state.bridged_pin_pairs[i].iter().position(|pair| {
+        board.hole(pair[0].0).position == tgt_power && board.hole(pair[1].0).position == tgt_signal
+    }) {
+        state.active_bridge_idx[i] = j;
+        true
+    } else {
+        false
+    }
+}
+
+/// ShiftGroup 应用: 两段式, 第一遍验证 + 收集更新, 第二遍落写。保证全原子
+/// (任一成员失败 → 0 修改)。`dx` 通常是 `-1` (`ShiftGroup` 永远左移 1 列),
+/// 但作为参数暴露便于复用 / 测试。
+///
+/// bridged 成员采用严格 dx (不跳 gap): 撞 gap 直接让该 group 整体拒掉。
+/// "跳 gap" 是 `ShiftX` 单独的语义, 不在此函数扩散。
+fn apply_group_shift_x(
+    state: &mut SAState,
+    board: &Breadboard,
+    indices: &[usize],
+    dx: i32,
+) -> bool {
+    let mut x_updates: Vec<(usize, i32)> = Vec::with_capacity(indices.len());
+    let mut bridge_updates: Vec<(usize, usize)> = Vec::new();
+
+    for &i in indices {
+        if state.bridged[i] {
+            let cur = match state.active_bridge_pair(i) {
+                Some(p) => p,
+                None => return false,
+            };
+            let p = board.hole(cur[0].0).position;
+            let s = board.hole(cur[1].0).position;
+            let tgt_p = crate::circuit::Position {
+                x: p.x + dx,
+                y: p.y,
+            };
+            let tgt_s = crate::circuit::Position {
+                x: s.x + dx,
+                y: s.y,
+            };
+            let Some(j) = state.bridged_pin_pairs[i].iter().position(|pair| {
+                board.hole(pair[0].0).position == tgt_p && board.hole(pair[1].0).position == tgt_s
+            }) else {
+                return false;
+            };
+            bridge_updates.push((i, j));
+        } else {
+            let new_x = state.x[i] + dx;
+            if new_x < 0 {
+                return false;
+            }
+            x_updates.push((i, new_x));
+        }
+    }
+
+    for (i, new_x) in x_updates {
+        state.x[i] = new_x;
+    }
+    for (i, j) in bridge_updates {
+        state.active_bridge_idx[i] = j;
+    }
+    true
+}
+
+/// 推一个元件的"逻辑 rail_top": bridged 用 signal pin hole 的 y 找所在 rail
+/// (反映它实际占用 main board 的哪一行), OnBoard 用 `state.y[i]`。两者一致
+/// 的 rail_top 表示它们处在同一 vertical rail。
+fn rail_top(state: &SAState, board: &Breadboard, i: usize) -> Option<i32> {
+    let y = if let Some(pair) = state.active_bridge_pair(i) {
+        board.hole(pair[1].0).position.y
+    } else {
+        state.y[i]
+    };
+    board.rail_rows(y).first().copied()
+}
+
+/// 推一个元件的"逻辑 x": bridged 用 signal pin hole 的 x, OnBoard 用 `state.x[i]`。
+/// 用于按列排序和"该元件占的左位置"。
+fn logical_x(state: &SAState, board: &Breadboard, i: usize) -> i32 {
+    if let Some(pair) = state.active_bridge_pair(i) {
+        board.hole(pair[1].0).position.x
+    } else {
+        state.x[i]
+    }
+}
+
+/// 单一成员能否严格左移 1 列 (ShiftGroup 适用):
+/// - OnBoard: `state.x >= 1`
+/// - Bridged: cache 里有 `(power.x-1, signal.x-1)` 的 pair
+///
+/// 注意: `ShiftX` 在 `apply_move` 里有"跳 gap"的额外退路, 此函数**不**覆盖
+/// 那条路径 — ShiftGroup 永远严格左移 1, 严格筛 gap。
+fn can_shift_left_one(state: &SAState, board: &Breadboard, i: usize) -> bool {
+    if state.bridged[i] {
+        let cur = match state.active_bridge_pair(i) {
+            Some(p) => p,
+            None => return false,
+        };
+        let p = board.hole(cur[0].0).position;
+        let s = board.hole(cur[1].0).position;
+        let tgt_p = crate::circuit::Position { x: p.x - 1, y: p.y };
+        let tgt_s = crate::circuit::Position { x: s.x - 1, y: s.y };
+        state.bridged_pin_pairs[i].iter().any(|pair| {
+            board.hole(pair[0].0).position == tgt_p && board.hole(pair[1].0).position == tgt_s
+        })
+    } else {
+        state.x[i] >= 1
     }
 }
 
@@ -346,7 +534,14 @@ pub(super) fn simulate(
     for _ in 0..config.max_iters {
         let m = random_move(&state, &mut rng, t, config.t0, config, board);
         let mut candidate = state.clone();
-        apply_move(&mut candidate, &m);
+        // apply_move 返 false 表示该 Move 在当前状态下不应落地:
+        //   - Flip / ShiftY 命中 bridged (dead field)
+        //   - ShiftX 在 bridged 上, cache 里既找不到 dx 也找不到 dx+sign(dx)
+        //   - ShiftGroup 任一成员不可严格左移 1 列
+        // 这种情况下我们保持 RNG 序列、不动 state、跳过本轮 (跟成本计算无关)。
+        if !apply_move(&mut candidate, &m, board) {
+            continue;
+        }
         // 拒绝任何产生越界 / blocked row y 的候选 — 物理上不该考虑的状态。
         // (cost 会扣 OOB 惩罚让 SA 远离开, 但放在这里少跑 cost 计算。
         // 另外, 若初始状态本身就合法, SA 也不会被锁定到 "都是 OOB 的同代价态"。)
@@ -561,27 +756,27 @@ mod tests {
     #[test]
     fn apply_flip_toggles_rotation() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
-        apply_move(&mut state, &Move::Flip(0));
+        apply_move(&mut state, &Move::Flip(0), &board());
         assert_eq!(state.rotation[0], Rotation::R180);
-        apply_move(&mut state, &Move::Flip(0));
+        apply_move(&mut state, &Move::Flip(0), &board());
         assert_eq!(state.rotation[0], Rotation::R0);
     }
 
     #[test]
     fn apply_shift_x_increments_x() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
-        apply_move(&mut state, &Move::ShiftX(0, 1));
+        apply_move(&mut state, &Move::ShiftX(0, 1), &board());
         assert_eq!(state.x[0], 1);
-        apply_move(&mut state, &Move::ShiftX(0, -2));
+        apply_move(&mut state, &Move::ShiftX(0, -2), &board());
         assert_eq!(state.x[0], -1);
     }
 
     #[test]
     fn apply_shift_y_increments_y() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
-        apply_move(&mut state, &Move::ShiftY(0, 1));
+        apply_move(&mut state, &Move::ShiftY(0, 1), &board());
         assert_eq!(state.y[0], 3);
-        apply_move(&mut state, &Move::ShiftY(0, -2));
+        apply_move(&mut state, &Move::ShiftY(0, -2), &board());
         assert_eq!(state.y[0], 1);
     }
 
@@ -590,10 +785,376 @@ mod tests {
     fn apply_toggle_bridging_flips_bridged() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
         assert!(!state.bridged[0], "初始 bridged 必为 false");
-        apply_move(&mut state, &Move::ToggleBridging(0));
+        apply_move(&mut state, &Move::ToggleBridging(0), &board());
         assert!(state.bridged[0], "Toggle 一次后应 = true");
-        apply_move(&mut state, &Move::ToggleBridging(0));
+        apply_move(&mut state, &Move::ToggleBridging(0), &board());
         assert!(!state.bridged[0], "Toggle 两次后应 = false");
+    }
+
+    // ============================================================
+    //  bridged 模式下的扰动行为测试
+    //  (Flip / ShiftY 应当静默丢弃; ShiftX 应在 cache 里查找 + 跳 gap;
+    //   ShiftGroup 含 bridged 成员时可用 strict -1 语义)
+    // ============================================================
+
+    use crate::layout::breadboard::PowerRailBinding;
+
+    /// 1 个 2-pin bridgeable 元件 + power rail binding + 启发式。
+    /// 供下面填 cache / 验 shifted pair 行为。
+    fn bridgable_fixture() -> (Circuit, Breadboard) {
+        // 跨越 3 cols 的水平 footprint (Δ = (3, 0))。
+        // R90 后 Δ = (0, 3) — signal pin y 上移 3, body 竖直走向
+        // (x 不变、y 变)。这正好是 bridgeable 电阻 跨 power rail → main rail 的典型姿态。
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 3, y: 0 },
+                },
+            ],
+        };
+        // 1 个 component: pin1 = net "+12V", pin2 = net "SIG"
+        let comp = Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: true,
+        };
+        let pins = vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(0)),
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                net: Some(NetId(1)),
+            },
+        ];
+        let nets = vec![
+            Net {
+                id: NetId(0),
+                name: "+12V".into(),
+                pins: vec![PinId(0)],
+            },
+            Net {
+                id: NetId(1),
+                name: "SIG".into(),
+                pins: vec![PinId(1)],
+            },
+        ];
+        let circuit = Circuit {
+            components: vec![comp],
+            pins,
+            nets,
+            footprints: vec![fp],
+        };
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        });
+        (circuit, board)
+    }
+
+    /// 跑 populate_bridgeable_info 并启用 bridged 模式, 返回手动设置好的 state。
+    fn bridgable_state_in_bridged(placeable: Vec<ComponentId>) -> SAState {
+        let (circuit, board) = bridgable_fixture();
+        let mut state = SAState::from_greedy(placeable, &circuit, &board);
+        populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
+        assert!(state.is_bridgeable[0], "fixture 应能提供 bridged candidate");
+        assert!(!state.bridged_pin_pairs[0].is_empty(), "cache 不该为空");
+        state.bridged[0] = true;
+        state
+    }
+
+    /// Flip 命中 bridged 时 静默丢弃, state 完全不变。
+    #[test]
+    fn apply_flip_on_bridged_no_state_change() {
+        let b = {
+            let (_circuit, board) = bridgable_fixture();
+            board
+        };
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        let rotation_before = state.rotation[0];
+        let bridged_before = state.bridged[0];
+        let active_before = state.active_bridge_idx[0];
+        let ok = apply_move(&mut state, &Move::Flip(0), &b);
+        assert!(!ok, "Flip on bridged 必须返 false (不同意改)");
+        assert_eq!(state.rotation[0], rotation_before, "rotation 未动");
+        assert_eq!(state.bridged[0], bridged_before, "bridged 未动");
+        assert_eq!(
+            state.active_bridge_idx[0], active_before,
+            "active_bridge_idx 未动"
+        );
+    }
+
+    /// ShiftY 命中 bridged 时 静默丢弃。
+    #[test]
+    fn apply_shift_y_on_bridged_no_state_change() {
+        let b = {
+            let (_circuit, board) = bridgable_fixture();
+            board
+        };
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        let y_before = state.y[0];
+        let ok = apply_move(&mut state, &Move::ShiftY(0, 1), &b);
+        assert!(!ok, "ShiftY on bridged 必须返 false");
+        assert_eq!(state.y[0], y_before, "y 未动");
+    }
+
+    /// ShiftX 命中 bridged 时在 cache 里查 pair; 找到则落地。
+    #[test]
+    fn apply_shift_x_on_bridged_finds_cache_match() {
+        let (_circuit, board) = bridgable_fixture();
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        let (cur_p_h, _) = state.active_bridge_pair(0).unwrap()[0];
+        let p_pos = board.hole(cur_p_h).position;
+        // 选一个不撞 gap 的 dx: power x = 0 (group 0-4 起点) → dx=-1 越界, dx=+1 落到 1 (同 group)。选 dx=+1。
+        assert!(
+            try_bridged_shift_x(&mut state, &board, 0, 1),
+            "dx=+1 应在 cache 里找到"
+        );
+        let new_p_h = state.active_bridge_pair(0).unwrap()[0].0;
+        assert_eq!(
+            board.hole(new_p_h).position.x,
+            p_pos.x + 1,
+            "power pin 应右移 1"
+        );
+    }
+
+    /// ShiftX 命中 bridged 时, dx 落到 gap → 自动跳到 dx+sign(dx) 逃逸。
+    /// 标准板 power groups 是 0-4, 6-10, 12-16, ...
+    ///     gap 个个在 5, 11, 17, ...
+    ///     power pin 在 x=4 (group 末尾) dx=+1 → x=5 是 gap, 应自动跳到 x=6。
+    #[test]
+    fn apply_shift_x_on_bridged_skips_power_rail_gap() {
+        let (_circuit, board) = bridgable_fixture();
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+
+        // 找一个 power pin 位于 x=4 的候选 (group 0-4 末), 设它为 active。
+        let target_idx = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 4)
+            .expect("应能找到 power x=4 的候选");
+        state.active_bridge_idx[0] = target_idx;
+
+        // dx = +1 — 扔到 gap x=5 会 miss。跳 gap 后落到 x=6 应命中。
+        let ok = try_bridged_shift_x(&mut state, &board, 0, 1);
+        assert!(ok, "跳 gap 后应能在 cache 找到 pair");
+        let new_p_h = state.active_bridge_pair(0).unwrap()[0].0;
+        assert_eq!(
+            board.hole(new_p_h).position.x,
+            6,
+            "power pin 应跨 gap 落到 x=6"
+        );
+
+        // 逆向: power 在 x=6 (group 6-10 起始) dx=-1 → 跳到 x=4。
+        // 先重定原位到 x=6:
+        let target6 = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 6)
+            .expect("应能找到 power x=6 的候选");
+        state.active_bridge_idx[0] = target6;
+
+        let ok2 = try_bridged_shift_x(&mut state, &board, 0, -1);
+        assert!(ok2, "跳 gap 逆向也应能成功");
+        let new_p_h = state.active_bridge_pair(0).unwrap()[0].0;
+        assert_eq!(
+            board.hole(new_p_h).position.x,
+            4,
+            "power pin 应跨 gap 落到 x=4"
+        );
+    }
+
+    /// ShiftX 双跳都不命中 (e.g. 起点 + dx 都越界) → 返 false, state 不变。
+    #[test]
+    fn apply_shift_x_on_bridged_rejects_when_no_target_anywhere() {
+        let (_circuit, board) = bridgable_fixture();
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+
+        // 找到一个 power x=0 的候选 (起点 left edge), dx=-1 越界;
+        // dx+sign(dx) = -2 依然越界。 两跳都不命中 → 拒绝。
+        let target0 = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 0)
+            .expect("应能找到 power x=0 的候选");
+        state.active_bridge_idx[0] = target0;
+        let active_before = state.active_bridge_idx[0];
+
+        let ok = try_bridged_shift_x(&mut state, &board, 0, -1);
+        assert!(!ok, "dx = -1 越界 + 跳 dx = -2 依然越界, 必须返 false");
+        assert_eq!(
+            state.active_bridge_idx[0], active_before,
+            "active_bridge_idx 不应被改"
+        );
+    }
+
+    /// `logical_x` / `rail_top` 对 bridged 走 signal pin, OnBoard 走 state.x/y。
+    #[test]
+    fn logical_helpers_use_signal_pin_for_bridged() {
+        let (_circuit, board) = bridgable_fixture();
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        // 当前选了一个启发式 pair; 检查 logical_x 等于 signal pin hole 的 x
+        let pair = state.active_bridge_pair(0).unwrap();
+        let signal_pos = board.hole(pair[1].0).position;
+        assert_eq!(
+            logical_x(&state, &board, 0),
+            signal_pos.x,
+            "logical_x 应读 signal pin"
+        );
+        // rail_top 应为 signal_pos.y 所在 rail_top
+        let expected_top = board.rail_rows(signal_pos.y).first().copied().unwrap();
+        assert_eq!(
+            rail_top(&state, &board, 0).unwrap(),
+            expected_top,
+            "rail_top 应读 signal pin y 所在 rail"
+        );
+
+        // 关 bridged 后, OnBoard 路径: state.x / state.y
+        state.bridged[0] = false;
+        assert_eq!(
+            logical_x(&state, &board, 0),
+            state.x[0],
+            "OnBoard logical_x == state.x"
+        );
+        assert_eq!(
+            rail_top(&state, &board, 0).unwrap(),
+            board.rail_rows(state.y[0]).first().copied().unwrap(),
+            "OnBoard rail_top == state.y 所在 rail_top"
+        );
+    }
+
+    /// `can_shift_left_one`: OnBoard 看 state.x; bridged 看 cache。
+    #[test]
+    fn can_shift_left_one_handles_both_modes() {
+        let (_circuit, board) = bridgable_fixture();
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        // OnBoard 模式 (bridged=false): state.x=0 应不可左移, 1 可
+        state.bridged[0] = false;
+        state.x[0] = 0;
+        assert!(!can_shift_left_one(&state, &board, 0));
+        state.x[0] = 1;
+        assert!(can_shift_left_one(&state, &board, 0));
+        state.x[0] = -1; // 越界, 也不可左移
+        assert!(!can_shift_left_one(&state, &board, 0));
+
+        // Bridged 模式: cache 里有 (power.x-1, signal.x-1) → 可;
+        // 没有 (起点为 x=0 dx=-1 越界) → 不可。
+        state.bridged[0] = true;
+        let target0 = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 0)
+            .expect("power x=0 candidate");
+        state.active_bridge_idx[0] = target0;
+        assert!(
+            !can_shift_left_one(&state, &board, 0),
+            "bridged 起点 x=0 无 -1 cache 命中"
+        );
+
+        // 切到非 gap 边缘的 bridge (power x=3, 同 group):
+        let target3 = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 3)
+            .expect("power x=3 candidate");
+        state.active_bridge_idx[0] = target3;
+        assert!(
+            can_shift_left_one(&state, &board, 0),
+            "bridged power x=3 有 -1 cache 命中"
+        );
+    }
+
+    /// ShiftGroup 含 bridged 成员: 全部成员都能严格 -1 → 全组落地。
+    /// 这里手造一个 OnBoard 邻居 + 同 rail 的 bridged 成员 (signal pin 与
+    /// OnBoard 同 rail_top), 验证 group 允许包含两者且 apply 成功。
+    #[test]
+    fn shift_group_with_bridged_member_lands_all() {
+        let (_circuit, board) = bridgable_fixture();
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+
+        // 追加一个手动造的 "OnBoard 邻居" (凑数看 ShiftGroup):
+        state.x.push(2);
+        state.y.push(0);
+        state.rotation.push(Rotation::R0);
+        state.is_bridgeable.push(false);
+        state.bridged.push(false);
+        state.bridged_pin_pairs.push(Vec::new());
+        state.active_bridge_idx.push(0);
+
+        // 找一个 power x=3, signal y=0 的 pair (R90 进 main board row 0);
+        // power x=3 同 group 0-4 内, dx=-1 撞不到 gap (但会用到 cache 查找)。
+        let mut target = None;
+        for (i, pair) in state.bridged_pin_pairs[0].iter().enumerate() {
+            let p = board.hole(pair[0].0).position;
+            let s = board.hole(pair[1].0).position;
+            if p.x == 3 && s.y == 0 {
+                target = Some(i);
+                break;
+            }
+        }
+        let Some(idx) = target else {
+            eprintln!("启发式未返 power x=3, signal y=0 pair, skip");
+            return;
+        };
+        state.active_bridge_idx[0] = idx;
+
+        let onboard_x_before = state.x[1];
+
+        let ok = apply_group_shift_x(&mut state, &board, &[1usize, 0usize], -1);
+        assert!(ok, "两个成员都应能严格左移 -1");
+        assert_eq!(state.x[1], onboard_x_before - 1, "OnBoard -1");
+        let pair = state.active_bridge_pair(0).unwrap();
+        let p_after = board.hole(pair[0].0).position;
+        let s_after = board.hole(pair[1].0).position;
+        assert!(p_after.x >= 0 && s_after.x >= 0);
+    }
+
+    /// ShiftGroup 含撞 gap 的 bridged → 整组被拒 (per-member can_shift_left_one fail)。
+    /// power x=6 (group 6-10 起始), dx=-1 → 落到 x=5 (gap), cache miss, 拒。
+    #[test]
+    fn shift_group_with_bridged_at_gap_rejects_entire_group() {
+        let (_circuit, board) = bridgable_fixture();
+        let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        state.x.push(2);
+        state.y.push(0);
+        state.rotation.push(Rotation::R0);
+        state.is_bridgeable.push(false);
+        state.bridged.push(false);
+        state.bridged_pin_pairs.push(Vec::new());
+        state.active_bridge_idx.push(0);
+
+        // 选一个 power x=6 的 bridged pair (group 6-10 起始)。
+        // -1 撞 gap → cache 查不到 → group 拒。
+        let target6 = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 6)
+            .expect("power x=6 candidate");
+        state.active_bridge_idx[0] = target6;
+
+        // OnBoard x=2 -1 → x=1 (合法), 不应该拖累。
+        let onboard_x_before = state.x[1];
+        let active_before = state.active_bridge_idx[0];
+
+        let ok = apply_group_shift_x(&mut state, &board, &[1usize, 0usize], -1);
+        assert!(!ok, "bridged 撞 gap → group 必须被拒");
+        assert_eq!(state.x[1], onboard_x_before, "OnBoard 也未动 (atomic)");
+        assert_eq!(
+            state.active_bridge_idx[0], active_before,
+            "bridged active_bridge_idx 未动 (atomic)"
+        );
     }
 
     #[test]
