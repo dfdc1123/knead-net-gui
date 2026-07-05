@@ -73,13 +73,16 @@ pub trait Router {
 // 算法 (多轮迭代 + 谈判):
 // 1. 初始化 history[h] = 0 for all hole h
 // 2. 对每轮 iter < max_iterations:
-//    a. 对每个 net 算一个最小代价 spanning tree (Kruskal):
-//       edge cost = 两端点 Manhattan 距离 + history[from] + history[to]
-//       选代价最低的 (ha, hb) 端点对
-//    b. 检查冲突: 2+ net 用了同一孔 → 该孔 history += history_increment
-// 3. 收敛 (无冲突) 或达到 max_iter → 结束
+//    a. 对每个 net 跑 Kruskal 算 spanning tree:
+//       (i)   用"理想 cost" = Manhattan(ha,hb) + history[ha] + history[hb]
+//             对所有 (ha, hb) 排序 (Kruskal 只用来挑边结构; ha,hb 是当前空孔对)
+//       (ii)  加边时重算一次 best_wire, 故意排除本 net 已用孔,
+//             让最终选出的 wire 端点**保证**不重复占用本 net 已用孔
+//             (实际成本可能略高于理想 cost, 但合法)
+//    b. 统计使用 ≥ 2 的孔 → history[h] += history_increment
+// 3. 收敛 (无冲突) 或达到 max_iter → 结束; 若还未收敛则返回历史上冲突最少的方案
 //
-// 历史代价单调递增, 跑足够多轮后, "对距离不敏感"的 net 会自动让出
+// 历史代价单调非减, 跑足够多轮后, "对距离不敏感"的 net 会自动让出
 // 拥堵孔, 退到旁边的空列, 最终实现无短路布线。
 //
 // 跟当前 Occupancy 严格模型 (1 孔 ≤ 1 occupant) 兼容:
@@ -525,7 +528,8 @@ mod tests {
         assert_eq!(wires.len(), 2, "3 columns → 2 wires (tree)");
     }
 
-    /// 验证: 1 个 net 全部 pin 在同一列 → 0 根 wire (列内已连通)
+    /// 验证: net 只有 1 个 pin → 0 根 wire (一条短线在 spanning tree 里退化成 0 边)。
+    /// (此测试原意是 "all pins same column"; 改用 1 pin 的 net 简化, 故 doc 跟上更新。)
     #[test]
     fn all_pins_same_column() {
         let b = board();
@@ -686,7 +690,8 @@ mod tests {
 
     /// 验证: routing 不会把 wire 端点掉进 Blocked 单元 (被元件本体占据的格子)。
     /// 用一个跨 4 col 的 axial footprint (pin at 0 和 3, 中间 (1,0)(2,0) 是本体)。
-    /// 另一元件摆在 (5, 2) 与它 pin 同列且要求连到远处的另一脚。
+    /// 另一个元件摆在 (10, 2) 与第一元件 pin 远端同列, 要求连到同一 net; 避免的
+    /// Blocked 是 R1 的 (6,2)(7,2) 和 R2 的 (11,2)(12,2)。
     #[test]
     fn router_avoids_blocked_holes() {
         let b = board();
@@ -781,9 +786,9 @@ mod tests {
         assert!(!wires.is_empty(), "应能走出一根线");
     }
 
-    /// 验证: 在标准板 (30x12) 上, 上下 rail 各 1 个 pin 属于同一 net, 路由不需走线
-    /// (同列不同 rail 不能靠面包板连通, 必须有 wire)。Pin 跨上下 rail 时, 路由
-    /// 仍能正确产生 wire。
+    /// 验证: 在标准板 (30×12) 上, pin 分别落在**上下 rail 且跨了不同 col**
+    /// (上 rail (0,2), 下 rail (5,10))。跨 rail 不能靠面包板内部连通, 跨 col
+    /// 不在同一 rail, 路由器必须走 1 根 wire 把它们连起来。
     #[test]
     fn router_connects_across_rails() {
         let b = Breadboard::standard();

@@ -42,7 +42,9 @@ pub struct NetlistNode {
     pub ref_: String,
     /// KiCad 里这个字段叫 "pin", 但内容是 num 不是 name
     pub pin_num: String,
-    /// KiCad node 里的 (pinfunction "B"/"C"/"E"/"K"/"A" ...), 传给 Pin.pinfunction
+    /// KiCad 10 node 里的 `(pinfunction "<NAME>_<PIN_NUM>" ...)`, 例如 `"K_1"` / `"A_2"`
+    /// —— KiCad 会自动拼接 pad 编号避免重复 (多 unit / 多 pin 同名时)。
+    /// 原始字符串原样传给 `Pin::pinfunction`, 调用方按需 parse。
     pub pinfunction: Option<String>,
 }
 
@@ -164,6 +166,9 @@ pub fn auto_mark_bridgeable(circuit: &mut Circuit, power_net_names: &[&str]) {
 }
 
 /// "LED_THT:LED_D5.0mm" → "LED_D5.0mm"
+///
+/// 用 `rsplit` 取**最后一段** (而不是 `split_once` 取第一段); KiCad prefix
+/// 是首段但万一层级更复杂, 取尾段更稳。
 fn strip_library_prefix(footprint_ref: &str) -> String {
     footprint_ref
         .rsplit(':')

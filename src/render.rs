@@ -1,14 +1,14 @@
 //! 把布局结果渲染成 SVG, 简陋但直观, 用于调试。
 //!
 //! 画布 (z-order, 从下到上):
-//! 1. 米色背景
+//! 1. 近白中性灰背景 (`#fafafa`)
 //! 2. 元件包围框 + ref 文字 (每个元件一个色相)
-//! 3. 接线 (粗绿线)
+//! 3. 接线 (按 net 上色, 半透明粗线)
 //!    - **同行多线**: Z 形走通道, 每条线占一个垂直 lane, 错开避免重叠
 //!    - **跨行线**: 保持直线
-//! 4. 所有孔: 引脚蓝, 线端绿, 空白
+//! 4. 所有孔: 引脚蓝, 线端绿, 元件本体 (`Blocked`) 用对应元件色, 空白
 //!
-//! 不追求"画得像"电阻二极管, 标出是哪个元件 + 有几个引脚就行。
+//! 不追求画出逼真的电阻 / LED / 二极管图标; 给出 ref 标签 + 几个引脚就够调试用。
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
@@ -27,8 +27,10 @@ const CHANNEL_FRAC: f32 = 0.30; // 通道相对 row 中心的偏移 (向下)
 
 /// 把整个布局渲染成 SVG 字符串。
 ///
-/// `layout` 可以是不合法的 (没有 placement / wire 冲突), 此时仍能画板子和孔,
-/// 只是引脚和线的颜色信息可能缺失。
+/// `layout` 可以是部分不合法的 (未摆放的 component / wire 跟 pin 撞):
+/// 用 lossy occupancy 渲染, 未摆放的 component 不画, 撞孔时后到者覆盖先到者。
+/// 颜色信息本身不会"缺失" — net/线色取自 [`Circuit::nets`] 和 `net_color()`,
+/// pin 覆盖关系才是 lossless / lossy 的差别。
 pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String {
     let w = board.cols() as f32 * CELL_X + MARGIN * 2.0;
     // 画布高度 = 从板上最小 y 到最大 y 覆盖 (含 power rail 的负 y 和 >= main_rows)
@@ -165,8 +167,9 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
         let (fill, stroke): (&str, &str) = match occ.occupant_at(hole.id) {
             Some(Occupant::Pin(_)) => ("#2563eb", "#1e3a8a"),
             Some(Occupant::Wire(_)) => ("#16a34a", "#14532d"),
-            // 被元件本体占据 — 画成元件色 (同 bbox 填充色) 但深一些,
-            // 让“本体覆盖区”一眼能看出来。
+            // 被元件本体占据 — 用同元件的 hue 但 fill-opacity 为 1.0
+            // (bbox 的 fill-opacity=0.18 让颜色淡化, 这里反过来更鲜),
+            // 让“本体覆盖区”一眼能跟空孔 / 单纯 pin 区分开。
             Some(Occupant::Blocked(cid)) => {
                 blocked_color = component_color(cid.raw());
                 (blocked_color.as_str(), "#374151")
@@ -213,8 +216,8 @@ fn hole_px_from_pos(pos: Position) -> (f32, f32) {
 }
 
 /// 算中央通道 (连续 blocked row) 的 (top, bottom) 范围, 没有则返回 None。
-/// 现在 Breadboard 只允许一个连续 blocked 范围 (跟面包板中线对应), 但这里按
-/// 通用做法写: 找最长的连续 blocked 段, 覆盖中央主要部分。
+/// Breadboard 允许任意的 blocked_rows 集合 (不强制一段),
+/// 这里选最长连续段; 多段连不上的情况下只返回第一段的范围。
 fn gap_extent(board: &Breadboard) -> Option<(usize, usize)> {
     let blocked = board.blocked_rows();
     if blocked.is_empty() {
@@ -385,7 +388,8 @@ fn draw_wire(out: &mut String, plan: &WirePlan, circuit: &Circuit) {
 
 // ---------- 小工具 ----------
 
-/// 给元件分配一个稳定的色相 (按 id 散开)。黄金比例乘子 47 是经验值, 保证相邻 id 颜色差大。
+/// 给元件分配一个稳定的色相 (按 id 散开)。乘子 47 与 360 互素,
+/// 保证相邻 id 的色相在 [0, 360) 上均匀散布; net 用 73 跟元件错开避免撞色。
 fn component_color(idx: usize) -> String {
     let hue = (idx.wrapping_mul(47)) % 360;
     format!("hsl({hue},65%,42%)")
@@ -415,8 +419,8 @@ fn html_escape(s: &str) -> String {
 
 // ---------- 元件包围盒 ----------
 
-/// 算出该 placement 下, 元件在板上的包围盒。调 `Placement::apply`,
-/// 由 `PlacedFootprint::bbox` 返回 (同一种检查路径, 跟 occupancy 保持一致)。
+/// 算出该 placement 下, 元件在板上的包围盒。调 [`Placement::apply`] 后
+/// 读 `placed.bbox` 字段 (跟 `Occupancy::from_layout` 走同一条路径)。
 fn component_bbox(
     circuit: &Circuit,
     board: &Breadboard,
@@ -457,7 +461,8 @@ fn draw_bridged(
         y: p2.y + y_offset,
     });
 
-    // body: 在两点中点画小矩形, 旋转 90° 让它垂直于 leads (看起来像真电阻的 body)
+    // body: 在两点中点画小矩形, 朝向跟 leads 一致
+    // (轴线和 legs 同向, 看起来像真电阻的 body)
     let mx = (x1 + x2) / 2.0;
     let my = (y1 + y2) / 2.0;
     let dx = x2 - x1;
@@ -466,7 +471,7 @@ fn draw_bridged(
     // body 长度 = leads 长度的 40% (min 24, max 44), 宽度 14
     let body_len = (length * 0.4).clamp(24.0, 44.0);
     let body_w = 14.0_f32;
-    // 角度 (弧度): leads 方向
+    // 角度 (度): leads 方向 = body 长边方向
     let angle = dy.atan2(dx).to_degrees();
 
     // leads: 两根细线从 pin 孔到 body 端点
@@ -489,7 +494,9 @@ fn draw_bridged(
         color = color
     );
 
-    // body: 旋转矩形, 同 OnBoard 风格 (圆角 + 半透明 + 边线)
+    // body: 旋转矩形, 跟 OnBoard 类似 (圆角 + 半透明 + 边线),
+    // 但 rx=3 / fill-opacity=0.30 跟 OnBoard (rx=4 / 0.18) 都略不同,
+    // 让桥接元件比板上的更醒目。
     let _ = writeln!(
         out,
         r##"<rect x="{bx:.1}" y="{by:.1}" width="{bw:.1}" height="{bh:.1}" rx="3" fill="{color}" fill-opacity="0.30" stroke="{color}" stroke-width="1.5" transform="rotate({angle:.1} {mx:.1} {my:.1})"/>"##,
@@ -515,7 +522,8 @@ fn draw_bridged(
 
 /// 把力导向连续阶段的位置渲染成 SVG。
 ///
-/// 画板子背景 + 网连线 (半透明) + 元件中心点 (圆) + ref 标签。
+/// 画板子背景 (背景块 + 中央通道 + 外部 gap + 电源轨 + 网格孔作参照) +
+/// 网连线 (淡色半透明全连接) + 元件中心点 (半透明大圆 + 实心小圆) + ref 标签。
 /// 用于观察 FD 拓扑聚类质量——同一网的元件是否靠得近。
 pub fn to_svg_fd_continuous(
     circuit: &Circuit,
@@ -603,22 +611,24 @@ pub fn to_svg_fd_continuous(
 
     // 1) 网连线: 每个 net, 连接它在 placeable 中所有 pin 所属的组件
     //    用淡色半透明线, 可以看出拓扑聚类
-    let net_colors: Vec<String> = (0..circuit.nets().len()).map(|i| net_color(i)).collect();
+    let net_colors: Vec<String> = (0..circuit.nets().len()).map(net_color).collect();
     for net in circuit.nets() {
         let mut comp_indices: Vec<usize> = Vec::new();
         for &pid in net.pins() {
             let cid = circuit.pins()[pid.raw()].component();
-            if let Some(&idx) = comp_to_idx.get(&cid) {
-                if !comp_indices.contains(&idx) {
-                    comp_indices.push(idx);
-                }
+            if let Some(&idx) = comp_to_idx.get(&cid)
+                && !comp_indices.contains(&idx)
+            {
+                comp_indices.push(idx);
             }
         }
         if comp_indices.len() < 2 {
             continue;
         }
         let color = &net_colors[net.id().raw()];
-        // 画 MST 连线 (简单的全连接, 用于可视化)
+        // 画 net 内的全连接 (每对 component 一根) — 充当可视化用,
+        // 看同一网内元件是否聚在一起; 严格意义的 MST 才是 N-1 条无环边,
+        // 这里故意画全连接是为了让聚类模式直观。
         for i in 0..comp_indices.len() {
             for j in (i + 1)..comp_indices.len() {
                 let a = comp_indices[i];

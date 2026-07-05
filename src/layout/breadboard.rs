@@ -1,19 +1,21 @@
 //! 面包板的物理结构。
 //!
 //! 一个 [`Breadboard`] 由两部分组成:
-//! 1. **main board** — 中央插元件区, 5 (cols) × N (rows) 的网格, 中间可能有
-//!    物理占位的 blocked row (面包板中央通道的简化)。同列内一段连续的非 blocked
-//!    行是**纵向 rail** (面包板内部纵向短接)。
+//! 1. **main board** — 中央插元件区, 默认 30 × 12 (cols × rows) 的网格 (`standard()`),
+//!    中间可能有物理占位的 blocked row (面包板中央通道的简化)。
+//!    同列内一段连续的非 blocked 行是**纵向 rail** (面包板内部纵向短接)。
 //! 2. **power rails** — 板子上下两端各一组横条。每组两条 (上面负极, 下面正极),
 //!    每条由若干个 group 组成, 每个 group 内的孔横向短接 (面包板内部短接)。
 //!
 //! 短路关系用 `rail_id` 统一表达:
 //! - main board 内的纵向 rail: 每个 (col, vertical_rail_top) 一个 rail_id
-//! - power rail 行: 一行一个 rail_id
+//! - power rail 行: 同一**极性**的所有行 (top + bottom 两行) 共享一个 rail_id
+//!   (负 1 个, 正 1 个)
 //!
 //! 两个孔 `rail_id` 相同就内部短接 (距离 0), 不同就走 Manhattan。
 //!
-//! 坐标空间 (默认 30×12 main + 上下各一组电源轨, 主区到 rail 间各 2 行 gap):
+//! 坐标空间 (以下图示基于 `Breadboard::standard()` 配置 (30×12 main, blocked_rows=[5,6]);
+//! 其它尺寸板的 row / col 数不同但电源轨排布结构一致):
 //! ```text
 //!   y=-4  [top negative]  横向短路, 5 组 5 孔
 //!   y=-3  [top positive]  横向短路
@@ -53,8 +55,9 @@ impl HoleId {
 
 /// 孔所属的区域类型。
 ///
-/// `at(x, y)` 对 `Region::Gap` 处的 y 返回 `None` — 那些孔在 `holes` 里不存在
-/// (跟原 `is_blocked` 语义一致, 中央通道 y 不参与布局)。
+/// `Region` 只描述**真实存在的孔**的归属 — 外部 gap / blocked row 上的
+/// y 在 `at(x, y)` 里返回 `None`, 是因为这些 y 根本没有对应的 Hole,
+/// 跟 `Region` 无关 (这里并没有 `Region::Gap` 这种变体)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Region {
     /// main board 内非 blocked 的孔; 同列同 vertical rail 短接
@@ -440,8 +443,9 @@ impl Breadboard {
 
     /// 给定极性, 返回该 rail 上的一个 anchor `HoleId` (用作虚拟 pin 位置)。
     ///
-    /// 选 top strip 里极性匹配那一行的**第一个**孔 (col 0)。因为同 rail 的所有
-    /// 孔内部短接, anchor 选哪个孔都对, 这里只是稳定起见。
+    /// 选 top strip 里极性匹配那一行**构造时第一个插入**的孔 (当前实现下是 col 0,
+    /// 因为 holes 按 sorted x 顺序插入)。因为同 rail 的所有孔内部短接, anchor 选
+    /// 哪个孔都对, 这里只是稳定起见。
     /// 返回 `None` 表示: 没装 power rail, 或该极性在配置里不存在。
     pub fn power_rail_anchor(&self, polarity: Polarity) -> Option<HoleId> {
         let pr = self.power_rails.as_ref()?;
@@ -508,10 +512,12 @@ fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize 
     count
 }
 
-/// 默认电源轨配置: 30 列, 每条 5 组 5 孔, 上下各一组 (4 行)。
+/// 默认电源轨配置: `cols` 参数化; 按 6-col 节拍生成 (5 连续孔 + 1 空孔断开)。
+/// `cols=30` 时 5 组 5 孔; `cols=50` 时 9 组 (最后一组 2 孔); `cols=60` 时 10 组。
+/// y 坐标固定为 -4 / -3 (top) 和 14 / 15 (bottom)。
 ///
 /// 排布 (相对 main board, y 从小到大):
-/// - y=-4: top negative (5 groups: 0..4, 6..10, 12..16, 18..22, 24..28)
+/// - y=-4: top negative
 /// - y=-3: top positive
 /// - y=14: bottom negative
 /// - y=15: bottom positive

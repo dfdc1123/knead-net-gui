@@ -1,10 +1,13 @@
 //! 面包板布局: 把 Circuit 投影到 Breadboard 上。
 //!
 //! 模块组织:
-//! - [`breadboard`][]: 物理结构 (30×5 矩形, 每列纵向连通, 无电源轨)
+//! - [`breadboard`][]: 物理结构 (main board + 电源轨, 尺寸参数化;
+//!   `standard()` 默认 30×12 main + 上下各两组 5×5 电源轨)
 //! - [`placement`]: 摆放 (位置 + 旋转) → 投影到具体 HoleId
 //! - [`occupancy`][]: 当前孔占用 (派生, 不缓存)
-//! - [`routing`][]: 接线 (Wire, Router trait)
+//! - [`cost`]: SA 成本函数 (MST / pin 碰撞 / bbox / 紧凑度 / 桥接启发式等)
+//! - [`sa`][]: 模拟退火求解器
+//! - [`routing`][]: 接线 (Wire, Router trait + PathFinder 实现)
 //! - [`Layout`]: 顶层容器, 持有 Circuit 引用 + placements + wires
 
 pub mod breadboard;
@@ -329,6 +332,9 @@ pub fn fd_debug_positions(
 }
 
 /// 频谱布局调试输出: 返回 (v₂, v₃, round 后 placement), 并打印频谱值和格点映射。
+///
+/// **注意**: `v₂` / `v₃` 字段**目前是占位** (`vec![0.0; n]`), 只打印 round
+/// 后的 `(x, y)` (按 x 排序)。频谱值的具体内容还需要进一步接线到 SAState。
 pub fn spectral_debug_positions(
     circuit: &Circuit,
     board: &Breadboard,
@@ -398,9 +404,10 @@ pub enum ColumnEndpoint {
 
 /// 布局错误。`apply` / `validate` / `from_layout` 都会返回这个。
 ///
-/// `apply` 只产生 `OutOfBounds` (单个 placement 内的检查);
-/// `validate` / `from_layout` 还会产生 `NoFootprint` / `PinCollision` / `WireConflict`
-/// / `ColumnConflict` (跨 placement 的检查)。
+/// `apply` 产生 `OutOfBounds` / `NoFootprintPad` (Bridged 路径还会产生 `PinCollision`)。
+/// `validate` / `from_layout` 在跨 placement 层面额外产生
+/// `NoFootprint` / `BBoxOverlap` / `WireConflict` / `ColumnConflict`,
+/// 并透传 `apply` 的全部错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutError {
     /// Component 没有 footprint
@@ -506,20 +513,26 @@ impl<'c> Layout<'c> {
         self.circuit
     }
 
-    /// 一次性验证整个 layout, 返回所有错误 (no footprint / 越界 / pin 碰撞 / wire 冲突)。
+    /// 一次性验证整个 layout, 返回所有错误 (`Vec<LayoutError>`)。
     ///
     /// `validate` 跟 `occupancy` 走同一条检查路径, 区别是 `validate` 丢掉了
     /// 构建出来的 occupancy 表, 只关心错误。语义上"我只想问合不合法"。
+    /// 可产生的错误种类见 [`LayoutError`] (7 种)。
     pub fn validate(&self, board: &Breadboard) -> Result<(), Vec<LayoutError>> {
         self.occupancy(board).map(|_| ())
     }
 
     /// 用模拟退火布局。
     ///
-    /// 流程: 收集有 footprint 的 component → `sa::simulate` (跑 `config.n_seeds`
-    /// 次, 取最低 cost 的 best state) → 写回 `placements` → `validate(board)`。
-    /// 紧凑度已折进 [`cost::cost`], 不再需要单独的 post-pass。
+    /// 流程: 收集 **有 footprint 且尚未摆放** 的 component → `sa::simulate`
+    /// (跑 `config.n_seeds` 次, 取最低 cost 的 best state) → 写回 `placements`
+    /// (SA 的 `ToggleBridging` 可产出 `Placement::Bridged`, 见下方内联注释)
+    /// → `validate(board)`。
     ///
+    /// 已经手动摆过的 component (OnBoard 或 Bridged 都算) **不会被 SA 覆盖**,
+    /// 即 SA 永远只优化未摆的。
+    ///
+    /// 紧凑度已折进 [`cost::cost`], 不再需要单独的 post-pass。
     /// 没有 footprint 的 component 保持未摆放, `validate` 会报 `NoFootprint`。
     /// 调参见 [`SAConfig`], 默认参数适合 ~5 元件级别。
     pub fn place_sa(
@@ -614,8 +627,9 @@ impl<'c> Layout<'c> {
     /// 依次放下去。**会覆盖已存在的 placement**; 没有 footprint 的 component 跳过
     /// (validate 会把它们报为 `NoFootprint`)。
     ///
-    /// 越界 / pin 碰撞 / wire 冲突都通过返回值上报; 即使有错, placement 也已经写入,
-    /// 调用方可以检查后调整。
+    /// 返回 `Result<(), Vec<LayoutError>>` 上报所有 7 种 `LayoutError`
+    /// (越界 / pin 碰撞 / bbox 重叠 / wire 冲突 / 列冲突 / 无 footprint 等);
+    /// 即使有错, placement 也已经写入, 调用方可以检查后调整。
     pub fn place_row(&mut self, board: &Breadboard, row: i32) -> Result<(), Vec<LayoutError>> {
         let mut col: i32 = 0;
         for component in &self.circuit.components {

@@ -22,11 +22,13 @@ use crate::circuit::{Circuit, Component, ComponentId, NetId, PinId, Position};
 use crate::layout::breadboard::{Breadboard, HoleId, Polarity, Region};
 use crate::layout::placement::{BBox, Rotation, rotate};
 
-/// SA 成本函数的六项权重。
+/// SA 成本函数的**八项**权重。
 ///
 /// 成本 = `mst * MST_sum + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
 ///       + column_conflict * 列短路对数 + out_of_bounds * 越界 pin 数
-///       + compactness * (按 rail 分组的 union bbox 面积之和) + rail_crossing (用 2+ rail 时)`
+///       + compactness * (按 rail 分组的 union bbox 面积之和)
+///       + row_squash * Σ max(0, n_comps - unique_min_y) (按 rail, 推元件散布到不同行)
+///       + rail_crossing * [用了 ≥2 个 rail]`
 ///
 /// 默认值见 [`Weights::default`], 经验起点; 真用时按板子拥挤程度调。
 #[derive(Debug, Clone, Copy)]
@@ -36,12 +38,14 @@ pub struct Weights {
     /// 不同 rail = Manhattan), sum 起来乘以本权重。
     /// 比纯 HPWL 准: HPWL 算同列不同 row 的距离仍按 Δrow, MST 直接 0。
     pub mst: f64,
+    /// pin-pin 碰撞对数 (`cost_fast` 中数 n-1 + ... + 1)。
     pub pin_overlap: f64,
     /// bbox 碰撞总格数 (本体撞 pin 也算)。一般比 pin_overlap 略高 — 本体挤到
     /// 其它元件身体上比 pin 互相碰还要糟糕 (后面 wire 还会避开本体)。
     pub b_box_overlap: f64,
-    /// 同列不同 net 的 pin 对数 (N 个 pin 同列冲突就是 N-1 + N-2 + ... + 1 = N(N-1)/2)
+    /// 同 rail 不同 net 的 pin 数 (按 rail 分: 取该 rail 第一个 net 为基线, 计后续与基线不同的 pin 总数; 不是严格 pairs 数)
     pub column_conflict: f64,
+    /// 越界 pin 数 (在 rail_id == `u32::MAX` 的"板外"孔上)。
     pub out_of_bounds: f64,
     /// 紧凑度: 按 rail 分组, 每组算 union bbox 面积 `(max_x - min_x + 1) * (max_y - min_y + 1)`,
     /// 各 rail 加和。**按 rail 切分** 是为了避免中央通道把"实际只占 1 行"的布局算成 2 行高。
@@ -51,7 +55,7 @@ pub struct Weights {
     /// 跨 rail 至少要一根 ~3 孔 jumper, 这项比单 cell 紧凑更贵。
     pub rail_crossing: f64,
     /// 纵向利用率惩罚: 同一 rail 内, 元件数量 vs 实际占用的行数。
-    /// `penalty = Σ max(0, n_comps - unique_rows)`, 推 SA 把元件散布到不同行,
+    /// `penalty = Σ max(0, n_comps - unique_min_y) (按 rail 分组, n_comps 是元件数, unique_min_y 是该 rail 上 bbox min_y 的不同行数)`, 推 SA 把元件散布到不同行,
     /// 避免所有元件挤在同一行导致水平跨度过大。
     pub row_squash: f64,
 }
@@ -85,13 +89,14 @@ impl Default for Weights {
 
 /// SA 内部状态: 每个元件显式持有 `(x, y, rotation)`.
 ///
-/// v2 起 (显式 2D 布局), x 不再由 order 推导, SA 可以把元件放到板子任意位置。
+/// 当前架构是显式 2D 布局: x 不再由 order 推导, SA 可以把元件放到板子任意位置。
 /// order 还在, 但只用于标识; `placeable[i]` 的 i 索引对应 `x[i] / y[i] / rotation[i]`。
 ///
 /// `is_bridgeable[i] / bridged[i] / bridged_pin_pairs[i] / active_bridge_idx[i]`
 /// 是桥接探索的四个字段, 长度都 == `placeable.len()`。`is_bridgeable` 由
-/// `place_sa` 在 SA 启动前根据 `Component.bridgeable` + 启发式是否找到合法桥接位
-/// 决定; `bridged` 初始全 false (默认 OnBoard), SA 通过 `Move::ToggleBridging`
+/// [`Layout::place_sa`] 内部 → `populate_bridgeable_info` 在 `sa::simulate`
+/// 主循环前根据 `Component.bridgeable` + 启发式是否找到合法桥接位决定;
+/// `bridged` 初始全 false (默认 OnBoard), SA 通过 `Move::ToggleBridging`
 /// 翻成 true; `bridged_pin_pairs[i]` 是启发式算出的**所有合法** `(HoleId, PinId)`
 /// 对 (按 "signal pin 离同 net 中心最近" 排序), bridged=true 时由 `cost()` 用
 /// `active_bridge_idx[i]` 选中的那对替代 OnBoard 的 `(x, y, rotation)` 计算 pin
@@ -276,7 +281,8 @@ impl SAState {
 
     /// 简单构造: 给定元件顺序, 全部 R0, 全部同一行, x 按顺序累加 (gap=1)。
     /// 主要给测试用——真实初始状态用 [`SAState::from_greedy`]。不填桥接信息:
-    /// 桥接字段 (is_bridgeable / bridged / bridged_pin_pair) 默认全 false / None,
+    /// 桥接字段 (`is_bridgeable` / `bridged` / `bridged_pin_pairs` / `active_bridge_idx`) 默认全
+    /// `false` / `Vec::new()` / `0` / `0`。
     /// 调用方若需要探索桥接, 走 [`Self::from_greedy`] + [`populate_bridgeable_info`]。
     pub fn from_order(order: Vec<ComponentId>, row: i32, widths: &[i32]) -> Self {
         let n = order.len();
@@ -299,9 +305,12 @@ impl SAState {
     }
 
     /// 贪心 first-fit 初始状态: 按元件顺序, 找第一个有效 `(x, y)` (按行从上到下、
-    /// 列从左到右扫)。"有效" = 所有 pin 都在板内 + 包围盒不撞已摆元件的 bbox +
-    /// 不引入列冲突 (同列同 rail 不同 net 的 pin)。**不**考虑列短路——那由 SA 后续优化
-    /// (FD 初排已避免大部分, SA 翻元件时若重新引入, cost 会捕捉并罚分)。
+    /// 列从左到右扫)。"有效" = 所有 pin 都在板内 + 包围盒不撞已摆元件 bbox +
+    /// 不引入列冲突 (同列同 rail 不同 net 的 pin)。
+    ///
+    /// 三个初排 (`from_greedy` / `from_force_directed` / `from_spectral`) 都
+    /// 做这个检查, 因此初排结果**保证**不引入列短路 — SA 后续只在 `Flip` /
+    /// `ShiftX` 偶尔重新引入时捕捉并罚分。
     pub fn from_greedy(placeable: Vec<ComponentId>, circuit: &Circuit, board: &Breadboard) -> Self {
         let n = placeable.len();
         let mut x = vec![0i32; n];
@@ -910,7 +919,7 @@ fn normalize_vec(v: &mut [f64]) -> bool {
 /// 然后贪心左紧排消碰撞。
 ///
 /// v₂ 相近的元件 (同 net / 强耦合) 自然映射到相近的 x, 不像 rank 均匀分布
-/// 那样把 5 个元件也摊满 60 列。`effective_width = min(n * 3, cols - 2)`
+/// 那样把 5 个元件也摊满 60 列。`effective_width = max(2, min(n * 3, cols - 2))`
 /// 进一步防止过散, 贪心碰撞解决保证无 pin/bbox/列冲突。
 fn grid_fill_2d(
     v2: &[f64],
@@ -1114,8 +1123,9 @@ fn grid_fill_2d(
 ///
 /// **输入**: 一个 bridgeable 元件 (必有 2 pin, 一腿 power net, 一腿 signal net)。
 /// **输出**: 所有让 signal 落在主区合法孔的 `(power hole, signal hole)` 对,
-///          按 `HoleId` 升序 × 旋转 `[R0, R90, R180, R270]` 顺序扫。空 Vec
-///          表示没找到任何合法对 (启发式失败, 该元件保持 OnBoard)。
+///          顺序 = (matching-rail 优先, then other rail) × HoleId 升序
+///          × 旋转 `[R0, R90, R180, R270]`。
+///          空 Vec 表示没找到任何合法对 (启发式失败, 该元件保持 OnBoard)。
 ///
 /// **为什么需要 4 种旋转**: Bridged 路径下 body 浮在板外, 允许 R90/R270。
 /// 对水平 footprint 的电阻 (pin offset Δx = L, Δy = 0), R0/R180 让 signal
@@ -1272,8 +1282,9 @@ fn collect_matching_rail_ids(
 /// 遍历这个列表、按 cost 重选并写回 `active_bridge_idx[idx]`。
 ///
 /// **静态中心**: 用 SA 启动**前** state 里其他元件的 pin 位置算中心 (从
-/// `state.x/y/rotation` 推, bridged 元件用 active_bridge_pair)。SA 跑起来后
-/// 中心会变, 但我们不重算 —— SA 选 candidate 时是按 cost 选, 中心只是初始
+/// `state.x/y/rotation` 推, bridged 元件用 `active_bridge_pair`)。
+/// 中心一次性算好后就不再随 SA 更新 — cost 自然会把元件从拥挤
+/// 位置赶走, 所以不需要动态重算中心。
 /// 排序的 hint, 不会把真正最优的候选卡在后面 (因为候选列表只是初始偏置,
 /// SA 会按 cost 重排)。
 pub(crate) fn populate_bridgeable_info(
@@ -1704,7 +1715,7 @@ pub(crate) fn cost_fast(
         + rail_cross
 }
 
-/// 给一个 net 的 pin 位置算 MST (Kruskal) 总长度。
+/// 给一个 net 的 pin 位置算 MST 总长度; 走 `mst_wire_length_fast`: ≤3 pin 用闭式公式, ≥4 pin 才走 Kruskal。
 ///
 /// breadboard 物理距离 (短路抽象为 `rail_id`):
 /// - 同 `rail_id`: **0** (面包板内部短接, 无论是 vertical rail 还是 power rail)

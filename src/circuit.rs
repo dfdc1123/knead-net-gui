@@ -43,7 +43,7 @@ impl FootprintId {
 /// 物理位置 (x, y), 整数坐标
 ///
 /// 1 单位 = 1 个面包板孔 = 2.54mm。`.kicad_mod` 里的 mm 坐标
-/// 在解析时会自动除以 2.54 换算成"孔数", 不能整除会 panic
+/// 在解析时会先四舍五入到最近孔 (容差 1e-9), 完全对齐不到整数倍孔距才 panic。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {
     pub x: i32,
@@ -70,10 +70,13 @@ pub struct Component {
     pub(crate) value: Option<String>,
     pub(crate) pins: Vec<PinId>,
     pub(crate) footprint: Option<FootprintId>,
-    /// **是否允许桥接**: true 表示这个元件的 2 pin 可以跨接 (比如从 power rail
-    /// 到主区, 走 `Placement::Bridged` 路径)。由 netlist 解析层的
-    /// [`crate::input::netlist::auto_mark_bridgeable`] 自动设定 (规则: 2 pin
-    /// 元件, 一腿在 power net, 另一腿在 signal net), 也可以手动 override。
+    /// **是否允许桥接**: true 表示这个元件是 2-pin 跨接的候选
+    /// (例如从 power rail 跨到主区的电阻)。本身**只**是 flag —
+    /// 是否真的走 [`Placement::Bridged`] 由 [`Layout::place_sa`] 内的
+    /// `ToggleBridging` 扰动决定。
+    /// 由 netlist 解析层的 [`crate::input::netlist::auto_mark_bridgeable`]
+    /// 自动设定 (规则: 2 pin + 一腿 power net + 另一腿 signal net),
+    /// 也可以手动 override。
     pub bridgeable: bool,
 }
 
@@ -194,8 +197,9 @@ impl Footprint {
 impl Circuit {
     /// 替换整个 footprint 注册表
     ///
-    /// 主流程是: `From<CircuitInput> for Circuit` (或 `NetlistInput::into_circuit`)
-    /// 得到 Circuit, 然后调用本方法把 footprint 注册表灌进去。
+    /// `NetlistInput::into_circuit` 通过参数 `&[Footprint]` 直接吃 footprint 注册表,
+    /// 走 netlist 主流程时**不需要**额外再调本方法; 本方法主要用于 JSON / 其它
+    /// 不通过 `NetlistInput` 的入口, 或测试时手动灌入。
     pub fn set_footprints(&mut self, footprints: impl IntoIterator<Item = Footprint>) {
         self.footprints = footprints.into_iter().collect();
     }

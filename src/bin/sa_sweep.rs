@@ -106,7 +106,7 @@ fn main() {
     let n_other = mst_sums.len() - n_zero - n_two - n_four;
 
     println!(
-        "=== SA sweep ({} trials, max_iters=50000, t0=30, cool=0.999, ShiftX=45% Flip=20% ShiftY=20% Toggle=15%) ===",
+        "=== SA sweep ({} trials, max_iters=50000, t0=30, cool=0.999, ShiftX=37% Flip=20% ShiftY=20% Toggle=15% ShiftGroup=8%) ===",
         n_trials
     );
     println!(

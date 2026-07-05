@@ -58,8 +58,9 @@ impl BBox {
         })
     }
 
-    /// 两个 bbox 在至少一个 cell 上重叠 (含边界相等)。
-    /// 边界刚好相切 (A.max_x == B.min_x) 不算重叠。
+    /// 两个 bbox 在至少一个 cell 上重叠 — 边界相等**算**重叠
+    /// (`A.max_x == B.min_x` 时共享该列, 视为重叠); 用的是 `<=` / `>=`
+    /// 而不是 `<` / `>`, 跟 `BBox::iter_cells` 一致。
     pub fn overlaps(&self, other: &BBox) -> bool {
         self.min_x <= other.max_x
             && self.max_x >= other.min_x
@@ -83,8 +84,9 @@ impl BBox {
 /// - [`Placement::OnBoard`] — 标准: 给定位置 + 旋转, footprint 上的 pin 偏移
 ///   推出每个 pin 的世界坐标。多数元件走这条路。
 /// - [`Placement::Bridged`] — 桥接: 两条腿各指定一个 [`HoleId`], body 浮在
-///   板外。常见于从 power rail 跨到主区的电阻 / LED / 二极管。**不进 SA**,
-///   由用户自己摆。
+///   板外。常见于从 power rail 跨到主区的电阻 / LED / 二极管。
+///   **既可以由用户手动摆**, **也可以由 SA 的 `ToggleBridging` 扰动产出**
+///   (针对 `bridgeable` 元件, 见 `Layout::place_sa` 内联注释)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Placement {
     OnBoard {
@@ -121,6 +123,8 @@ pub struct PlacedFootprint {
 }
 
 impl PlacedFootprint {
+    /// 只返回该 placement 的 pin-hole 对。bbox 内部除 pin 外的 Blocked
+    /// cells 不在此列 (要的话自己 `bbox.iter_cells() - pin_holes`)。
     pub fn occupied_holes(&self) -> impl Iterator<Item = HoleId> + '_ {
         self.pin_holes.iter().map(|ph| ph.hole)
     }

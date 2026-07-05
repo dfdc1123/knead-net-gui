@@ -3,28 +3,32 @@
 //! 流程: [`simulate`] → 写回 `Layout.placements` → `validate`。
 //! 紧凑度已折进 [`cost::cost`], SA 一次跑完搞定。
 //!
-//! 扰动集 (v4, 概率, 可在 [`SAConfig`] 里调):
-//! - 55% `ShiftX`         —— 单个元件左右微调; 高温期幅度可达 ±3 col, 低温退到 ±1
-//! - 30% `Flip`           —— 翻转单个元件的方向 (R0 ↔ R180); OnBoard 路径专用
-//! -  7% `ToggleBridging` —— 翻转 bridgeable 元件是否走桥接; 见下文
-//! -  8% `ShiftY`         —— 单个元件上下微调; 高温期幅度可达 ±3 row, 低温退到 ±1
+//! 扰动集 (v7, 概率, 默认 `p_toggle_bridge = 0.15` 时生效):
+//! - 37% `ShiftX`         —— 单个元件左右微调; 高温期幅度可达 ±3 col, 低温退到 ±1
+//! - 20% `Flip`           —— 翻转单个元件的方向 (R0 ↔ R180); OnBoard 路径专用
+//! - 15% `ToggleBridging` —— 翻转 bridgeable 元件是否走桥接; 见下文
+//! -  8% `ShiftGroup`     —— 同 rail 内一组紧邻元件整体左移 1 列, 填桥接留下的空洞
+//! - 20% `ShiftY`         —— 单个元件上下微调; 高温期幅度可达 ±3 row, 低温退到 ±1
 //!
-//! v4 相对 v3 的关键变化:
-//! - 新增 `ToggleBridging` 扰动: 对 `state.is_bridgeable[i] = true` 的元件
-//!   翻转 `state.bridged[i]`, 让 SA 探索"Bridged 还是 OnBoard"这个设计空间。
-//!   桥接位置由 [`crate::layout::cost::propose_bridged_pair`] 启发式预计算
-//!   并缓存在 `state.bridged_pin_pair`; Toggle 只决定是否采用, 不重新选孔。
-//!   非 bridgeable 元件 (`is_bridgeable = false`) 永远不会被 Toggle 命中,
-//!   该概率分支随机退回 `ShiftX`, 保持 RNG 消费序列对 seed 可复现。
-//! - `ShiftX` 从 60% 降到 55% / `ShiftY` 从 10% 降到 8%: 让出空间给 Toggle。
-//!   Toggle 每轮采样价值高于 ShiftY (ShiftY 大部分 move 对最终 layout 无贡献
-//!   因为 footprint 的 y 跨度 ≤ 1), 与 ShiftX 接近。
+//! v7 相对之前的核心改动 (分布与扰动集都重排):
+//! - 新增 `ShiftGroup` 扰动: 把同 rail 一组 OnBoard 元件左移 1 列, 专门填补
+//!   桥接留下的横向空洞。组由 `find_left_shiftable_group` 计算: 同 rail 按 x
+//!   排序, 相邻间距 ≤ 2 列同组; bridged 元件不参与; 组 ≥2 人或单人左 gap > 3
+//!   列才算可用组。
+//! - 分布重排: `ShiftX` 从 45% → 37%, 让出 8% 给 `ShiftGroup`; `Flip` 30 → 20,
+//!   `ShiftY` 8 → 20, `ToggleBridging` 7 → 15。
 //!
-//! `ToggleBridging` 选 index 的逻辑: `random_move` 选 `p ∈ [0, n)`, 然后
-//! 按分布表决定 move 类型; 只有落到 Toggle 区间且 `is_bridgeable[p] = true`
+//! `ToggleBridging` 选 index 的逻辑: `random_move` 选 `p ∈ [0, n)`, 然后按
+//! 分布表决定 move 类型; 只有落到 Toggle 区间且 `state.is_bridgeable[p] = true`
 //! 才生成 `ToggleBridging(p)`, 否则退回 `ShiftX`。**不**重抽整个 move,
 //! 避免改变 RNG 消费数 (跟 `rng.usize(0..max_n)` 在 max_n=1 时仍消费一个
 //! 随机数的原则一致, 保持 seed 复现性)。
+//! 桥接位置由 [`crate::layout::cost::propose_bridged_pairs`] 启发式预计算
+//! 并缓存在 `state.bridged_pin_pairs`; Toggle 只决定是否采用, 不重新选孔。
+//!
+//! 回退规则 (保持 RNG 消费序列对 seed 复现, 不重抽整个 move):
+//! - `ToggleBridging` 抽到非 bridgeable 元件 → 退回 `ShiftX`
+//! - `ShiftGroup` 找不到可用组              → 退回 `ShiftX`
 //!
 //! **不**用 R90/R270 (会改变 footprint 的水平宽度, 破坏"显式 2D 状态"假设)。
 //! 上面这条限制仅适用于 OnBoard 路径; Bridged 路径由 `propose_bridged_pair`
@@ -73,9 +77,10 @@ pub struct SAConfig {
     pub fd_config: FDConfig,
     /// `random_move` 生成 `Move::ToggleBridging` 的目标概率。
     /// 仅当 `state.is_bridgeable[i] = true` 时实际生效, 否则该分支退回 `ShiftX`。
-    /// 调高 → SA 更频繁探索 Bridged vs OnBoard; 调低 → 退回 v3 行为。
-    /// 默认 0.15: 配合 [`SAConfig`] 默认分布, Toggle 实际概率 15%。
-    /// 0 = 完全关闭 Toggle (退回 v3 行为)。
+    /// 调高 → SA 更频繁探索 Bridged vs OnBoard; 调低 → Toggle 区间越窄。
+    /// 默认 0.15: 配合 v7 默认分布, Toggle 实际概率 15%。
+    /// 0 = 完全关闭 Toggle 区间; ShiftGroup / ShiftX / Flip / ShiftY 仍按 v7
+    /// 比例挤压运行 (不是字面意义的 v6 分布)。
     pub p_toggle_bridge: f64,
 }
 
@@ -213,7 +218,7 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
         return None; // 就一个元件, 单个 ShiftX 就好
     }
 
-    same_rail.sort_by(|a, b| a.1.cmp(&b.1));
+    same_rail.sort_by_key(|a| a.1);
 
     // 密度聚类: gap > 2 切分
     let threshold: i32 = 2;
@@ -236,9 +241,7 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
     }
 
     // 找到 i 所属的组
-    let Some(group_idx) = groups.iter().position(|g| g.contains(&i)) else {
-        return None;
-    };
+    let group_idx = groups.iter().position(|g| g.contains(&i))?;
     let group = &groups[group_idx];
 
     // 检查组左移 1 列后是否越界 / 撞左边非组元件
@@ -297,8 +300,10 @@ fn apply_move(state: &mut SAState, m: &Move) {
 
 /// 跑模拟退火, 返回最佳 [`SAState`]。
 ///
-/// 初始状态用 [`SAState::from_greedy`]: 按行从上到下、列从左到右贪心放置,
-/// 保证不 OOB、不撞 pin (但**不**保证无列短路——那是 SA 要优化的)。
+/// 初始状态按 [`SAConfig::use_spectral`] / [`SAConfig::use_force_directed`] 选
+/// [`SAState::from_spectral`] / [`SAState::from_force_directed`], 两者皆否时用
+/// [`SAState::from_greedy`]; 三者都已经避免 pin 撞 / bbox 撞 / 列冲突,
+/// (后续 `Flip` / `ShiftX` 偶尔会重新引入列短路, 由 cost 罚分优化掉)。
 pub(super) fn simulate(
     placeable: Vec<ComponentId>,
     circuit: &Circuit,
@@ -315,8 +320,8 @@ pub(super) fn simulate(
         SAState::from_greedy(placeable, circuit, board)
     };
     // 从 board 抽 power net ids (绑定的正 / 负极), 然后填桥接字段。
-    // 无绑定时 power_net_ids 为空, `propose_bridged_pair` 总是返 None,
-    // 所有元件 `is_bridgeable = false` —— Toggle 不会触发。
+    // 无绑定时 power_net_ids 为空, `populate_bridgeable_info` 内调用的
+    // `propose_bridged_pairs` 返空 Vec, 没人会被标 bridgeable, Toggle 不会触发。
     let power_net_ids: Vec<NetId> = board
         .power_rail_binding()
         .map(|b| vec![b.negative, b.positive])
@@ -636,7 +641,9 @@ mod tests {
         );
     }
 
-    /// p_toggle_bridge=0 时 Toggle 区间为空, 退回 v3 分布 (不会有 ToggleBridging 返出)。
+    /// `p_toggle_bridge=0` 时 Toggle 区间为空, 分布塌缩回 v7 五选四
+    /// (ShiftGroup / ShiftX / Flip / ShiftY 仍按 v7 比例挤压运行,
+    /// 不会有 ToggleBridging 返出)。
     #[test]
     fn random_move_toggle_disabled_when_p_zero() {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);

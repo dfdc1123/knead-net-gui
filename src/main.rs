@@ -36,8 +36,8 @@ fn main() {
     let mut circuit = netlist.into_circuit(&footprints);
 
     // 3b. 自动标记可桥接元件: 2 pin + 一腿 power 一腿 signal
-    // 名字列表跟 power rail 的 positive/negative_names 一起用, 覆盖所有
-    // 可能出现的 power net 别名 (GND / +12V / VCC / 5V / 3V3 等)
+    // 名字列表是独立维护的 power-net 别名表; 标准板的 positive / negative
+    // 名字列表在 `breadboard::standard_power_rails` 里硬编码, 跟这里互不相关。
     let power_names = ["GND", "+12V", "VCC", "5V", "3V3"];
     knead_net::input::netlist::auto_mark_bridgeable(&mut circuit, &power_names);
     for c in circuit.components() {
@@ -47,11 +47,11 @@ fn main() {
     }
 
     // 4. 布局: 模拟退火 + 压缩
-    // 标准板: 30 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
+    // 标准板: 50 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
     // 上下半各自独立 rail, 同列不同 rail 互不连通。 上下各一组 power rail。
     //
     // `MASK_LOWER_HALF`: 是否屏蔽下半 (rows 7..12)?
-    //   - true  → 下半全标 blocked, 元件只能摆在 rows 0..5 (上半 + 中央上半)
+    //   - true  → 下半全标 blocked, 元件只能摆在 rows 0..5 (上半 5 行, 中央通道被屏蔽)
     //   - false → 完整标准板, 上下各 5 行都能用
     // 改这一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
     const MASK_LOWER_HALF: bool = true;

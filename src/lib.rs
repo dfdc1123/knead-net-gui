@@ -4,6 +4,7 @@
 //! - [`circuit`][]: 领域模型 (格式无关,只有数据结构)
 //! - [`input`]:   各种文件格式的解析器, 每个都把自己的格式转成 [`Circuit`]
 //! - [`layout`][]:  面包板布局 (把 Circuit 投影到 Breadboard 上)
+//! - [`render`][]: 把布局结果渲染成 SVG (调试用)
 
 pub mod circuit;
 pub mod input;

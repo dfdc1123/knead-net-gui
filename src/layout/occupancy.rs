@@ -12,8 +12,10 @@ use super::LayoutError;
 use super::breadboard::{Breadboard, HoleId};
 use super::routing::Wire;
 
+/// 一个孔的占有者. 面包板一孔径约束: 至多 1 个 occupant。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Occupant {
+    /// 某个 component 的某个 pin 占此孔。
     Pin(PinId),
     /// 线插在此孔。`Wire` 只有 `from` 和 `to` 两个接触点 (没有中间点)。
     Wire(super::routing::WireId),
@@ -36,16 +38,20 @@ impl Occupancy {
         }
     }
 
-    /// 从 layout 派生 occupancy, 同时检查 layout 的合法性。
+    /// 构造严格 occupancy. 任何非法状态都返回 `Err`, 不返回部分 occupancy。
     ///
-    /// **严格**: 任何非法状态 (no footprint / 越界 / pin 碰撞 / bbox 重叠 /
-    /// wire 冲突 / 列短路) 都返回 `Err`, 不返回部分 occupancy。
-    /// 错误列表里包含所有发现的问题。
+    /// 错误种类 ([`crate::layout::LayoutError`]): `NoFootprint`, `NoFootprintPad`,
+    /// `OutOfBounds`, `PinCollision`, `BBoxOverlap`, `WireConflict`, `ColumnConflict`。
     ///
-    /// 对于每个已摆元件:
-    /// - 它所有 pin 落到的孔标为 `Occupant::Pin`
-    /// - 包围盒 (跟渲染里一样, 用 pin 范围算) 内除 pin 外的孔标为 `Occupant::Blocked`
-    /// - pin 跟其它元件的 pin/blocked 重叠 → `PinCollision` 或 `BBoxOverlap`
+    /// 下列情况的报告路径:
+    /// - pin 跟其它 pin 重叠 → `PinCollision`
+    /// - pin 跟其它元件 Blocked 孔重叠 → `BBoxOverlap`
+    /// - pin 跟现有 wire 端点撞 → `PinCollision` (跟下面 bbox-vs-wire 不对称)
+    /// - bbox 跟其它 pin 重叠 → `BBoxOverlap`
+    /// - bbox 跟其它元件 Blocked 重叠 → `BBoxOverlap`
+    /// - bbox 跟现有 wire 端点撞 → `WireConflict` (注: 此时 wire 字段是占位
+    ///   `WireId(0)`, 真实 wire id 当前无法反查)
+    /// - 同列同 rail 不同 net 的 pin → `ColumnConflict` (仅第一个冲突对)
     pub fn from_layout(layout: &Layout, board: &Breadboard) -> Result<Self, Vec<LayoutError>> {
         let mut occ = Self::empty(board);
         let mut errors = Vec::new();
@@ -239,15 +245,20 @@ impl Occupancy {
         }
     }
 
+    /// 查询某孔的当前占有者; `None` 表示孔空。
     pub fn occupant_at(&self, hole: HoleId) -> Option<Occupant> {
         self.at[hole.0]
     }
 
-    /// 从 layout 构造 occupancy, **忽略所有错误**。 有冲突/OOB 的孔要么不填, 要么
-    /// 后到的 pin 覆盖先到的。 主程序在 `validate` 报错时用它来 "尽力跑接线 + 画 SVG"。
+    /// 从 layout 构造 occupancy, **忽略所有错误**。
     ///
-    /// pin 优先于 Blocked: 同一个孔既在 bbox 内又是 pin, 最后保存为 Pin;
-    /// 后到的元件会覆盖先到的 (保持原 lossy 语义)。
+    /// placement.apply() 失败 (如一个 pin 越界) 时, **整个 placement 被跳过**:
+    /// 不光 OOB 那个 pin, 该元件其它合法 pin + bbox 也一起丢失。
+    /// placement 内部合法时: pin 优先于 Blocked (同一孔在 bbox 内又是 pin → 保留
+    /// `Occupant::Pin` 而非 `Occupant::Blocked`); 不同元件间: 后到的覆盖先到的
+    /// (典型例: 后到的 pin 会覆盖先到的 Blocked 标记)。
+    ///
+    /// 主程序在 `validate` 报错时用它来 "尽力跑接线 + 画 SVG"。
     pub fn from_layout_lossy(layout: &Layout, board: &Breadboard) -> Self {
         let mut occ = Self::empty(board);
         for (idx, slot) in layout.placements().iter().enumerate() {
@@ -282,10 +293,12 @@ impl Occupancy {
         occ
     }
 
+    /// 当前是否可在此孔插 pin (仅当孔空)。
     pub fn can_place_pin(&self, hole: HoleId) -> bool {
         self.at[hole.0].is_none()
     }
 
+    /// wire 两端孔当前是否都为空。
     pub fn can_add_wire(&self, wire: &Wire) -> bool {
         self.at[wire.from.0].is_none() && self.at[wire.to.0].is_none()
     }
@@ -446,7 +459,7 @@ mod bbox_tests {
             value: None,
             pins: vec![PinId(id * 2), PinId(id * 2 + 1)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let make_pin = |id: usize, comp_id: usize| Pin {
             id: PinId(id),
@@ -517,7 +530,7 @@ mod bbox_tests {
             value: None,
             pins: vec![PinId(id * 2), PinId(id * 2 + 1)],
             footprint: Some(FootprintId(0)),
-                bridgeable: false,
+            bridgeable: false,
         };
         let make_pin = |id: usize, comp: usize, num: &str| Pin {
             id: PinId(id),
@@ -737,7 +750,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -746,7 +759,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -888,7 +901,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -897,7 +910,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1042,7 +1055,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1051,7 +1064,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(2), PinId(3)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1173,7 +1186,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0), PinId(1), PinId(2)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1182,7 +1195,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(3), PinId(4)],
                     footprint: Some(FootprintId(1)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1307,7 +1320,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1316,7 +1329,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![
@@ -1393,7 +1406,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(0)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
                 Component {
                     id: ComponentId(1),
@@ -1402,7 +1415,7 @@ mod tests {
                     value: None,
                     pins: vec![PinId(1)],
                     footprint: Some(FootprintId(0)),
-                bridgeable: false,
+                    bridgeable: false,
                 },
             ],
             pins: vec![

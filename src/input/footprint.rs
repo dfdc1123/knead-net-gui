@@ -127,7 +127,7 @@ fn extract_pad(sexp: &Sexp) -> Option<PhysicalPin> {
         _ => return None,
     };
 
-    // 找 (at X Y) 这一项 (可能在嵌套里面)
+    // 找 (at X Y) 这一项 (实际只看 pad list 的直接子项; 若 KiCad 把它套在更深的嵌套里, 会找不到)
     let (x_mm, y_mm) = find_at(items)?;
 
     Some(PhysicalPin {

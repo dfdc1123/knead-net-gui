@@ -6,7 +6,6 @@ use serde::Deserialize;
 
 use crate::circuit::{Circuit, Component, ComponentId, Net, NetId, Pin, PinId};
 
-// 这一层处理 JSON input
 #[derive(Debug, Deserialize)]
 pub struct CircuitInput {
     components: Vec<ComponentInput>,
