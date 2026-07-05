@@ -1323,6 +1323,10 @@ pub(crate) fn populate_bridgeable_info(
             .and_then(|nid| compute_signal_net_center(circuit, board, state, nid, Some(comp_id)));
 
         // 按 "signal pin 离中心 Manhattan 距离" 排序, 距离小的优先。
+        // Tiebreaker: 在同等距离下优选 top rail 的 power pin ("靠上")。
+        //   标准板 top rail y ∈ {-3, -4} (负), main 0..11, bottom 14, 15。
+        //   使用 `y < 0` 作为 top rail 的判别, 跨板高配置都能用
+        //   (任何"负 y"代表上边, "正大 y"代表下边)。
         // 没有中心 (signal net 只此一个 pin) 时保持原顺序 (启发式扫的顺序)。
         if let Some(center) = center {
             let mut sorted: Vec<(i32, [(HoleId, PinId); 2])> = candidates
@@ -1333,13 +1337,74 @@ pub(crate) fn populate_bridgeable_info(
                     (dist, pair)
                 })
                 .collect();
-            sorted.sort_by_key(|&(d, _)| d);
+            sorted.sort_by(|a, b| {
+                let dist_cmp = a.0.cmp(&b.0);
+                if dist_cmp != std::cmp::Ordering::Equal {
+                    return dist_cmp;
+                }
+                // tiebreaker: power pin 在 top rail (负 y) 优先
+                let a_top = board.hole(a.1[0].0).position.y < 0;
+                let b_top = board.hole(b.1[0].0).position.y < 0;
+                // a_top = true (b_top = false) → a 在前
+                match (a_top, b_top) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                }
+            });
             state.bridged_pin_pairs[idx] = sorted.into_iter().map(|(_, p)| p).collect();
         } else {
             state.bridged_pin_pairs[idx] = candidates;
         }
         state.is_bridgeable[idx] = true;
         state.active_bridge_idx[idx] = 0; // 启发式最佳 = 索引 0
+    }
+}
+
+/// Init 阶段: 给每个 `is_bridgeable` 的元件默认走 bridged 模式, 取 cache 里
+/// `cost_fast` 最低的那一对。
+///
+/// **设计动机**: SA 启动时 ToggleBridging 概率只 15%, 多数 seeds 跑完全部
+/// iter 都没把 bridgeable 翻过去, 初始 OnBoard 起点拖住 SOTA 收敛。本函数
+/// 在 init 阶段把 "翻成桥接" 提前, 起点直接是 "全 bridgeable 都在桥接"。
+/// SA 的 ToggleBridging 仍然能翻回 OnBoard (如果那更优), 不锁死。
+///
+/// **不做 safety net**: 即使 cache 最优 cache pair 的 cost 仍高于 OnBoard
+/// 起点也强制翻。理由: SA 能在温度高的时候翻回去, 与不翻、让 SA 自己探索
+/// 相比, 主动翻有一个更好的局部起点用于其他 Move 微调。
+///
+/// **预算**: 每个 bridgeable K 次 cost 评估 (K ≈ cache 长度)。5 个 bridgeable
+/// × 5 个候选 ≈ 25 次, 跟 30k iter × 几百 cost 评估相比可以忽略。
+///
+/// **调用时机**: `populate_bridgeable_info` 之后, SA 主循环首次 `cost_fast`
+/// 之前。在 `sa::simulate` 里调用。
+pub(crate) fn init_bridgeable_to_bridged(
+    state: &mut SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    weights: &Weights,
+    ctx: &SAContext,
+    buf: &mut CostBuf,
+) {
+    let n = state.placeable.len();
+    for i in 0..n {
+        if !state.is_bridgeable[i] || state.bridged_pin_pairs[i].is_empty() {
+            continue;
+        }
+        let cache_len = state.bridged_pin_pairs[i].len();
+        let mut best_cost = f64::INFINITY;
+        let mut best_idx = 0;
+        for j in 0..cache_len {
+            state.active_bridge_idx[i] = j;
+            let c = cost_fast(state, circuit, board, bridged_pins, weights, ctx, buf);
+            if c < best_cost {
+                best_cost = c;
+                best_idx = j;
+            }
+        }
+        state.active_bridge_idx[i] = best_idx;
+        state.bridged[i] = true;
     }
 }
 
@@ -3491,5 +3556,341 @@ mod tests {
             delta > 1.0,
             "X1 摆 bridged body 上应比避开贵, 但 delta = {delta} (c_overlap={c_overlap}, c_clear={c_clear})"
         );
+    }
+
+    // ============================================================
+    //  populate_bridgeable_info: top-rail tiebreaker
+    // ============================================================
+
+    /// populate_bridgeable_info 的 cache 排序 tiebreaker: 同样 signal 距离
+    /// 下, power pin 在 top rail (y < 0) 的 pair 排在前面。借此让"靠上"生效。
+    #[test]
+    fn populate_bridgeable_info_top_rail_tiebreaker() {
+        use crate::circuit::{Footprint, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        let fp = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 4, y: 0 },
+                },
+            ],
+        };
+        // 构造一个 2 pin + bridgeable 元件, 把多个元件 控在一个中间位置让
+        // net center 独立, 以便 cache 排序能 fill 在几个不同 rail row 位置。
+        let mut comps: Vec<Component> = Vec::new();
+        let mut pins: Vec<Pin> = Vec::new();
+        // bridgeable 元件
+        comps.push(Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: true,
+        });
+        pins.push(Pin {
+            id: PinId(0),
+            component: ComponentId(0),
+            num: "1".into(),
+            pinfunction: None,
+            net: Some(NetId(0)),
+        });
+        pins.push(Pin {
+            id: PinId(1),
+            component: ComponentId(0),
+            num: "2".into(),
+            pinfunction: None,
+            net: Some(NetId(1)),
+        });
+        // 构造大量非 bridgeable 1-pin 元件 阻隔主区的位置以免从信号 net 的
+        // center 变化走样的测试; 这里我们 4 个, 都连同一个 power net 上
+        // (只是补充信号 net的位置广).
+        for i in 1..=4usize {
+            comps.push(Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(2 + i - 1)],
+                footprint: Some(FootprintId(i)),
+                bridgeable: false,
+            });
+            pins.push(Pin {
+                id: PinId(2 + i - 1),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                net: Some(NetId(1)),
+            });
+        }
+
+        // footprints 列表
+        let mut fps = vec![fp];
+        for i in 1..=4usize {
+            fps.push(Footprint {
+                id: FootprintId(i),
+                name: "X".into(),
+                pins: vec![PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                }],
+            });
+        }
+
+        let circuit = Circuit {
+            components: comps,
+            pins,
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "+12V".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "SIG".into(),
+                    pins: vec![PinId(1), PinId(2), PinId(3), PinId(4), PinId(5)],
+                },
+            ],
+            footprints: fps,
+        };
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1), // SIG 也在 power 的 net_ids 里 -> bridgeable 启发式返 2 边的 rail
+        });
+
+        // 从 greedy 造 state, populate_bridgeable_info
+        let placeable: Vec<ComponentId> = (0..circuit.components.len()).map(ComponentId).collect();
+        let mut state = SAState::from_greedy(placeable, &circuit, &board);
+        populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
+
+        // 验证 cache 不为空 且 cache[0] 的 power_pin 在 top rail (y < 0)
+        assert!(!state.bridged_pin_pairs[0].is_empty(), "cache 应非空");
+        let cache0 = state.bridged_pin_pairs[0][0];
+        let power_y = board.hole(cache0[0].0).position.y;
+        assert!(
+            power_y < 0,
+            "cache[0] 必须在 top rail (y < 0), 实际 y = {power_y}"
+        );
+
+        // 进一步验证: 如果 cache 里有多个同 signal 距离的 pair,
+        // 其中 top rail 的应排在 bottom rail 的前面。
+        // 我们检查前 3 个 cache 项, 看是否有任何一对中 "后面的是 bottom 且
+        // 前面的是 top" — 这种情况 tiebreaker 生效。
+        let mut saw_top_before_bottom = false;
+        for w in state.bridged_pin_pairs[0].windows(2) {
+            let prev_top = board.hole(w[0][0].0).position.y < 0;
+            let next_top = board.hole(w[1][0].0).position.y < 0;
+            if prev_top && !next_top {
+                saw_top_before_bottom = true;
+                break;
+            }
+        }
+        // 这不是 strict 要求 (可能是都 top 或 都 bottom), 但只要 cache 里有
+        // top 和 bottom 混合, tiebreaker 应让 top 排在前面。
+        let has_mix = state.bridged_pin_pairs[0].iter().any(|pair| {
+            let y = board.hole(pair[0].0).position.y;
+            y < 0
+        }) && state.bridged_pin_pairs[0].iter().any(|pair| {
+            let y = board.hole(pair[0].0).position.y;
+            y > 7 // bottom rail y >= 14
+        });
+        if has_mix {
+            assert!(
+                saw_top_before_bottom,
+                "cache 中若 top + bottom 混合, top 应排在前面"
+            );
+        }
+    }
+
+    // ============================================================
+    //  init_bridgeable_to_bridged: aggressive bridge default
+    // ============================================================
+
+    /// 验证 `init_bridgeable_to_bridged` 把所有 is_bridgeable 元件默认到 bridged。
+    #[test]
+    fn init_bridgeable_to_bridged_flips_all() {
+        // 多个 bridgeable 元件, 都需要 bridge。
+        let (circuit, board) = bridgeable_two_pin_circuit();
+        let placeable = bridgeable_placeables(&circuit);
+        let mut state = SAState::from_greedy(placeable.clone(), &circuit, &board);
+        populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
+
+        // 调用前: bridged 全 false
+        for i in 0..placeable.len() {
+            assert!(
+                !state.bridged[i],
+                "init 调用前 state.bridged[{i}] 应 = false"
+            );
+        }
+
+        let ctx = SAContext::new(&circuit, &placeable);
+        let mut buf = CostBuf::new(circuit.nets().len());
+        init_bridgeable_to_bridged(
+            &mut state,
+            &circuit,
+            &board,
+            &[],
+            &Weights::default(),
+            &ctx,
+            &mut buf,
+        );
+
+        // 调用后: 所有 is_bridgeable=true 的元件都应 bridged
+        for i in 0..placeable.len() {
+            if state.is_bridgeable[i] {
+                assert!(state.bridged[i], "is_bridgeable[{i}] 元件应被翻成 bridged");
+            }
+        }
+    }
+
+    /// 验证 `init_bridgeable_to_bridged` 挑的是 cache 里 cost 最低的 pair。
+    #[test]
+    fn init_bridgeable_to_bridged_picks_lowest_cost_pair() {
+        let (circuit, board) = bridgeable_two_pin_circuit();
+        let placeable = bridgeable_placeables(&circuit);
+        let mut state = SAState::from_greedy(placeable.clone(), &circuit, &board);
+        populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
+
+        let ctx = SAContext::new(&circuit, &placeable);
+        let mut buf = CostBuf::new(circuit.nets().len());
+        let weights = Weights::default();
+        init_bridgeable_to_bridged(&mut state, &circuit, &board, &[], &weights, &ctx, &mut buf);
+
+        // 对每个 bridgeable 验证 active_bridge_idx 对应的 cache pair 成本
+        // 不超过 cache 里任何其他 pair 的成本。
+        for i in 0..placeable.len() {
+            if !state.is_bridgeable[i] || state.bridged_pin_pairs[i].is_empty() {
+                continue;
+            }
+            let active_idx = state.active_bridge_idx[i];
+            let mut min_cost_idx = active_idx;
+            let mut min_cost = f64::INFINITY;
+            for j in 0..state.bridged_pin_pairs[i].len() {
+                state.active_bridge_idx[i] = j;
+                let c = cost_fast(&state, &circuit, &board, &[], &weights, &ctx, &mut buf);
+                if c < min_cost {
+                    min_cost = c;
+                    min_cost_idx = j;
+                }
+            }
+            assert_eq!(
+                active_idx, min_cost_idx,
+                "init_bridgeable_to_bridged 选中的 active_bridge_idx = {active_idx} \
+                 但 cache 里 cost 最低的下标是 {min_cost_idx}"
+            );
+            // 验证完后复原 关键状态。
+            state.active_bridge_idx[i] = active_idx;
+        }
+    }
+
+    /// 用于 init_bridgeable_to_bridged 测试的最小 fixture: 1 个 bridgeable R
+    /// + 1 个带 SIGNAL net pin 的 1-pin 元件 (SIGNAL net 上多个 pin, 让 net center 可算)。
+    fn bridgeable_two_pin_circuit() -> (Circuit, Breadboard) {
+        use crate::circuit::{Footprint, PhysicalPin};
+        use crate::layout::breadboard::PowerRailBinding;
+
+        let fp_r = Footprint {
+            id: FootprintId(0),
+            name: "R".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 4, y: 0 },
+                },
+            ],
+        };
+        let fp_x = Footprint {
+            id: FootprintId(1),
+            name: "X".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let circuit = Circuit {
+            components: vec![
+                Component {
+                    id: ComponentId(0),
+                    ref_: "R1".into(),
+                    kind: "R".into(),
+                    value: None,
+                    pins: vec![PinId(0), PinId(1)],
+                    footprint: Some(FootprintId(0)),
+                    bridgeable: true,
+                },
+                Component {
+                    id: ComponentId(1),
+                    ref_: "X1".into(),
+                    kind: "X".into(),
+                    value: None,
+                    pins: vec![PinId(2)],
+                    footprint: Some(FootprintId(1)),
+                    bridgeable: false,
+                },
+            ],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+                Pin {
+                    id: PinId(2),
+                    component: ComponentId(1),
+                    num: "1".into(),
+                    pinfunction: None,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "+12V".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "SIG".into(),
+                    pins: vec![PinId(1), PinId(2)],
+                },
+            ],
+            footprints: vec![fp_r, fp_x],
+        };
+        let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: NetId(0),
+            negative: NetId(1),
+        });
+        (circuit, board)
+    }
+
+    fn bridgeable_placeables(circuit: &Circuit) -> Vec<ComponentId> {
+        circuit
+            .components
+            .iter()
+            .filter_map(|c| c.footprint.map(|_| c.id))
+            .collect()
     }
 }

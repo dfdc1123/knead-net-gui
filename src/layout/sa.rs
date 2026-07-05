@@ -57,7 +57,8 @@ use crate::layout::breadboard::Breadboard;
 #[cfg(test)]
 use crate::layout::cost::cost;
 use crate::layout::cost::{
-    CostBuf, FDConfig, SAContext, SAState, Weights, cost_fast, populate_bridgeable_info,
+    CostBuf, FDConfig, SAContext, SAState, Weights, cost_fast, init_bridgeable_to_bridged,
+    populate_bridgeable_info,
 };
 use crate::layout::placement::Rotation;
 
@@ -518,6 +519,17 @@ pub(super) fn simulate(
     // 预计算 context (footprint pin offset, bbox) 和 reusable buffers
     let ctx = SAContext::new(circuit, &state.placeable);
     let mut buf = CostBuf::new(circuit.nets().len());
+    // Aggressive init: 默认所有 bridgeable 都走桥接, cache 里挑 cost 最低的 pair。
+    // 不做 safety net; SA 后续可以 ToggleBridging 翻回去。
+    init_bridgeable_to_bridged(
+        &mut state,
+        circuit,
+        board,
+        bridged_pins,
+        &config.weights,
+        &ctx,
+        &mut buf,
+    );
     let mut current_cost = cost_fast(
         &state,
         circuit,
