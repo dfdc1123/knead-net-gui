@@ -746,6 +746,7 @@ impl SAState {
         placeable: Vec<ComponentId>,
         circuit: &Circuit,
         board: &Breadboard,
+        seed: u64,
     ) -> Self {
         let n = placeable.len();
         if n <= 2 {
@@ -802,8 +803,8 @@ impl SAState {
         // ============================================================
         // Phase 2: 幂迭代求 v₂, v₃ (全图), 只取前 n 个分量 (元件)
         // ============================================================
-        let v2_all = compute_fiedler(&l, total_n);
-        let v3_all = compute_second_evec(&l, &v2_all, total_n);
+        let v2_all = compute_fiedler(&l, total_n, seed);
+        let v3_all = compute_second_evec(&l, &v2_all, total_n, seed);
         let v2: Vec<f64> = v2_all[..n].to_vec();
         let v3: Vec<f64> = v3_all[..n].to_vec();
 
@@ -833,14 +834,28 @@ impl SAState {
 ///
 /// L 的最小特征值为 0, 对应常向量 [1,1,...,1]。
 /// 对 M = cI - L 做幂迭代, 投射掉常向量分量, 收敛到 Fiedler。
-fn compute_fiedler(l: &[Vec<f64>], n: usize) -> Vec<f64> {
+///
+/// **初始向量确定性**: 用 `seed` 初始化的本地 fastrand Rng 生成均勯分布
+/// 向量, 投射调正后归一化。`seed` 不同 → 初始向量不同 → 最终 v₂/初排不同;
+/// `seed` 相同 → 完全一致的幂迭代手检 (跨进程可复现)。
+///
+/// **为什么不让 `seed = None` 走上次全局 fastrand**: 进程启动时全局 RNG
+/// 种子随机 (`fastrand::seed(...)` 没被调), 同 seed 不同进程得到不同 v₂;
+/// 之前以为 "5 wires [10, 13]" 之间的浮动能复现, 其实不能。
+fn compute_fiedler(l: &[Vec<f64>], n: usize, seed: u64) -> Vec<f64> {
     // c > λ_max(L)。λ_max ≤ 2·max_degree
     let max_deg = (0..n).map(|i| l[i][i]).fold(0.0f64, f64::max);
     let c = if max_deg > 0.0 { 2.0 * max_deg } else { 1.0 };
 
-    let mut v: Vec<f64> = (0..n).map(|_| fastrand::f64() - 0.5).collect();
+    // 本地 seed RNG — 跟 SA 主循环的 `with_seed(config.seed)` 一致, 保证
+    // 同 seed 跨进程可复现。
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let mut v: Vec<f64> = (0..n).map(|_| rng.f64() - 0.5).collect();
     project_out_constant(&mut v, n);
-    normalize_vec(&mut v);
+    if !normalize_vec(&mut v) {
+        // 退化情形 (如 n=1), 幂迭代不能收敛; 给个常向量, 后续 finalize 会处理。
+        v = vec![1.0; n];
+    }
 
     for _ in 0..300 {
         let mut w = mat_vec_mul_shifted(l, &v, c, n);
@@ -853,14 +868,19 @@ fn compute_fiedler(l: &[Vec<f64>], n: usize) -> Vec<f64> {
     v
 }
 
-/// 幂迭代求第三特征向量 v₃ (正交于常向量和 v₂)。
-fn compute_second_evec(l: &[Vec<f64>], v2: &[f64], n: usize) -> Vec<f64> {
+/// 幂迭代求第三特征向量 v₃ (正交于常向量和 v₂)。同 `compute_fiedler` 的 seed 语义。
+fn compute_second_evec(l: &[Vec<f64>], v2: &[f64], n: usize, seed: u64) -> Vec<f64> {
     let max_deg = (0..n).map(|i| l[i][i]).fold(0.0f64, f64::max);
     let c = if max_deg > 0.0 { 2.0 * max_deg } else { 1.0 };
 
-    let mut v: Vec<f64> = (0..n).map(|_| fastrand::f64() - 0.5).collect();
+    let mut rng = fastrand::Rng::with_seed(seed.wrapping_add(0x517CC1B7));
+    let mut v: Vec<f64> = (0..n).map(|_| rng.f64() - 0.5).collect();
     project_out_two(&mut v, v2, n);
-    normalize_vec(&mut v);
+    if !normalize_vec(&mut v) {
+        v = vec![1.0; n];
+        project_out_two(&mut v, v2, n);
+        normalize_vec(&mut v);
+    }
 
     for _ in 0..300 {
         let mut w = mat_vec_mul_shifted(l, &v, c, n);
@@ -1194,23 +1214,31 @@ pub(crate) fn propose_bridged_pairs(
         y: signal_off.y - power_off.y,
     };
 
-    // 3. 优先扫: 那些 rail 的 bound net == power_net 的 power rail 孔。
-    //    power pin 落在这种孔上后, pin 跟同 rail 的虚拟 pin 同 net,
-    //    列冲突代价 = 0。如果 pin 的 net 未绑定或只绑到一种极性, 此集合可能为空。
+    // 3. 只扫那些 `matching rail` 的 power rail 孔：
+    //    power pin 的 net 被绑到某个 power rail 极性后, 该 rail 上的孔都是合法位。
+    //    极性不匹配的 rail (matching_rail_ids 之外的 power rail) 不扫 — 那样的 pair
+    //    会让 power pin 落到错极性 rail, 生成 1e6 列冲突惩罚 (物理上不该走)。
     let matching_rail_ids = collect_matching_rail_ids(board, power_net);
 
-    // 4. 两轮扫描: 先 matching, 后 fallback (任意 power rail)。
-    //    fallback 代价高 (列冲突) 但优于 "启发式返 None, 走 OnBoard"。
+    // 4. 单次扫描: 只 matching。matching 没产出合法 pair 则返空 (启发式退化为
+    //    bridgeable 元件保持 OnBoard)。
+    //
+    //    历史背景: 之前会接着扫 “其他” rail (fallback) — 这个 fallback 让 power pin
+    //    有机会落到错极性 rail, 从而跟虚拟 rail 锚点冲突, 启动 cost 就是 1e6。
+    //    SA 从这种起点难走出来, 最后选定 1e6 解。去掉 fallback 后 cache 仅含
+    //    极性对齐的 pair, 杜绝这个类死锁。
     let all_power_holes: Vec<HoleId> = (0..board.holes().len())
         .map(HoleId)
         .filter(|h| board.region_of(*h) == Region::PowerRail)
         .collect();
-    let (matching, other): (Vec<HoleId>, Vec<HoleId>) = all_power_holes
+    let matching: Vec<HoleId> = all_power_holes
         .iter()
-        .partition(|h| matching_rail_ids.contains(&board.rail_id_of(**h)));
+        .copied()
+        .filter(|h| matching_rail_ids.contains(&board.rail_id_of(*h)))
+        .collect();
 
     let mut out = Vec::new();
-    for &h in matching.iter().chain(other.iter()) {
+    for &h in matching.iter() {
         let h_pos = board.hole(h).position;
         for &rot in &[Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270] {
             let rotated = rotate(delta, rot);
@@ -1778,6 +1806,291 @@ pub(crate) fn cost_fast(
         + w.compactness * area_sum
         + w.row_squash * row_squash_penalty
         + rail_cross
+}
+
+/// 调试用: 返回成本的同时返回各项明细。一千成本以上的项重点看。
+pub(crate) fn cost_breakdown(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    w: &Weights,
+) -> (f64, CostBreakdown) {
+    let ctx = SAContext::new(circuit, &state.placeable);
+    let mut buf = CostBuf::new(circuit.nets().len());
+    cost_breakdown_inner(state, circuit, board, bridged_pins, w, &ctx, &mut buf)
+}
+
+/// 复制 cost_fast 但记录各项。重复是 debug 专趟代价。
+fn cost_breakdown_inner(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    w: &Weights,
+    ctx: &SAContext,
+    buf: &mut CostBuf,
+) -> (f64, CostBreakdown) {
+    buf.clear();
+
+    let cols_i = board.cols() as i32;
+    let n_comps = state.placeable.len();
+
+    for (idx, _comp_id) in state.placeable.iter().enumerate() {
+        if state.bridged[idx] {
+            let bridged_bbox = state.active_bridge_pair(idx).map(|pair| {
+                let p0 = board.hole(pair[0].0).position;
+                let p1 = board.hole(pair[1].0).position;
+                BBox {
+                    min_x: p0.x.min(p1.x),
+                    max_x: p0.x.max(p1.x),
+                    min_y: p0.y.min(p1.y),
+                    max_y: p0.y.max(p1.y),
+                }
+            });
+            buf.bboxes.push(bridged_bbox);
+            continue;
+        }
+
+        let comp_info = &ctx.comp_infos[idx];
+        let px = state.x[idx];
+        let py = state.y[idx];
+        let is_r180 = state.rotation[idx] == Rotation::R180;
+
+        for pin_data in &comp_info.pins {
+            let offset = if is_r180 { pin_data.1 } else { pin_data.0 };
+            let x = px + offset.x;
+            let y = py + offset.y;
+            let rail_id = board
+                .at(x, y)
+                .map(|h| board.rail_id_of(h))
+                .unwrap_or(u32::MAX);
+            buf.holes.push((x, y, rail_id));
+            buf.nets.push(pin_data.2);
+            buf.is_virtual.push(false);
+        }
+
+        let bbox_r0 = &comp_info.bbox_r0;
+        let world_bbox = if is_r180 {
+            BBox {
+                min_x: -bbox_r0.max_x + px,
+                max_x: -bbox_r0.min_x + px,
+                min_y: -bbox_r0.max_y + py,
+                max_y: -bbox_r0.min_y + py,
+            }
+        } else {
+            BBox {
+                min_x: bbox_r0.min_x + px,
+                max_x: bbox_r0.max_x + px,
+                min_y: bbox_r0.min_y + py,
+                max_y: bbox_r0.max_y + py,
+            }
+        };
+        buf.bboxes.push(Some(world_bbox));
+    }
+    for &(pin_id, hole_id) in bridged_pins {
+        let pin = &circuit.pins[pin_id.0];
+        let pos = board.hole(hole_id).position;
+        let rail_id = board.rail_id_of(hole_id);
+        buf.holes.push((pos.x, pos.y, rail_id));
+        buf.nets.push(pin.net);
+        buf.is_virtual.push(false);
+    }
+    for idx in 0..n_comps {
+        if !state.bridged[idx] {
+            continue;
+        }
+        let pair = state.active_bridge_pair(idx).expect("bridged");
+        for &(h, pin_id) in &pair {
+            let pin = &circuit.pins[pin_id.0];
+            let pos = board.hole(h).position;
+            let rail_id = board.rail_id_of(h);
+            buf.holes.push((pos.x, pos.y, rail_id));
+            buf.nets.push(pin.net);
+            buf.is_virtual.push(false);
+        }
+    }
+    if let Some(binding) = board.power_rail_binding() {
+        for (polarity, net_id) in [
+            (Polarity::Negative, binding.negative),
+            (Polarity::Positive, binding.positive),
+        ] {
+            if let Some(anchor) = board.power_rail_anchor(polarity) {
+                let pos = board.hole(anchor).position;
+                let rail_id = board.rail_id_of(anchor);
+                buf.holes.push((pos.x, pos.y, rail_id));
+                buf.nets.push(Some(net_id));
+                buf.is_virtual.push(true);
+            }
+        }
+    }
+    let mut oob_count = 0u32;
+    for &(_, _, rail_id) in &buf.holes {
+        if rail_id == u32::MAX {
+            oob_count += 1;
+        }
+    }
+    let mut coll_count = 0u32;
+    for (i, &hole) in buf.holes.iter().enumerate() {
+        if hole.2 == u32::MAX || buf.is_virtual[i] {
+            continue;
+        }
+        if !buf.pin_seen.insert(hole) {
+            coll_count += 1;
+        }
+    }
+    let mut bbox_overlap_count = 0u32;
+    for i in 0..buf.bboxes.len() {
+        let Some(bi) = buf.bboxes[i] else { continue };
+        for j in (i + 1)..buf.bboxes.len() {
+            let Some(bj) = buf.bboxes[j] else { continue };
+            if !bi.overlaps(&bj) {
+                continue;
+            }
+            for pos in bi.iter_cells() {
+                if pos.x >= bj.min_x && pos.x <= bj.max_x && pos.y >= bj.min_y && pos.y <= bj.max_y
+                {
+                    bbox_overlap_count += 1;
+                }
+            }
+        }
+    }
+    for (i, &net_opt) in buf.nets.iter().enumerate() {
+        let hole = buf.holes[i];
+        if hole.2 == u32::MAX {
+            continue;
+        }
+        if let Some(net) = net_opt {
+            buf.net_buckets[net.0].push(i);
+        }
+    }
+    let mut mst_sum = 0.0f64;
+    for bucket in &buf.net_buckets {
+        if bucket.len() < 2 {
+            continue;
+        }
+        mst_sum += mst_wire_length_fast(bucket, &buf.holes);
+    }
+    for (i, &net_opt) in buf.nets.iter().enumerate() {
+        let (_, _, rail_id) = buf.holes[i];
+        if rail_id == u32::MAX {
+            continue;
+        }
+        buf.rail_map
+            .entry(rail_id)
+            .or_insert_with(|| Vec::with_capacity(4))
+            .push(net_opt);
+    }
+    let mut col_conflict_pairs = 0usize;
+    for rail_owners in buf.rail_map.values() {
+        if rail_owners.len() < 2 {
+            continue;
+        }
+        let base = rail_owners[0];
+        for owner in &rail_owners[1..] {
+            if *owner != base {
+                col_conflict_pairs += 1;
+            }
+        }
+    }
+    for bbox_opt in buf.bboxes.iter() {
+        let Some(bbox) = bbox_opt else { continue };
+        if bbox.min_x < 0
+            || bbox.max_x >= cols_i
+            || bbox.min_y < 0
+            || bbox.min_y >= board.main_rows() as i32
+            || board.is_blocked(bbox.min_y as usize)
+        {
+            continue;
+        }
+        let rail_top = board
+            .rail_rows(bbox.min_y)
+            .first()
+            .copied()
+            .unwrap_or(bbox.min_y);
+        buf.compact_map
+            .entry(rail_top)
+            .or_insert_with(|| Vec::with_capacity(4))
+            .push(*bbox);
+    }
+    let mut area_sum = 0.0f64;
+    let mut row_squash_penalty = 0.0f64;
+    for cells in buf.compact_map.values() {
+        let mut min_x = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+        let mut seen_y: HashSet<i32> = HashSet::with_capacity(4);
+        for b in cells {
+            min_x = min_x.min(b.min_x);
+            max_x = max_x.max(b.max_x);
+            min_y = min_y.min(b.min_y);
+            max_y = max_y.max(b.max_y);
+            seen_y.insert(b.min_y);
+        }
+        if min_x <= max_x && min_y <= max_y {
+            let width = (max_x - min_x + 1) as f64;
+            let height = (max_y - min_y + 1) as f64;
+            area_sum += width * height;
+        }
+        let ny = seen_y.len();
+        let n = cells.len();
+        if n > ny {
+            row_squash_penalty += (n - ny) as f64;
+        }
+    }
+    let rail_cross = if buf.compact_map.len() >= 2 {
+        w.rail_crossing
+    } else {
+        0.0
+    };
+
+    let breakdown = CostBreakdown {
+        mst: w.mst * mst_sum,
+        pin_overlap: w.pin_overlap * coll_count as f64,
+        bbox_overlap: w.b_box_overlap * bbox_overlap_count as f64,
+        column_conflict: w.column_conflict * col_conflict_pairs as f64,
+        out_of_bounds: w.out_of_bounds * oob_count as f64,
+        compactness: w.compactness * area_sum,
+        row_squash: w.row_squash * row_squash_penalty,
+        rail_crossing: rail_cross,
+        mst_sum,
+        oob_count,
+        col_conflict_pairs,
+        coll_count,
+        bbox_overlap_count,
+        area_sum,
+        row_squash_penalty,
+    };
+    let total = breakdown.mst
+        + breakdown.pin_overlap
+        + breakdown.bbox_overlap
+        + breakdown.column_conflict
+        + breakdown.out_of_bounds
+        + breakdown.compactness
+        + breakdown.row_squash
+        + breakdown.rail_crossing;
+    (total, breakdown)
+}
+
+/// 各成本项的调档值, 调试专用。
+#[derive(Debug, Clone)]
+pub(crate) struct CostBreakdown {
+    pub mst: f64,
+    pub pin_overlap: f64,
+    pub bbox_overlap: f64,
+    pub column_conflict: f64,
+    pub out_of_bounds: f64,
+    pub compactness: f64,
+    pub row_squash: f64,
+    pub rail_crossing: f64,
+    pub mst_sum: f64,
+    pub oob_count: u32,
+    pub col_conflict_pairs: usize,
+    pub coll_count: u32,
+    pub bbox_overlap_count: u32,
+    pub area_sum: f64,
+    pub row_squash_penalty: f64,
 }
 
 /// 给一个 net 的 pin 位置算 MST 总长度; 走 `mst_wire_length_fast`: ≤3 pin 用闭式公式, ≥4 pin 才走 Kruskal。

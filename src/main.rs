@@ -159,6 +159,7 @@ fn main() {
             t0: 40.0,
             cool_rate: 0.99999,
             n_seeds: 30,
+            seed: 0xCAFE_F00D,
             ..SAConfig::default()
         },
     ) {

@@ -502,7 +502,9 @@ pub(super) fn simulate(
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
-        SAState::from_spectral(placeable, circuit, board)
+        // spectral init 使用 config.seed 初始化幂迭代初始向量,
+        // 跨进程同 seed 可复现; 不调全局 fastrand。
+        SAState::from_spectral(placeable, circuit, board, config.seed)
     } else if config.use_force_directed {
         SAState::from_force_directed(placeable, circuit, board, &config.fd_config)
     } else {
@@ -558,6 +560,12 @@ pub(super) fn simulate(
         // (cost 会扣 OOB 惩罚让 SA 远离开, 但放在这里少跑 cost 计算。
         // 另外, 若初始状态本身就合法, SA 也不会被锁定到 "都是 OOB 的同代价态"。)
         if !state_y_valid(&candidate, board) {
+            continue;
+        }
+        // 额外检查 OnBoard pin 不能出界 — 捕捉 Flip 导致 pin 越过轮边 (例如
+        // R5.x=1 R180 时 pin 2 实际 x = -3)。 state_y_valid 只看 y, 不能拦。
+        // 这是 (c) 调查后加的防御：不拦 SA 有可能锁在 1e6 OOB 解上。
+        if !state_onboard_pins_in_bounds(&candidate, &ctx, board) {
             continue;
         }
         // ToggleBridging 翻到 bridge 模式时: 遍历该元件的候选, 选 cost 最低的那对
@@ -627,6 +635,51 @@ fn state_y_valid(state: &SAState, board: &Breadboard) -> bool {
         .y
         .iter()
         .all(|&y| y >= 0 && (y as usize) < board.rows() && !board.is_blocked(y as usize))
+}
+
+/// 检查 SAState 里所有 OnBoard 元件的**所有 pin**都在 main board 范围内。
+///
+/// **为什么要 pin-level**: `state_y_valid` 只查 `state.y`，但 `state.x` 在 Flip
+/// 改变 rotation 后仍然可能推 pin 进轮界外 (典型例: OnBoard 电阻 R5.x=1 R180,
+/// pin offset 是 (-4, 0), 实际 x = -3 → 越界)。Metropolis 该拒绝这个 Flip (delta=+1e6),
+/// 复杂在跨多个 Move 累计下沉后, 状态可能从 x=4 → Flip 到 R180 (本末状态不变) →
+/// 连续 ShiftX(-1) 逐渐推进 pin.2 进越界。 计算 cost 时 oob_count 报 1, 但从合法到
+/// OOB 是连续几轮 ShiftX, 每一轮 delta=0 (受限于上界㯱下界之间),  被 Metropolis 接受。
+///
+/// 在 Move 被接受之前都在走, 之前从不查 pin 位置, 因此 SA 有机会走进越界并被
+/// 1e6 锁死。换 "检查 pin-level OOB" 拦下越界无法表达。
+fn state_onboard_pins_in_bounds(state: &SAState, ctx: &SAContext, board: &Breadboard) -> bool {
+    use crate::layout::placement::Rotation;
+    let cols_i = board.cols() as i32;
+    let main_rows_i = board.main_rows() as i32;
+    for (idx, _) in state.placeable.iter().enumerate() {
+        if state.bridged[idx] {
+            // bridged 的 pin 位由 active_bridge_pair 决定; 他是 [1.1]后修复过的合法
+            // cache 抽取出来的, 不需这里复查 (最初状态不会越界)。
+            continue;
+        }
+        let px = state.x[idx];
+        let py = state.y[idx];
+        if px < 0
+            || px >= cols_i
+            || py < 0
+            || (py as usize) >= board.rows()
+            || board.is_blocked(py as usize)
+        {
+            return false;
+        }
+        let is_r180 = state.rotation[idx] == Rotation::R180;
+        let comp_info = &ctx.comp_infos[idx];
+        for pin_data in &comp_info.pins {
+            let offset = if is_r180 { pin_data.1 } else { pin_data.0 };
+            let x = px + offset.x;
+            let y = py + offset.y;
+            if x < 0 || x >= cols_i || y < 0 || y >= main_rows_i {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 // ============================================================
