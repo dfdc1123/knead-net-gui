@@ -182,8 +182,9 @@ fn random_move(
 ///
 /// 聚类规则: 同 rail 的 OnBoard 元件按 x 排序,
 /// 相邻间距 ≤ 2 列为同组。返回的组**不含** bridged 元件。
-/// 若组左侧有空隙 (组最左 > 0, 且左边有非组元件或板边空隙), 返回 Some(组)。
-/// 若整组已贴左壁或组内只有 1 个元件 (走单个 ShiftX 就好), 返回 None。
+/// 若组左侧有空隙, 返回 Some(组)。
+/// 组 ≥2 人总是有效; 单人组仅在左边 gap > 3 列时有效
+/// (落单元件也该被拉近, 填补桥接留下的大空洞)。
 fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> Option<Vec<usize>> {
     if state.bridged[i] {
         return None; // bridged 元件不参与组移
@@ -240,10 +241,6 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
     };
     let group = &groups[group_idx];
 
-    if group.len() < 2 {
-        return None; // 单人组, 单个 ShiftX 更有效
-    }
-
     // 检查组左移 1 列后是否越界 / 撞左边非组元件
     let leftmost_x = group.iter().map(|&j| state.x[j]).min().unwrap_or(i32::MAX);
 
@@ -259,10 +256,14 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
         .map(|(_, x)| *x)
         .max();
 
-    if let Some(lx) = left_neighbor_x {
-        if leftmost_x - lx - 1 <= 0 {
-            return None; // 紧贴左边元件, 没空隙
-        }
+    let gap = match left_neighbor_x {
+        Some(lx) => (leftmost_x - lx - 1).max(0),
+        None => leftmost_x, // 没左边邻居, gap = 到左壁的距离
+    };
+
+    // 组内 ≥2 人, 或 单人但左边空隙 > 3 列 (落单元件也该被拉近)
+    if group.len() < 2 && gap <= 3 {
+        return None;
     }
 
     Some(group.clone())
