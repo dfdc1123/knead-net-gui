@@ -151,18 +151,37 @@ fn main() {
     }
 
     // SA 是随机算法; 跑 n_seeds 次独立模拟, 取 cost 最低的解
-    if let Err(errors) = layout.place_sa(
-        &board,
-        &SAConfig {
+    //
+    // 两种预设:
+    // - 慢模式 (默认): n_seeds=100 + max_iters=1M, 接近能力上限 (~3 分 50 秒)。
+    //   默认覆盖到 ~10 wires (从 ~14 wires 提升了 4)。
+    // - 快模式 (--quick): n_seeds=10 + max_iters=5000, ~5 秒。
+    //   只用于反复试参数 / 调试; 质量差很多 (wire 数可能 超 过慢模式 1.5 倍)。
+    //
+    // 想只快速看一眼布局结构时可添 `--quick` 走快模式; 最终生成 SVG 走默认。
+    let quick_mode = std::env::args().any(|a| a == "--quick");
+    let sa_config = if quick_mode {
+        SAConfig {
             use_spectral: true,
-            max_iters: 50000,
+            max_iters: 5_000,
             t0: 40.0,
             cool_rate: 0.99999,
-            n_seeds: 30,
+            n_seeds: 10,
             seed: 0xCAFE_F00D,
             ..SAConfig::default()
-        },
-    ) {
+        }
+    } else {
+        SAConfig {
+            use_spectral: true,
+            max_iters: 1_000_000,
+            t0: 40.0,
+            cool_rate: 0.99999,
+            n_seeds: 100,
+            seed: 0xCAFE_F00D,
+            ..SAConfig::default()
+        }
+    };
+    if let Err(errors) = layout.place_sa(&board, &sa_config) {
         eprintln!("布局错误 ({} 个):", errors.len());
         for e in &errors {
             eprintln!("  - {e:?}");
