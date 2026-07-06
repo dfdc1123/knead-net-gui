@@ -35,7 +35,7 @@
 //!   y=15  [bottom positive] 横向短路
 //! ```
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 
 use crate::circuit::{NetId, Position};
@@ -152,11 +152,14 @@ pub struct Breadboard {
     main_rows: usize,
     main_blocked_rows: BTreeSet<usize>,
     power_rails: Option<PowerRails>,
-    /// 电源轨到 net 的绑定 (None = 不绑定, 跟以前一样)
     power_rail_binding: Option<PowerRailBinding>,
     holes: Vec<Hole>,
-    /// (x, y) → HoleId 反查, 加速 `at` 调用
-    at_map: HashMap<(i32, i32), HoleId>,
+    /// `(y - at_y_min) * cols + x` → HoleId. 预分配的 flat grid,比 HashMap 快几倍,
+    /// 拿掉 cost_fast 里的 `board.at(x,y)` 热点的 hash 开销。out-of-bounds / blocked
+    /// row / gap 位置都是 `None`。
+    at_grid: Vec<Option<HoleId>>,
+    at_y_min: i32,
+    at_y_max: i32,
 }
 
 impl Breadboard {
@@ -226,7 +229,22 @@ impl Breadboard {
         }
 
         let mut holes = Vec::new();
-        let mut at_map = HashMap::new();
+        // 确定 at_grid 范围: 包住所有 main row + power rail y; cols 是 x 轴范围
+        let (at_y_min, at_y_max) = if let Some(pr) = &power_rails {
+            let lo = pr.top.rows.iter().map(|r| r.y).min().unwrap_or(0);
+            let hi = pr
+                .bottom
+                .rows
+                .iter()
+                .map(|r| r.y)
+                .max()
+                .unwrap_or(main_rows as i32 - 1);
+            (lo.min(0), hi.max(main_rows as i32 - 1))
+        } else {
+            (0, main_rows as i32 - 1)
+        };
+        let grid_rows = (at_y_max - at_y_min + 1) as usize;
+        let mut at_grid: Vec<Option<HoleId>> = vec![None; grid_rows * cols];
         let mut next_rail_id: u32 = 0;
 
         // 1. 电源轨的 rail_id 分配 + 孔枚举
@@ -251,7 +269,7 @@ impl Breadboard {
                             region: Region::PowerRail,
                             rail_id,
                         });
-                        at_map.insert((x, rail.y), id);
+                        at_grid[((rail.y - at_y_min) as usize) * cols + (x as usize)] = Some(id);
                     }
                 }
             }
@@ -298,7 +316,7 @@ impl Breadboard {
                     region: Region::MainRail,
                     rail_id: id_rail,
                 });
-                at_map.insert((x as i32, y as i32), id);
+                at_grid[((y as i32 - at_y_min) as usize) * cols + x] = Some(id);
             }
         }
         let _ = next_rail_id + (vertical_rails.len() as u32) * (cols as u32);
@@ -310,7 +328,9 @@ impl Breadboard {
             power_rails,
             power_rail_binding: None,
             holes,
-            at_map,
+            at_grid,
+            at_y_min,
+            at_y_max,
         }
     }
 
@@ -371,7 +391,32 @@ impl Breadboard {
     ///
     /// 越界、blocked row、电源轨里不属于任何 group 的位置, 都返回 `None`。
     pub fn at(&self, x: i32, y: i32) -> Option<HoleId> {
-        self.at_map.get(&(x, y)).copied()
+        if x < 0 || x >= self.cols as i32 {
+            return None;
+        }
+        if y < self.at_y_min || y > self.at_y_max {
+            return None;
+        }
+        let idx = ((y - self.at_y_min) as usize) * (self.cols as usize) + (x as usize);
+        // 初始化为 None 的位置 (blocked row / gap / 板外) 直接返 None
+        unsafe { *self.at_grid.get_unchecked(idx) }
+    }
+
+    /// 给定 y, 返回它所在的 main board vertical rail 的 top y (只返一个数)。
+    /// 不分配 Vec, 热路径首选。y 在 blocked row / 越界 / 电源轨上时返回 None。
+    pub fn rail_top(&self, y: i32) -> Option<i32> {
+        if y < 0 || y >= self.main_rows as i32 {
+            return None;
+        }
+        let y = y as usize;
+        if self.main_blocked_rows.contains(&y) {
+            return None;
+        }
+        let mut top = y;
+        while top > 0 && !self.main_blocked_rows.contains(&(top - 1)) {
+            top -= 1;
+        }
+        Some(top as i32)
     }
 
     /// 给定 y, 返回它所在的 main board vertical rail 的所有 y (含自身)。
@@ -459,6 +504,32 @@ impl Breadboard {
     /// 给定一个 hole, 返回它的 rail_id。
     pub fn rail_id_of(&self, id: HoleId) -> u32 {
         self.holes[id.0].rail_id
+    }
+
+    /// 热路径辅助: 一次 `at + rail_id_of` 合并。越界 / blocked / gap 返 `u32::MAX`。
+    /// 避免 cost_fast 里两次数组查找 + 两次分支。
+    #[inline]
+    pub fn rail_id_at(&self, x: i32, y: i32) -> u32 {
+        if x < 0 || x >= self.cols as i32 || y < self.at_y_min || y > self.at_y_max {
+            return u32::MAX;
+        }
+        let idx = ((y - self.at_y_min) as usize) * (self.cols as usize) + (x as usize);
+        // 安全: idx 在 Vec 范围内 (by bounds check above)
+        unsafe {
+            self.at_grid
+                .get_unchecked(idx)
+                .map(|h| self.holes.get_unchecked(h.0).rail_id)
+                .unwrap_or(u32::MAX)
+        }
+    }
+
+    /// `rail_id` 总数 (= `max(rail_id) + 1`)。可作 flat `Vec` 索引的容量上限。
+    pub fn num_rails(&self) -> usize {
+        self.holes
+            .iter()
+            .map(|h| h.rail_id as usize + 1)
+            .max()
+            .unwrap_or(0)
     }
 
     /// 给定一个 hole, 返回它的 region。

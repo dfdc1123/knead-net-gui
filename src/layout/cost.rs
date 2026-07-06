@@ -136,16 +136,30 @@ pub struct CompInfo {
     pub pins: Vec<(Position, Position, Option<NetId>)>,
     /// 该元件 footprint 在 R0 旋转下的局部坐标 bbox
     pub bbox_r0: BBox,
+    /// 仅 bridgeable 元件有: 每个候选 pin pair 对应的 bbox
+    /// (board 孔位固定, 这些 bbox 是常量, 不随 SA 状态变)。
+    /// None = 非 bridgeable。
+    pub bridged_bboxes: Option<Vec<BBox>>,
+    /// 仅 bridgeable 元件有: 每个候选 pin pair 对应的世界坐标 (x, y, rail_id, net) × 2。
+    /// cost_fast 热路径里不需再查 board。
+    pub bridged_pair_world: Option<Vec<[(i32, i32, u32, Option<NetId>); 2]>>,
 }
 
 /// SA 上下文: 预计算数据 + reusable buffers。
 /// 在 simulate() 入口构造一次, 所有 cost 调用复用。
 pub struct SAContext {
     pub comp_infos: Vec<CompInfo>,
+    /// 用户预摆 bridged_pins 的世界坐标 + rail_id + net (常量)
+    pub external_bridged_world: Vec<(i32, i32, u32, Option<NetId>)>,
+    /// 电源轨 anchor (negative, positive) 的世界坐标 + rail_id
+    pub power_anchor_world: Vec<(i32, i32, u32)>,
+    /// 电源轨 anchor 的 net ids (顺序与 power_anchor_world 对应)
+    pub power_anchor_nets: Vec<Option<NetId>>,
 }
 
 impl SAContext {
     /// 从 circuit 和 placeable 列表预计算所有组件的 footprint 信息。
+    /// bridged_bboxes 需要 board 才能算, 所以在 simulate() 里面 extra 一步填充。
     pub fn new(circuit: &Circuit, placeable: &[ComponentId]) -> Self {
         let mut comp_infos = Vec::with_capacity(placeable.len());
         for &comp_id in placeable {
@@ -180,10 +194,86 @@ impl SAContext {
                 max_y: 0,
             });
 
-            comp_infos.push(CompInfo { pins, bbox_r0 });
+            comp_infos.push(CompInfo {
+                pins,
+                bbox_r0,
+                bridged_bboxes: None,
+                bridged_pair_world: None,
+            });
         }
 
-        SAContext { comp_infos }
+        SAContext {
+            comp_infos,
+            external_bridged_world: Vec::new(),
+            power_anchor_world: Vec::new(),
+            power_anchor_nets: Vec::new(),
+        }
+    }
+
+    /// 给 bridgeable 元件填 bridged_bboxes + bridged_pair_world 预计算。
+    /// 同时填 external_bridged_world (用户预摆) 和 power_anchor_* (电源轨 anchor)。
+    /// 调用时机: populate_bridgeable_info 之后, simulate 的 cost 调用之前。
+    pub fn fill_bridged_bboxes(
+        &mut self,
+        state: &SAState,
+        circuit: &Circuit,
+        board: &Breadboard,
+        bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    ) {
+        for (idx, info) in self.comp_infos.iter_mut().enumerate() {
+            if !state.is_bridgeable[idx] {
+                continue;
+            }
+            let mut bboxes = Vec::with_capacity(state.bridged_pin_pairs[idx].len());
+            let mut worlds = Vec::with_capacity(state.bridged_pin_pairs[idx].len());
+            for pair in &state.bridged_pin_pairs[idx] {
+                // bbox
+                let p0 = board.hole(pair[0].0).position;
+                let p1 = board.hole(pair[1].0).position;
+                bboxes.push(BBox {
+                    min_x: p0.x.min(p1.x),
+                    max_x: p0.x.max(p1.x),
+                    min_y: p0.y.min(p1.y),
+                    max_y: p0.y.max(p1.y),
+                });
+                // pin world (x, y, rail_id, net) × 2
+                let r0 = board.rail_id_of(pair[0].0);
+                let r1 = board.rail_id_of(pair[1].0);
+                let n0 = circuit.pins[pair[0].1.0].net;
+                let n1 = circuit.pins[pair[1].1.0].net;
+                worlds.push([(p0.x, p0.y, r0, n0), (p1.x, p1.y, r1, n1)]);
+            }
+            info.bridged_bboxes = Some(bboxes);
+            info.bridged_pair_world = Some(worlds);
+        }
+
+        // 用户预摆 bridged_pins
+        self.external_bridged_world.clear();
+        for &(pin_id, hole_id) in bridged_pins {
+            let pin = &circuit.pins[pin_id.0];
+            let pos = board.hole(hole_id).position;
+            let rail_id = board.rail_id_of(hole_id);
+            self.external_bridged_world
+                .push((pos.x, pos.y, rail_id, pin.net));
+        }
+
+        // 电源轨 anchor
+        self.power_anchor_world.clear();
+        self.power_anchor_nets.clear();
+        if let Some(binding) = board.power_rail_binding() {
+            use crate::layout::breadboard::Polarity;
+            for (polarity, net_id) in [
+                (Polarity::Negative, binding.negative),
+                (Polarity::Positive, binding.positive),
+            ] {
+                if let Some(anchor) = board.power_rail_anchor(polarity) {
+                    let pos = board.hole(anchor).position;
+                    let rail_id = board.rail_id_of(anchor);
+                    self.power_anchor_world.push((pos.x, pos.y, rail_id));
+                    self.power_anchor_nets.push(Some(net_id));
+                }
+            }
+        }
     }
 }
 
@@ -193,6 +283,9 @@ impl SAContext {
 
 /// 所有 cost 计算复用的缓冲区。
 /// 在 simulate() 里创建一次, 每次 cost 计算前 clear 后重用。
+///
+/// rail_map / compact_map 都以 u32/i32 为索引的 flat `Vec<Vec<...>>`。
+/// HashMap 的 hash + Eq + bucket 跳转在这个热点上比直接数组索引慢几倍。
 pub(crate) struct CostBuf {
     pub holes: Vec<(i32, i32, u32)>,
     pub nets: Vec<Option<NetId>>,
@@ -200,25 +293,25 @@ pub(crate) struct CostBuf {
     pub bboxes: Vec<Option<BBox>>,
     /// net_id → pin 在 holes/nets 里的 index 列表 (按 net.0 索引)
     pub net_buckets: Vec<Vec<usize>>,
-    /// rail_id → net 列表
-    pub rail_map: HashMap<u32, Vec<Option<NetId>>>,
-    /// rail_top → bbox 列表 (用于紧凑度)
-    pub compact_map: HashMap<i32, Vec<BBox>>,
-    /// 用于 pin 碰撞检测的 reusable set
-    pub pin_seen: HashSet<(i32, i32, u32)>,
+    /// rail_id → net 列表 (按 rail_id 索引; rail_id < num_rails)
+    pub rail_map: Vec<Vec<Option<NetId>>>,
+    /// rail_top → bbox 列表 (按 rail_top 索引; rail_top < main_rows)
+    pub compact_map: Vec<Vec<BBox>>,
+    /// pin 碰撞检测的 reusable 排序索引缓冲 (避免每次 alloc)
+    pub pin_idx_sorted: Vec<usize>,
 }
 
 impl CostBuf {
-    pub fn new(num_nets: usize) -> Self {
+    pub fn new(num_nets: usize, num_rails: usize, main_rows: usize) -> Self {
         Self {
             holes: Vec::new(),
             nets: Vec::new(),
             is_virtual: Vec::new(),
             bboxes: Vec::new(),
             net_buckets: vec![Vec::new(); num_nets],
-            rail_map: HashMap::new(),
-            compact_map: HashMap::new(),
-            pin_seen: HashSet::new(),
+            rail_map: vec![Vec::new(); num_rails],
+            compact_map: vec![Vec::new(); main_rows],
+            pin_idx_sorted: Vec::new(),
         }
     }
 
@@ -231,13 +324,13 @@ impl CostBuf {
         for bucket in &mut self.net_buckets {
             bucket.clear();
         }
-        for v in self.rail_map.values_mut() {
+        for v in &mut self.rail_map {
             v.clear();
         }
-        for v in self.compact_map.values_mut() {
+        for v in &mut self.compact_map {
             v.clear();
         }
-        self.pin_seen.clear();
+        self.pin_idx_sorted.clear();
     }
 }
 
@@ -1545,13 +1638,146 @@ pub fn cost(
     bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
     w: &Weights,
 ) -> f64 {
-    let ctx = SAContext::new(circuit, &state.placeable);
-    let mut buf = CostBuf::new(circuit.nets().len());
+    let mut ctx = SAContext::new(circuit, &state.placeable);
+    ctx.fill_bridged_bboxes(state, circuit, board, bridged_pins);
+    let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
     cost_fast(state, circuit, board, bridged_pins, w, &ctx, &mut buf)
 }
 
 /// 快速版本: 复用预计算的 context 和 buffers。
 /// 在 simulate() 的热循环里替代 `cost()`。
+
+// ============================================================
+//  Profile statics for cost_fast sections (gated by --cfg profile_cost)
+// ============================================================
+#[cfg(profile_cost)]
+mod cost_profile {
+    use std::sync::atomic::AtomicU64;
+    pub static COLLECT: AtomicU64 = AtomicU64::new(0);
+    pub static OOB: AtomicU64 = AtomicU64::new(0);
+    pub static PIN: AtomicU64 = AtomicU64::new(0);
+    pub static BBOX: AtomicU64 = AtomicU64::new(0);
+    pub static MST: AtomicU64 = AtomicU64::new(0);
+    pub static RAIL: AtomicU64 = AtomicU64::new(0);
+    pub static COMPACT: AtomicU64 = AtomicU64::new(0);
+    pub static CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static PRINTED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+}
+
+#[cfg(profile_cost)]
+macro_rules! cp_collect {
+    ($n:expr) => {
+        $crate::layout::cost::cost_profile::COLLECT
+            .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+#[cfg(profile_cost)]
+macro_rules! cp_pin {
+    ($n:expr) => {
+        $crate::layout::cost::cost_profile::PIN.fetch_add($n, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+#[cfg(profile_cost)]
+macro_rules! cp_bbox {
+    ($n:expr) => {
+        $crate::layout::cost::cost_profile::BBOX
+            .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+#[cfg(profile_cost)]
+macro_rules! cp_mst {
+    ($n:expr) => {
+        $crate::layout::cost::cost_profile::MST.fetch_add($n, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+#[cfg(profile_cost)]
+macro_rules! cp_rail {
+    ($n:expr) => {
+        $crate::layout::cost::cost_profile::RAIL
+            .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+#[cfg(profile_cost)]
+macro_rules! cp_compact {
+    ($n:expr) => {
+        $crate::layout::cost::cost_profile::COMPACT
+            .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+#[cfg(profile_cost)]
+macro_rules! cp_call {
+    () => {
+        $crate::layout::cost::cost_profile::CALLS
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    };
+}
+
+#[cfg(not(profile_cost))]
+macro_rules! cp_collect {
+    ($n:expr) => {};
+}
+#[cfg(not(profile_cost))]
+macro_rules! cp_pin {
+    ($n:expr) => {};
+}
+#[cfg(not(profile_cost))]
+macro_rules! cp_bbox {
+    ($n:expr) => {};
+}
+#[cfg(not(profile_cost))]
+macro_rules! cp_mst {
+    ($n:expr) => {};
+}
+#[cfg(not(profile_cost))]
+macro_rules! cp_rail {
+    ($n:expr) => {};
+}
+#[cfg(not(profile_cost))]
+macro_rules! cp_compact {
+    ($n:expr) => {};
+}
+#[cfg(not(profile_cost))]
+macro_rules! cp_call {
+    () => {};
+}
+
+#[cfg(profile_cost)]
+pub fn dump_cost_profile(prefix: &str) {
+    use std::sync::atomic::Ordering;
+    let calls = cost_profile::CALLS.load(Ordering::Relaxed).max(1);
+    eprintln!(
+        "[costfast {prefix} sum ns] calls={} collect={} oob={} pin={} bbox={} mst={} rail={} compact={}",
+        calls,
+        cost_profile::COLLECT.load(Ordering::Relaxed),
+        cost_profile::OOB.load(Ordering::Relaxed),
+        cost_profile::PIN.load(Ordering::Relaxed),
+        cost_profile::BBOX.load(Ordering::Relaxed),
+        cost_profile::MST.load(Ordering::Relaxed),
+        cost_profile::RAIL.load(Ordering::Relaxed),
+        cost_profile::COMPACT.load(Ordering::Relaxed),
+    );
+}
+
+#[cfg(profile_cost)]
+pub fn reset_cost_profile() {
+    use std::sync::atomic::Ordering;
+    cost_profile::COLLECT.store(0, Ordering::Relaxed);
+    cost_profile::OOB.store(0, Ordering::Relaxed);
+    cost_profile::PIN.store(0, Ordering::Relaxed);
+    cost_profile::BBOX.store(0, Ordering::Relaxed);
+    cost_profile::MST.store(0, Ordering::Relaxed);
+    cost_profile::RAIL.store(0, Ordering::Relaxed);
+    cost_profile::COMPACT.store(0, Ordering::Relaxed);
+    cost_profile::CALLS.store(0, Ordering::Relaxed);
+    cost_profile::PRINTED.store(0, Ordering::Relaxed);
+}
+
+#[cfg(not(profile_cost))]
+pub fn dump_cost_profile(_prefix: &str) {}
+#[cfg(not(profile_cost))]
+pub fn reset_cost_profile() {}
+
+/// SA 走线估算: 用 net_buckets (Vec<Vec<usize>>) 代替 HashMap
 pub(crate) fn cost_fast(
     state: &SAState,
     circuit: &Circuit,
@@ -1561,25 +1787,39 @@ pub(crate) fn cost_fast(
     ctx: &SAContext,
     buf: &mut CostBuf,
 ) -> f64 {
+    cp_call!();
+    let _t_collect = std::time::Instant::now();
     buf.clear();
+    buf.pin_idx_sorted.clear(); // fused: 不在 clear() 里 clear, 这里手动
 
     let cols_i = board.cols() as i32;
     let n_comps = state.placeable.len();
+    // fused: 在 collect 阶段同时计算 oob_count + 填 pin_idx_sorted (跳过虚拟 + 越界)。
+    // 省两遍对 buf.holes 的扫描。
+    let mut oob_count = 0u32;
 
     // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
     for (idx, _comp_id) in state.placeable.iter().enumerate() {
         if state.bridged[idx] {
-            let bridged_bbox = state.active_bridge_pair(idx).map(|pair| {
-                let p0 = board.hole(pair[0].0).position;
-                let p1 = board.hole(pair[1].0).position;
-                BBox {
-                    min_x: p0.x.min(p1.x),
-                    max_x: p0.x.max(p1.x),
-                    min_y: p0.y.min(p1.y),
-                    max_y: p0.y.max(p1.y),
-                }
-            });
-            buf.bboxes.push(bridged_bbox);
+            // bridged bbox 已预计算进 ctx (fill_bridged_bboxes), O(1) 查表。
+            // 若 ctx 未预计算 (e.g. `cost()` 后向兼容接口从外部调), 退到实时计算。
+            let precomputed = ctx.comp_infos[idx]
+                .bridged_bboxes
+                .as_ref()
+                .and_then(|bbs| bbs.get(state.active_bridge_idx[idx]).copied())
+                .or_else(|| {
+                    state.active_bridge_pair(idx).map(|pair| {
+                        let p0 = board.hole(pair[0].0).position;
+                        let p1 = board.hole(pair[1].0).position;
+                        BBox {
+                            min_x: p0.x.min(p1.x),
+                            max_x: p0.x.max(p1.x),
+                            min_y: p0.y.min(p1.y),
+                            max_y: p0.y.max(p1.y),
+                        }
+                    })
+                });
+            buf.bboxes.push(precomputed);
             continue;
         }
 
@@ -1592,13 +1832,20 @@ pub(crate) fn cost_fast(
             let offset = if is_r180 { pin_data.1 } else { pin_data.0 };
             let x = px + offset.x;
             let y = py + offset.y;
-            let rail_id = board
-                .at(x, y)
-                .map(|h| board.rail_id_of(h))
-                .unwrap_or(u32::MAX);
+            let rail_id = board.rail_id_at(x, y);
+            let hole_idx = buf.holes.len();
             buf.holes.push((x, y, rail_id));
             buf.nets.push(pin_data.2);
             buf.is_virtual.push(false);
+            if rail_id == u32::MAX {
+                oob_count += 1;
+            } else {
+                buf.pin_idx_sorted.push(hole_idx);
+                buf.rail_map[rail_id as usize].push(pin_data.2);
+                if let Some(net) = pin_data.2 {
+                    buf.net_buckets[net.0].push(hole_idx);
+                }
+            }
         }
 
         // BBox: translate precomputed R0 bbox
@@ -1621,36 +1868,110 @@ pub(crate) fn cost_fast(
         buf.bboxes.push(Some(world_bbox));
     }
 
-    // 1b. 注入用户预摆的 bridged 元件的 pin
-    for &(pin_id, hole_id) in bridged_pins {
-        let pin = &circuit.pins[pin_id.0];
-        let pos = board.hole(hole_id).position;
-        let rail_id = board.rail_id_of(hole_id);
-        buf.holes.push((pos.x, pos.y, rail_id));
-        buf.nets.push(pin.net);
-        buf.is_virtual.push(false);
+    // 1b. 注入用户预摆的 bridged 元件的 pin (位置已预计算进 ctx)
+    // 当 ctx 未预计算 (外部 cost() 调用且测试手工造 state 时), 退到实时算。
+    if !ctx.external_bridged_world.is_empty() {
+        for &(x, y, rail_id, net) in &ctx.external_bridged_world {
+            let hole_idx = buf.holes.len();
+            buf.holes.push((x, y, rail_id));
+            buf.nets.push(net);
+            buf.is_virtual.push(false);
+            if rail_id == u32::MAX {
+                oob_count += 1;
+            } else {
+                buf.pin_idx_sorted.push(hole_idx);
+                buf.rail_map[rail_id as usize].push(net);
+                if let Some(n) = net {
+                    buf.net_buckets[n.0].push(hole_idx);
+                }
+            }
+        }
+    } else {
+        for &(pin_id, hole_id) in bridged_pins {
+            let pin = &circuit.pins[pin_id.0];
+            let pos = board.hole(hole_id).position;
+            let rail_id = board.rail_id_of(hole_id);
+            let hole_idx = buf.holes.len();
+            buf.holes.push((pos.x, pos.y, rail_id));
+            buf.nets.push(pin.net);
+            buf.is_virtual.push(false);
+            if rail_id == u32::MAX {
+                oob_count += 1;
+            } else {
+                buf.pin_idx_sorted.push(hole_idx);
+                buf.rail_map[rail_id as usize].push(pin.net);
+                if let Some(n) = pin.net {
+                    buf.net_buckets[n.0].push(hole_idx);
+                }
+            }
+        }
     }
 
-    // 1b'. 注入 SA Toggle 后的 bridged 元件的 pin
+    // 1b'. 注入 SA Toggle 后的 bridged 元件的 pin (位置已预计算进 ctx)
     for idx in 0..n_comps {
         if !state.bridged[idx] {
             continue;
         }
-        let pair = state
-            .active_bridge_pair(idx)
-            .expect("bridged=true 必有 pin pair (sa::simulate 保证 is_bridgeable[idx] = true)");
-        for &(h, pin_id) in &pair {
-            let pin = &circuit.pins[pin_id.0];
-            let pos = board.hole(h).position;
-            let rail_id = board.rail_id_of(h);
-            buf.holes.push((pos.x, pos.y, rail_id));
-            buf.nets.push(pin.net);
-            buf.is_virtual.push(false);
+        let active = state.active_bridge_idx[idx];
+        let bridged_world = ctx.comp_infos[idx]
+            .bridged_pair_world
+            .as_ref()
+            .map(|v| &v[active]);
+        if let Some(world_pair) = bridged_world {
+            for &(x, y, rail_id, net) in world_pair {
+                let hole_idx = buf.holes.len();
+                buf.holes.push((x, y, rail_id));
+                buf.nets.push(net);
+                buf.is_virtual.push(false);
+                if rail_id == u32::MAX {
+                    oob_count += 1;
+                } else {
+                    buf.pin_idx_sorted.push(hole_idx);
+                    buf.rail_map[rail_id as usize].push(net);
+                    if let Some(n) = net {
+                        buf.net_buckets[n.0].push(hole_idx);
+                    }
+                }
+            }
+        } else {
+            // 回退: 实时 board 查询
+            let pair = state
+                .active_bridge_pair(idx)
+                .expect("bridged=true 必有 pin pair");
+            for &(h, pin_id) in &pair {
+                let pin = &circuit.pins[pin_id.0];
+                let pos = board.hole(h).position;
+                let rail_id = board.rail_id_of(h);
+                let hole_idx = buf.holes.len();
+                buf.holes.push((pos.x, pos.y, rail_id));
+                buf.nets.push(pin.net);
+                buf.is_virtual.push(false);
+                if rail_id == u32::MAX {
+                    oob_count += 1;
+                } else {
+                    buf.pin_idx_sorted.push(hole_idx);
+                    buf.rail_map[rail_id as usize].push(pin.net);
+                    if let Some(n) = pin.net {
+                        buf.net_buckets[n.0].push(hole_idx);
+                    }
+                }
+            }
         }
     }
 
-    // 1c. 注入 power rail 虚拟 pin
-    if let Some(binding) = board.power_rail_binding() {
+    // 1c. 注入 power rail 虚拟 pin (位置已预计算进 ctx)
+    if !ctx.power_anchor_world.is_empty() {
+        for (i, &(x, y, rail_id)) in ctx.power_anchor_world.iter().enumerate() {
+            let net_id = ctx.power_anchor_nets[i];
+            buf.holes.push((x, y, rail_id));
+            buf.nets.push(net_id);
+            buf.is_virtual.push(true);
+            buf.rail_map[rail_id as usize].push(net_id);
+            if let Some(n) = net_id {
+                buf.net_buckets[n.0].push(buf.holes.len() - 1);
+            }
+        }
+    } else if let Some(binding) = board.power_rail_binding() {
         for (polarity, net_id) in [
             (Polarity::Negative, binding.negative),
             (Polarity::Positive, binding.positive),
@@ -1661,28 +1982,37 @@ pub(crate) fn cost_fast(
                 buf.holes.push((pos.x, pos.y, rail_id));
                 buf.nets.push(Some(net_id));
                 buf.is_virtual.push(true);
+                buf.rail_map[rail_id as usize].push(Some(net_id));
+                buf.net_buckets[net_id.0].push(buf.holes.len() - 1);
             }
         }
     }
 
-    // 2. OOB: rail_id == u32::MAX 即越界 / blocked row / 电源轨 gap
-    let mut oob_count = 0u32;
-    for &(_, _, rail_id) in &buf.holes {
-        if rail_id == u32::MAX {
-            oob_count += 1;
-        }
-    }
-
-    // 3. Pin 碰撞: 每个被多个 pin 占用的孔, 算 N-1 次
+    // 2. OOB: 已 fused 到上面的 collect 阶段。
+                                    cp_collect!(_t_collect.elapsed().as_nanos() as u64);
+    let _t_pin = std::time::Instant::now();
+    // 3. Pin 碰撞: pin_idx_sorted 已在 collect 阶段填好 (跳过虚拟 + 越界)。排序。
+    buf.pin_idx_sorted.sort_unstable_by_key(|&i| unsafe {
+        // 安全: i < holes.len()
+        *buf.holes.get_unchecked(i)
+    });
     let mut coll_count = 0u32;
-    for (i, &hole) in buf.holes.iter().enumerate() {
-        if hole.2 == u32::MAX || buf.is_virtual[i] {
-            continue;
+    let mut j = 0;
+    while j < buf.pin_idx_sorted.len() {
+        let mut k = j + 1;
+        while k < buf.pin_idx_sorted.len()
+            && buf.holes[buf.pin_idx_sorted[k]] == buf.holes[buf.pin_idx_sorted[j]]
+        {
+            k += 1;
         }
-        if !buf.pin_seen.insert(hole) {
-            coll_count += 1;
+        let n = k - j;
+        if n > 1 {
+            coll_count += (n - 1) as u32;
         }
+        j = k;
     }
+    cp_pin!(_t_pin.elapsed().as_nanos() as u64);
+    let _t_bbox = std::time::Instant::now();
 
     // 4. bbox 碰撞
     let mut bbox_overlap_count = 0u32;
@@ -1701,17 +2031,10 @@ pub(crate) fn cost_fast(
             }
         }
     }
+    cp_bbox!(_t_bbox.elapsed().as_nanos() as u64);
+    let _t_mst = std::time::Instant::now();
 
-    // 5. MST 走线估算: 用 net_buckets (Vec<Vec<usize>>) 代替 HashMap
-    for (i, &net_opt) in buf.nets.iter().enumerate() {
-        let hole = buf.holes[i];
-        if hole.2 == u32::MAX {
-            continue;
-        }
-        if let Some(net) = net_opt {
-            buf.net_buckets[net.0].push(i);
-        }
-    }
+    // 5+6: net_buckets 和 rail_map 都已在 collect 阶段填好。直接扫。
     let mut mst_sum = 0.0f64;
     for bucket in &buf.net_buckets {
         if bucket.len() < 2 {
@@ -1719,20 +2042,11 @@ pub(crate) fn cost_fast(
         }
         mst_sum += mst_wire_length_fast(bucket, &buf.holes);
     }
+    cp_mst!(_t_mst.elapsed().as_nanos() as u64);
+    let _t_rail = std::time::Instant::now();
 
-    // 6. 列冲突 (rail 冲突): 按 rail_id 聚合
-    for (i, &net_opt) in buf.nets.iter().enumerate() {
-        let (_, _, rail_id) = buf.holes[i];
-        if rail_id == u32::MAX {
-            continue;
-        }
-        buf.rail_map
-            .entry(rail_id)
-            .or_insert_with(|| Vec::with_capacity(4))
-            .push(net_opt);
-    }
     let mut col_conflict_pairs = 0usize;
-    for rail_owners in buf.rail_map.values() {
+    for rail_owners in buf.rail_map.iter() {
         if rail_owners.len() < 2 {
             continue;
         }
@@ -1743,6 +2057,8 @@ pub(crate) fn cost_fast(
             }
         }
     }
+    cp_rail!(_t_rail.elapsed().as_nanos() as u64);
+    let _t_compact = std::time::Instant::now();
 
     // 7. 紧凑度: 按 rail 分组
     for bbox_opt in buf.bboxes.iter() {
@@ -1755,30 +2071,34 @@ pub(crate) fn cost_fast(
         {
             continue;
         }
-        let rail_top = board
-            .rail_rows(bbox.min_y)
-            .first()
-            .copied()
-            .unwrap_or(bbox.min_y);
-        buf.compact_map
-            .entry(rail_top)
-            .or_insert_with(|| Vec::with_capacity(4))
-            .push(*bbox);
+        let rail_top = board.rail_top(bbox.min_y).unwrap_or(bbox.min_y);
+        // rail_top ∈ [0, main_rows) 在上几行已保证
+        buf.compact_map[rail_top as usize].push(*bbox);
     }
     let mut area_sum = 0.0f64;
     let mut row_squash_penalty = 0.0f64;
-    for cells in buf.compact_map.values() {
+    let mut num_occupied_rails = 0usize;
+    for cells in buf.compact_map.iter() {
+        if cells.is_empty() {
+            continue;
+        }
+        num_occupied_rails += 1;
         let mut min_x = i32::MAX;
         let mut max_x = i32::MIN;
         let mut min_y = i32::MAX;
         let mut max_y = i32::MIN;
-        let mut seen_y: HashSet<i32> = HashSet::with_capacity(4);
+        // 用 min_y..=max_y 范围内的去重计数代替 HashSet<i32>: cells 一般很少
+        // (单 rail 上 < 5 个元件), bitmap 比 HashSet 快得多。
+        let mut row_seen: u32 = 0;
         for b in cells {
             min_x = min_x.min(b.min_x);
             max_x = max_x.max(b.max_x);
             min_y = min_y.min(b.min_y);
             max_y = max_y.max(b.max_y);
-            seen_y.insert(b.min_y);
+            let row_idx = (b.min_y - min_y) as u32;
+            if row_idx < 32 {
+                row_seen |= 1u32 << row_idx;
+            }
         }
         if min_x <= max_x && min_y <= max_y {
             let width = (max_x - min_x + 1) as f64;
@@ -1786,17 +2106,18 @@ pub(crate) fn cost_fast(
             area_sum += width * height;
         }
         // 纵向挤压: 元件数 n vs 实际占用行数 ny
-        let ny = seen_y.len();
+        let ny = row_seen.count_ones() as usize;
         let n = cells.len();
         if n > ny {
             row_squash_penalty += (n - ny) as f64;
         }
     }
-    let rail_cross = if buf.compact_map.len() >= 2 {
+    let rail_cross = if num_occupied_rails >= 2 {
         w.rail_crossing
     } else {
         0.0
     };
+    cp_compact!(_t_compact.elapsed().as_nanos() as u64);
 
     w.mst * mst_sum
         + w.pin_overlap * coll_count as f64
@@ -1817,7 +2138,7 @@ pub(crate) fn cost_breakdown(
     w: &Weights,
 ) -> (f64, CostBreakdown) {
     let ctx = SAContext::new(circuit, &state.placeable);
-    let mut buf = CostBuf::new(circuit.nets().len());
+    let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
     cost_breakdown_inner(state, circuit, board, bridged_pins, w, &ctx, &mut buf)
 }
 
@@ -1931,13 +2252,27 @@ fn cost_breakdown_inner(
         }
     }
     let mut coll_count = 0u32;
-    for (i, &hole) in buf.holes.iter().enumerate() {
-        if hole.2 == u32::MAX || buf.is_virtual[i] {
-            continue;
+    buf.pin_idx_sorted.clear();
+    for (i, hole) in buf.holes.iter().enumerate() {
+        if hole.2 != u32::MAX && !buf.is_virtual[i] {
+            buf.pin_idx_sorted.push(i);
         }
-        if !buf.pin_seen.insert(hole) {
-            coll_count += 1;
+    }
+    buf.pin_idx_sorted
+        .sort_unstable_by_key(|&i| unsafe { *buf.holes.get_unchecked(i) });
+    let mut j = 0;
+    while j < buf.pin_idx_sorted.len() {
+        let mut k = j + 1;
+        while k < buf.pin_idx_sorted.len()
+            && buf.holes[buf.pin_idx_sorted[k]] == buf.holes[buf.pin_idx_sorted[j]]
+        {
+            k += 1;
         }
+        let n = k - j;
+        if n > 1 {
+            coll_count += (n - 1) as u32;
+        }
+        j = k;
     }
     let mut bbox_overlap_count = 0u32;
     for i in 0..buf.bboxes.len() {
@@ -1976,13 +2311,10 @@ fn cost_breakdown_inner(
         if rail_id == u32::MAX {
             continue;
         }
-        buf.rail_map
-            .entry(rail_id)
-            .or_insert_with(|| Vec::with_capacity(4))
-            .push(net_opt);
+        buf.rail_map[rail_id as usize].push(net_opt);
     }
     let mut col_conflict_pairs = 0usize;
-    for rail_owners in buf.rail_map.values() {
+    for rail_owners in buf.rail_map.iter() {
         if rail_owners.len() < 2 {
             continue;
         }
@@ -2008,38 +2340,43 @@ fn cost_breakdown_inner(
             .first()
             .copied()
             .unwrap_or(bbox.min_y);
-        buf.compact_map
-            .entry(rail_top)
-            .or_insert_with(|| Vec::with_capacity(4))
-            .push(*bbox);
+        buf.compact_map[rail_top as usize].push(*bbox);
     }
     let mut area_sum = 0.0f64;
     let mut row_squash_penalty = 0.0f64;
-    for cells in buf.compact_map.values() {
+    let mut num_occupied_rails = 0usize;
+    for cells in buf.compact_map.iter() {
+        if cells.is_empty() {
+            continue;
+        }
+        num_occupied_rails += 1;
         let mut min_x = i32::MAX;
         let mut max_x = i32::MIN;
         let mut min_y = i32::MAX;
         let mut max_y = i32::MIN;
-        let mut seen_y: HashSet<i32> = HashSet::with_capacity(4);
+        let mut row_seen: u32 = 0;
         for b in cells {
             min_x = min_x.min(b.min_x);
             max_x = max_x.max(b.max_x);
             min_y = min_y.min(b.min_y);
             max_y = max_y.max(b.max_y);
-            seen_y.insert(b.min_y);
+            let row_idx = (b.min_y - min_y) as u32;
+            if row_idx < 32 {
+                row_seen |= 1u32 << row_idx;
+            }
         }
         if min_x <= max_x && min_y <= max_y {
             let width = (max_x - min_x + 1) as f64;
             let height = (max_y - min_y + 1) as f64;
             area_sum += width * height;
         }
-        let ny = seen_y.len();
+        let ny = row_seen.count_ones() as usize;
         let n = cells.len();
         if n > ny {
             row_squash_penalty += (n - ny) as f64;
         }
     }
-    let rail_cross = if buf.compact_map.len() >= 2 {
+    let rail_cross = if num_occupied_rails >= 2 {
         w.rail_crossing
     } else {
         0.0
@@ -2150,29 +2487,88 @@ fn mst_wire_length_fast(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
     }
 }
 
-/// Kruskal MST for ≥4 pin nets. Allocates locally (nets with ≥4 pins are rare).
+/// Kruskal MST for ≥4 pin nets. 用栈上数组代替堆 Vec, 避免每次 malloc/free。
+/// 上限 12 pin = 66 条边, 超过则退到堆路径。
 fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
+    const MAX_N: usize = 12;
+    const MAX_E: usize = MAX_N * (MAX_N - 1) / 2;
     let n = indices.len();
+    debug_assert!(n >= 4);
 
-    // Generate edges
-    let mut edges: Vec<(i32, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
-    for a in 0..n {
-        for b in (a + 1)..n {
+    let mut stack_edges: [(i32, usize, usize); MAX_E] = [(0, 0, 0); MAX_E];
+    let mut edge_count: usize;
+
+    if n <= MAX_N {
+        // 快路径: 栈上数组
+        edge_count = 0;
+        for a in 0..n {
             let ha = holes[indices[a]];
-            let hb = holes[indices[b]];
-            let d = if ha.2 == hb.2 {
-                0
-            } else {
-                (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()
-            };
-            edges.push((d, a, b));
+            for b in (a + 1)..n {
+                let hb = holes[indices[b]];
+                let d = if ha.2 == hb.2 {
+                    0
+                } else {
+                    (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()
+                };
+                stack_edges[edge_count] = (d, a, b);
+                edge_count += 1;
+            }
+        }
+    } else {
+        // 慢路径: 堆 (超 12 pin 的 net 罕见)
+        let mut heap_edges: Vec<(i32, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
+        for a in 0..n {
+            let ha = holes[indices[a]];
+            for b in (a + 1)..n {
+                let hb = holes[indices[b]];
+                let d = if ha.2 == hb.2 {
+                    0
+                } else {
+                    (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()
+                };
+                heap_edges.push((d, a, b));
+            }
+        }
+        heap_edges.sort_by_key(|e| e.0);
+        return kruskal_union(&heap_edges, n);
+    }
+
+    // 部分排序: 只 sort 前 edge_count 条
+    stack_edges[..edge_count].sort_by_key(|e| e.0);
+
+    // Union-find 也用栈数组
+    let mut parent: [usize; MAX_N] = [0; MAX_N];
+    for i in 0..n {
+        parent[i] = i;
+    }
+
+    let mut total: i32 = 0;
+    let mut edges_used = 0;
+    for &(d, i, j) in &stack_edges[..edge_count] {
+        let mut ri = i;
+        while parent[ri] != ri {
+            parent[ri] = parent[parent[ri]];
+            ri = parent[ri];
+        }
+        let mut rj = j;
+        while parent[rj] != rj {
+            parent[rj] = parent[parent[rj]];
+            rj = parent[rj];
+        }
+        if ri != rj {
+            parent[ri] = rj;
+            total += d;
+            edges_used += 1;
+            if edges_used == n - 1 {
+                break;
+            }
         }
     }
-    edges.sort_by_key(|e| e.0);
+    total as f64
+}
 
-    // Union-find
+fn kruskal_union(edges: &[(i32, usize, usize)], n: usize) -> f64 {
     let mut parent: Vec<usize> = (0..n).collect();
-
     let find = |parent: &mut Vec<usize>, mut x: usize| -> usize {
         while parent[x] != x {
             parent[x] = parent[parent[x]];
@@ -2180,10 +2576,9 @@ fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32, u32)]) ->
         }
         x
     };
-
     let mut total: i32 = 0;
     let mut edges_used = 0;
-    for &(d, i, j) in &edges {
+    for &(d, i, j) in edges {
         let ri = find(&mut parent, i);
         let rj = find(&mut parent, j);
         if ri != rj {
@@ -4047,7 +4442,7 @@ mod tests {
         }
 
         let ctx = SAContext::new(&circuit, &placeable);
-        let mut buf = CostBuf::new(circuit.nets().len());
+        let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
         init_bridgeable_to_bridged(
             &mut state,
             &circuit,
@@ -4075,7 +4470,7 @@ mod tests {
         populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 
         let ctx = SAContext::new(&circuit, &placeable);
-        let mut buf = CostBuf::new(circuit.nets().len());
+        let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
         let weights = Weights::default();
         init_bridgeable_to_bridged(&mut state, &circuit, &board, &[], &weights, &ctx, &mut buf);
 

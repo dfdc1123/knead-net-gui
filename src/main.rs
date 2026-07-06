@@ -7,6 +7,10 @@ use knead_net::{
     spectral_debug_positions,
 };
 
+// profile helpers live in sa.rs (pub(super) gated). We re-import via a small
+// shim in `lib.rs` if needed; for now keep them private and reach via a debug
+// helper exposed from the layout module.
+
 fn main() {
     let kicad_dir = "examples/kicad";
 
@@ -120,6 +124,11 @@ fn main() {
     //
     // 想只快速看一眼布局结构时可添 `--quick` 走快模式; 最终生成 SVG 走默认。
     let quick_mode = std::env::args().any(|a| a == "--quick");
+    let profile_mode = std::env::args().any(|a| a == "--profile");
+    if profile_mode {
+        knead_net::layout::sa::reset_profile();
+        knead_net::layout::cost::reset_cost_profile();
+    }
     let sa_config = if quick_mode {
         SAConfig {
             use_spectral: true,
@@ -146,6 +155,10 @@ fn main() {
         for e in &errors {
             eprintln!("  - {e:?}");
         }
+    }
+    if profile_mode {
+        knead_net::layout::sa::dump_profile("main");
+        knead_net::layout::cost::dump_cost_profile("main");
     }
 
     println!("=== 摆放 (SA + 压缩) ===");
