@@ -11,9 +11,10 @@ use knead_net::{
 };
 
 fn main() {
-    let kicad_dir = "examples/kicad";
+    let footprints_dir = "examples/footprints";
+    let inputs_dir = "examples/inputs";
 
-    let mut footprint_paths: Vec<String> = fs::read_dir(kicad_dir)
+    let mut footprint_paths: Vec<String> = fs::read_dir(footprints_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -28,7 +29,7 @@ fn main() {
         .collect();
     let footprints = parse_footprints(footprint_texts).unwrap();
 
-    let netlist_path = format!("{kicad_dir}/bjt_led.net");
+    let netlist_path = format!("{inputs_dir}/bjt_led.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 

@@ -1,4 +1,2 @@
 /target
-
-# main / sa_sweep 跑出来的渲染产物
-/examples/kicad/*.svg
+/output

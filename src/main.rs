@@ -12,10 +12,13 @@ use knead_net::{
 // helper exposed from the layout module.
 
 fn main() {
-    let kicad_dir = "examples/kicad";
+    let footprints_dir = "examples/footprints";
+    let inputs_dir = "examples/inputs";
+    let outputs_dir = "output";
+    fs::create_dir_all(outputs_dir).expect("创建 output 目录失败");
 
-    // 1. 收齐 examples/kicad 下所有 .kicad_mod 文件
-    let mut footprint_paths: Vec<String> = fs::read_dir(kicad_dir)
+    // 1. 收齐 examples/footprints 下所有 .kicad_mod 文件
+    let mut footprint_paths: Vec<String> = fs::read_dir(footprints_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -32,7 +35,7 @@ fn main() {
     let footprints = parse_footprints(footprint_texts).unwrap();
 
     // 2. 读 .net 文件
-    let netlist_path = format!("{kicad_dir}/h-bridge-power.net");
+    let netlist_path = format!("{inputs_dir}/h-bridge-power.net");
     let netlist_text = fs::read_to_string(&netlist_path).unwrap();
     let netlist = parse_netlist(&netlist_text).unwrap();
 
@@ -108,7 +111,7 @@ fn main() {
                 }
             }
             let svg = knead_net::render::to_svg(&circuit, &board, &sl_layout);
-            let path = format!("{kicad_dir}/layout-spectral.svg");
+            let path = format!("{outputs_dir}/layout-spectral.svg");
             fs::write(&path, &svg).expect("写 spectral SVG 失败");
             eprintln!("Spectral SVG → {path} ({} 字节)", svg.len());
         }
@@ -268,7 +271,7 @@ fn main() {
 
     // 7. 渲染 SVG (总是画, 有冲突也画)
     let svg = knead_net::render::to_svg(&circuit, &board, &layout);
-    let svg_path = format!("{kicad_dir}/layout.svg");
+    let svg_path = format!("{outputs_dir}/layout.svg");
     fs::write(&svg_path, &svg).expect("写 SVG 失败");
     println!("=== SVG 已写入 {svg_path} ({} 字节) ===", svg.len());
 }
