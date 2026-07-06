@@ -64,7 +64,7 @@ fn main() {
         let _ = layout.place_sa(
             &board,
             &SAConfig {
-                use_force_directed: true,
+                use_spectral: true,
                 max_iters: 50000,
                 t0: 30.0,
                 cool_rate: 0.999,

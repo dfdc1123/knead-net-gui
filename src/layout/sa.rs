@@ -59,7 +59,7 @@ use crate::layout::breadboard::Breadboard;
 #[cfg(test)]
 use crate::layout::cost::cost;
 use crate::layout::cost::{
-    CostBuf, FDConfig, SAContext, SAState, Weights, cost_fast, init_bridgeable_to_bridged,
+    CostBuf, SAContext, SAState, Weights, cost_fast, init_bridgeable_to_bridged,
     populate_bridgeable_info,
 };
 use crate::layout::placement::Rotation;
@@ -162,14 +162,9 @@ pub struct SAConfig {
     /// 跑多少次取最低 cost 的解。SA 是随机算法, 单次可能卡在 local optimum。
     /// 多 seed 独立跑, 取 cost 最低的。默认 1。
     pub n_seeds: usize,
-    /// `true` 用 [`SAState::from_force_directed`] 做初排 (比 `from_greedy` 慢,
-    /// 但对强耦合电路起点好得多); `false` 用贪心 first-fit。
-    pub use_force_directed: bool,
-    /// `true` 用 [`SAState::from_spectral`] 做初排 (频谱嵌入, 无参数, 一步到位)。
-    /// 优先于 `use_force_directed`。
+    /// `true` 用 [`SAState::from_spectral`] 做初排 (频谱嵌入, 无参数, 一步到位);
+    /// `false` 用贪心 first-fit [`SAState::from_greedy`].
     pub use_spectral: bool,
-    /// 仅在 `use_force_directed = true` 时使用。
-    pub fd_config: FDConfig,
     /// `random_move` 生成 `Move::ToggleBridging` 的目标概率。
     /// 仅当 `state.is_bridgeable[i] = true` 时实际生效, 否则该分支退回 `ShiftX`。
     /// 调高 → SA 更频繁探索 Bridged vs OnBoard; 调低 → Toggle 区间越窄。
@@ -188,9 +183,7 @@ impl Default for SAConfig {
             weights: Weights::default(),
             seed: 0xCAFE_F00D,
             n_seeds: 1,
-            use_force_directed: false,
             use_spectral: false,
-            fd_config: FDConfig::default(),
             p_toggle_bridge: 0.15,
         }
     }
@@ -721,9 +714,8 @@ fn can_shift_left_one(state: &SAState, board: &Breadboard, i: usize) -> bool {
 
 /// 跑模拟退火, 返回最佳 [`SAState`]。
 ///
-/// 初始状态按 [`SAConfig::use_spectral`] / [`SAConfig::use_force_directed`] 选
-/// [`SAState::from_spectral`] / [`SAState::from_force_directed`], 两者皆否时用
-/// [`SAState::from_greedy`]; 三者都已经避免 pin 撞 / bbox 撞 / 列冲突,
+/// 初始状态按 [`SAConfig::use_spectral`] 选 [`SAState::from_spectral`] 或
+/// [`SAState::from_greedy`]; 两者都已经避免 pin 撞 / bbox 撞 / 列冲突,
 /// (后续 `Flip` / `ShiftX` 偶尔会重新引入列短路, 由 cost 罚分优化掉)。
 pub(super) fn simulate(
     placeable: Vec<ComponentId>,
@@ -737,8 +729,6 @@ pub(super) fn simulate(
         // spectral init 使用 config.seed 初始化幂迭代初始向量,
         // 跨进程同 seed 可复现; 不调全局 fastrand。
         SAState::from_spectral(placeable, circuit, board, config.seed)
-    } else if config.use_force_directed {
-        SAState::from_force_directed(placeable, circuit, board, &config.fd_config)
     } else {
         SAState::from_greedy(placeable, circuit, board)
     };
