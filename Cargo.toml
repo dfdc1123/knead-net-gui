@@ -10,3 +10,8 @@ lexpr = "0.2"
 rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+
+# layout 模块里 cost.rs / sa.rs 用了 cfg(profile_sa) / cfg(profile_cost)
+# 之前写在 build.rs 里, 现在挪到 [lints] 里 —— 效果一样, 不再需要 build.rs。
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(profile_sa)", "cfg(profile_cost)"] }

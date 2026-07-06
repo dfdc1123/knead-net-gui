@@ -1,4 +1,17 @@
 //! JSON 输入格式及其到 [`Circuit`] 的转换。
+//!
+//! 注意: 这是 [`crate::input::netlist`] 之外的备选输入格式, 目前**没有**
+//! 被 `main` / `sa_sweep` driver 调用 —— 它们都走 KiCad `.net` 路线。
+//! 留它的原因: 配套 fixture `examples/led_bjt.json` 是手写小电路的便捷入口,
+//! 同时也是 `serde_json` 依赖存在的唯一理由。 如果哪天 netlist parser
+//! 退役了, 这个模块和 `serde_json` 可以一起删。
+//!
+//! 典型用法:
+//! ```ignore
+//! let text = std::fs::read_to_string("examples/led_bjt.json")?;
+//! let input: CircuitInput = serde_json::from_str(&text)?;
+//! let circuit: Circuit = input.into();
+//! ```
 
 use std::collections::HashMap;
 
