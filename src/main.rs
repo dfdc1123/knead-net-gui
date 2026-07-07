@@ -57,22 +57,34 @@ fn main() {
     // 标准板: 50 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
     // 上下半各自独立 rail, 同列不同 rail 互不连通。 上下各一组 power rail。
     //
-    // `MASK_LOWER_HALF`: 是否屏蔽下半 (rows 7..12)?
-    //   - true  → 下半全标 blocked, 元件只能摆在 rows 0..5 (上半 5 行, 中央通道被屏蔽)
-    //   - false → 完整标准板, 上下各 5 行都能用
-    // 改这一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
+    // 两个独立开关, 能随时切换:
+    //   - MASK_UPPER_HALF=true  → 上半 rows 0..4 全 blocked
+    //   - MASK_LOWER_HALF=true  → 下半 rows 7..11 全 blocked
+    // 组合:
+    //   - 两个都 false → 完整标准板, 上下各 5 行都能用
+    //   - 只 MASK_LOWER_HALF=true (默认) → 上半可用, 原本测试状态
+    //   - 只 MASK_UPPER_HALF=true  → 下半可用 (rows 7..11)
+    //   - 两个都 true    → 上下都屏蔽, 只剩中央 5/6 行 (本身也 blocked), 元件无处可放
+    // 改任一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
+    const MASK_UPPER_HALF: bool = false;
     const MASK_LOWER_HALF: bool = true;
     let mut board = {
         let mut blocked: Vec<usize> = vec![5, 6]; // 标准中央通道
+        if MASK_UPPER_HALF {
+            blocked.extend(0..5); // 屏蔽上半
+        }
         if MASK_LOWER_HALF {
             blocked.extend(7..12); // 屏蔽下半
         }
         Breadboard::with_power_rails(50, 12, blocked, knead_net::standard_power_rails(50))
     };
-    if MASK_LOWER_HALF {
-        eprintln!("⚠ 下半已屏蔽, 元件只能摆在 rows 0..5 (上半)");
-    } else {
-        eprintln!("板子使用完整标准板 (rows 0..5 上半 + rows 7..11 下半, 中央 5/6 blocked)");
+    match (MASK_UPPER_HALF, MASK_LOWER_HALF) {
+        (false, false) => {
+            eprintln!("板子使用完整标准板 (rows 0..5 上半 + rows 7..11 下半, 中央 5/6 blocked)")
+        }
+        (true, false) => eprintln!("⚠ 上半已屏蔽, 元件只能摆在 rows 7..11 (下半)"),
+        (false, true) => eprintln!("⚠ 下半已屏蔽, 元件只能摆在 rows 0..5 (上半)"),
+        (true, true) => eprintln!("⚠ 上下都屏蔽, 中央 5/6 blocked, 元件无处可放"),
     }
 
     // 4b. 把电源轨绑到具体 net (让 SA/路由把 rail 强制接进电路)

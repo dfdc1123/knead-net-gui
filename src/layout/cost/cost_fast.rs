@@ -4,7 +4,6 @@
 //! - `cost_breakdown`: 返回成本 + 各项明细, 调试 / profile 用
 //! - `cost_breakdown_inner`: breakdown 的实际实现, 跟 cost_fast 共享热路径
 
-
 use crate::circuit::Circuit;
 use crate::layout::breadboard::{Breadboard, Polarity};
 use crate::layout::placement::{BBox, Rotation};

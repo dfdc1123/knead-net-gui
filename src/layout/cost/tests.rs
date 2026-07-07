@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 use crate::circuit::{
     Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin, PinId,
     Position,
