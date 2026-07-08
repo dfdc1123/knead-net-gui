@@ -18,6 +18,28 @@ cargo run --release
 cargo run --release --bin sa_sweep
 ```
 
+## Footprint 加载
+
+需要的封装从两个地方找 (按顺序), 第一个命中即用:
+
+1. `/usr/share/kicad/footprints/` (写死在 `src/main.rs` 顶上的 `KICAD_LIB_PATH` 常量)。
+   这是系统装 KiCad 时自带的标准库, 里面是 `*.pretty/` 子目录, 例如
+   `Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod`。
+   `.net` 里写的 `Package_DIP:DIP-14_W7.62mm` 会被拆成 `(lib=Package_DIP, name=DIP-14_W7.62mm)` 然后找
+   `/usr/share/kicad/footprints/Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod`。
+2. `examples/footprints/<NAME>.kicad_mod` (flat fallback, 兼容手拷的本地图 ——
+   例如你改过的封装, 或 kicad 系统库里没有的特殊件)。
+
+加新例子时不需要再手拷 `.kicad_mod`: 只要 netlist 用的封装在系统 KiCad 库里就行。
+
+```bash
+cargo run --release
+```
+
+找不到时程序会报具体查了哪个 kicad 库路径和 fallback, 错误信息会直接告诉你缺哪个 ref。
+
+要换 KiCad 库路径就改 `src/main.rs` 里的 `KICAD_LIB_PATH` 常量。
+
 ## 目录结构
 
 ```
