@@ -13,17 +13,13 @@ use crate::circuit::{
 /// 面包板一个孔的间距 (mm)
 const HOLE_SPACING_MM: f64 = 2.54;
 
-/// 把 mm 坐标换算成"孔数"。能整除就四舍五入到最近整数, 不能整除就 panic。
+/// 把 mm 坐标换算成"孔数", 四舍五入到最近整数孔。
+///
+/// 容许小偏差 (例如 2.50mm 电容间距 → 1 孔 = 2.54mm),
+/// 实际插面包板时引脚弹性足够吸收这个误差。
 fn mm_to_holes(mm: f64) -> i32 {
     let holes = mm / HOLE_SPACING_MM;
-    let rounded = holes.round();
-    if (rounded - holes).abs() > 1e-9 {
-        panic!(
-            "位置 {mm} mm 不能整除成面包板孔数 ({holes} 孔) — \
-             暂时不接受半孔位置, 面包板网格是 {HOLE_SPACING_MM} mm/孔"
-        );
-    }
-    rounded as i32
+    holes.round() as i32
 }
 
 /// 从单个 pad 提取出的数据
