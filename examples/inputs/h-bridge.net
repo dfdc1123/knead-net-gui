@@ -1,8 +1,8 @@
 (export
 	(version "E")
 	(design
-		(source "/home/dfdc/Documents/Projects/bjt_led/bjt_led/bjt_led.kicad_sch")
-		(date "2026-06-25T16:52:42")
+		(source "/home/dfdc/Documents/Projects/kicad/h-bridge/h-bridge.kicad_sch")
+		(date "2026-07-09T15:53:41")
 		(tool "Eeschema 10.0.4")
 		(sheet
 			(number "1")
@@ -13,7 +13,7 @@
 				(company)
 				(rev)
 				(date)
-				(source "bjt_led.kicad_sch")
+				(source "h-bridge.kicad_sch")
 				(comment
 					(number "1")
 					(value "")
@@ -56,10 +56,9 @@
 	(components
 		(comp
 			(ref "D1")
-			(value "1N4001")
+			(value "D")
 			(footprint "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
-			(datasheet "http://www.vishay.com/docs/88503/1n4001.pdf")
-			(description "50V 1A General Purpose Rectifier Diode, DO-41")
+			(description "Diode")
 			(fields
 				(field
 					(name "Sim.Device") "D")
@@ -68,14 +67,15 @@
 				(field
 					(name "Footprint") "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
 				(field
-					(name "Datasheet") "http://www.vishay.com/docs/88503/1n4001.pdf")
+					(name "Datasheet")
+				)
 				(field
-					(name "Description") "50V 1A General Purpose Rectifier Diode, DO-41")
+					(name "Description") "Diode")
 			)
 			(libsource
-				(lib "Diode")
-				(part "1N4001")
-				(description "50V 1A General Purpose Rectifier Diode, DO-41")
+				(lib "Device")
+				(part "D")
+				(description "Diode")
 			)
 			(property
 				(name "Sim.Device")
@@ -87,11 +87,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -99,13 +99,13 @@
 			)
 			(property
 				(name "ki_fp_filters")
-				(value "D*DO?41*")
+				(value "TO-???* *_Diode_* *SingleDiode* D_*")
 			)
 			(sheetpath
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "45cf3fdd-3335-458c-b5a2-e4cd343e80ec")
+			(tstamps "3849d225-2700-4170-ac1f-128ee5fff9be")
 			(units
 				(unit
 					(name "A")
@@ -122,10 +122,9 @@
 		)
 		(comp
 			(ref "D2")
-			(value "1N4001")
+			(value "D")
 			(footprint "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
-			(datasheet "http://www.vishay.com/docs/88503/1n4001.pdf")
-			(description "50V 1A General Purpose Rectifier Diode, DO-41")
+			(description "Diode")
 			(fields
 				(field
 					(name "Sim.Device") "D")
@@ -134,14 +133,15 @@
 				(field
 					(name "Footprint") "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
 				(field
-					(name "Datasheet") "http://www.vishay.com/docs/88503/1n4001.pdf")
+					(name "Datasheet")
+				)
 				(field
-					(name "Description") "50V 1A General Purpose Rectifier Diode, DO-41")
+					(name "Description") "Diode")
 			)
 			(libsource
-				(lib "Diode")
-				(part "1N4001")
-				(description "50V 1A General Purpose Rectifier Diode, DO-41")
+				(lib "Device")
+				(part "D")
+				(description "Diode")
 			)
 			(property
 				(name "Sim.Device")
@@ -153,11 +153,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -165,13 +165,13 @@
 			)
 			(property
 				(name "ki_fp_filters")
-				(value "D*DO?41*")
+				(value "TO-???* *_Diode_* *SingleDiode* D_*")
 			)
 			(sheetpath
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "70c27bcf-b351-4d06-8f54-8d2973e5a812")
+			(tstamps "cba3848b-457c-4381-9084-fa887070b8ad")
 			(units
 				(unit
 					(name "A")
@@ -188,10 +188,9 @@
 		)
 		(comp
 			(ref "D3")
-			(value "1N4001")
+			(value "D")
 			(footprint "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
-			(datasheet "http://www.vishay.com/docs/88503/1n4001.pdf")
-			(description "50V 1A General Purpose Rectifier Diode, DO-41")
+			(description "Diode")
 			(fields
 				(field
 					(name "Sim.Device") "D")
@@ -200,14 +199,15 @@
 				(field
 					(name "Footprint") "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
 				(field
-					(name "Datasheet") "http://www.vishay.com/docs/88503/1n4001.pdf")
+					(name "Datasheet")
+				)
 				(field
-					(name "Description") "50V 1A General Purpose Rectifier Diode, DO-41")
+					(name "Description") "Diode")
 			)
 			(libsource
-				(lib "Diode")
-				(part "1N4001")
-				(description "50V 1A General Purpose Rectifier Diode, DO-41")
+				(lib "Device")
+				(part "D")
+				(description "Diode")
 			)
 			(property
 				(name "Sim.Device")
@@ -219,11 +219,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -231,13 +231,13 @@
 			)
 			(property
 				(name "ki_fp_filters")
-				(value "D*DO?41*")
+				(value "TO-???* *_Diode_* *SingleDiode* D_*")
 			)
 			(sheetpath
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "a8cc4d86-131a-44ad-a4fb-7f5315603c93")
+			(tstamps "a658e4e6-c39c-4afa-b38a-50b015e1b365")
 			(units
 				(unit
 					(name "A")
@@ -254,10 +254,9 @@
 		)
 		(comp
 			(ref "D4")
-			(value "1N4001")
+			(value "D")
 			(footprint "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
-			(datasheet "http://www.vishay.com/docs/88503/1n4001.pdf")
-			(description "50V 1A General Purpose Rectifier Diode, DO-41")
+			(description "Diode")
 			(fields
 				(field
 					(name "Sim.Device") "D")
@@ -266,14 +265,15 @@
 				(field
 					(name "Footprint") "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
 				(field
-					(name "Datasheet") "http://www.vishay.com/docs/88503/1n4001.pdf")
+					(name "Datasheet")
+				)
 				(field
-					(name "Description") "50V 1A General Purpose Rectifier Diode, DO-41")
+					(name "Description") "Diode")
 			)
 			(libsource
-				(lib "Diode")
-				(part "1N4001")
-				(description "50V 1A General Purpose Rectifier Diode, DO-41")
+				(lib "Device")
+				(part "D")
+				(description "Diode")
 			)
 			(property
 				(name "Sim.Device")
@@ -285,11 +285,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -297,13 +297,13 @@
 			)
 			(property
 				(name "ki_fp_filters")
-				(value "D*DO?41*")
+				(value "TO-???* *_Diode_* *SingleDiode* D_*")
 			)
 			(sheetpath
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "76baf742-75fb-4ab8-b862-9719117b4be1")
+			(tstamps "f97a4fa4-ac7d-43a6-a20c-22cda54b6f1e")
 			(units
 				(unit
 					(name "A")
@@ -320,77 +320,6 @@
 		)
 		(comp
 			(ref "Q1")
-			(value "PNP")
-			(footprint "Package_TO_SOT_THT:TO-92L_Inline_Wide")
-			(datasheet "https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml#cha_BJTs")
-			(description "Bipolar transistor symbol for simulation only, substrate tied to the emitter")
-			(fields
-				(field
-					(name "Sim.Device") "PNP")
-				(field
-					(name "Sim.Type") "GUMMELPOON")
-				(field
-					(name "Sim.Pins") "1=C 2=B 3=E")
-				(field
-					(name "Footprint") "Package_TO_SOT_THT:TO-92L_Inline_Wide")
-				(field
-					(name "Datasheet") "https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml#cha_BJTs")
-				(field
-					(name "Description") "Bipolar transistor symbol for simulation only, substrate tied to the emitter")
-			)
-			(libsource
-				(lib "Simulation_SPICE")
-				(part "PNP")
-				(description "Bipolar transistor symbol for simulation only, substrate tied to the emitter")
-			)
-			(property
-				(name "Sim.Device")
-				(value "PNP")
-			)
-			(property
-				(name "Sim.Type")
-				(value "GUMMELPOON")
-			)
-			(property
-				(name "Sim.Pins")
-				(value "1=C 2=B 3=E")
-			)
-			(property
-				(name "Sheetname")
-				(value "bjt_led")
-			)
-			(property
-				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
-			)
-			(property
-				(name "ki_keywords")
-				(value "simulation")
-			)
-			(sheetpath
-				(names "/")
-				(tstamps "/")
-			)
-			(tstamps "0d91ec27-f404-4c59-9d81-35e113f51fbd")
-			(units
-				(unit
-					(name "A")
-					(pins
-						(pin
-							(num "2")
-						)
-						(pin
-							(num "1")
-						)
-						(pin
-							(num "3")
-						)
-					)
-				)
-			)
-		)
-		(comp
-			(ref "Q2")
 			(value "NPN")
 			(footprint "Package_TO_SOT_THT:TO-92L_Inline_Wide")
 			(datasheet "https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml#cha_BJTs")
@@ -428,11 +357,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -442,7 +371,78 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "a580afaf-7281-4daa-859b-c0e2353afb10")
+			(tstamps "f2a83248-7b45-49fd-9125-18cd94e1f2bf")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "2")
+						)
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "3")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "Q2")
+			(value "PNP")
+			(footprint "Package_TO_SOT_THT:TO-92L_Inline_Wide")
+			(datasheet "https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml#cha_BJTs")
+			(description "Bipolar transistor symbol for simulation only, substrate tied to the emitter")
+			(fields
+				(field
+					(name "Sim.Device") "PNP")
+				(field
+					(name "Sim.Type") "GUMMELPOON")
+				(field
+					(name "Sim.Pins") "1=C 2=B 3=E")
+				(field
+					(name "Footprint") "Package_TO_SOT_THT:TO-92L_Inline_Wide")
+				(field
+					(name "Datasheet") "https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml#cha_BJTs")
+				(field
+					(name "Description") "Bipolar transistor symbol for simulation only, substrate tied to the emitter")
+			)
+			(libsource
+				(lib "Simulation_SPICE")
+				(part "PNP")
+				(description "Bipolar transistor symbol for simulation only, substrate tied to the emitter")
+			)
+			(property
+				(name "Sim.Device")
+				(value "PNP")
+			)
+			(property
+				(name "Sim.Type")
+				(value "GUMMELPOON")
+			)
+			(property
+				(name "Sim.Pins")
+				(value "1=C 2=B 3=E")
+			)
+			(property
+				(name "Sheetname")
+				(value "根目录")
+			)
+			(property
+				(name "Sheetfile")
+				(value "h-bridge.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "simulation")
+			)
+			(sheetpath
+				(names "/")
+				(tstamps "/")
+			)
+			(tstamps "f884f6b4-7f7d-4cb9-b353-c6adff9305c8")
 			(units
 				(unit
 					(name "A")
@@ -499,11 +499,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -513,7 +513,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "86194a6d-1ad2-4459-a7ed-e98ced0f4767")
+			(tstamps "444efec0-c02c-4f4b-ba24-cddaae9f5624")
 			(units
 				(unit
 					(name "A")
@@ -570,11 +570,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -584,7 +584,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "339d45bc-384a-4cec-94ba-d750ebd86463")
+			(tstamps "a3aa68c9-4de8-4235-8469-46f8fa330735")
 			(units
 				(unit
 					(name "A")
@@ -641,11 +641,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -655,7 +655,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "455bb331-0ebd-43fe-9cbb-576f592a059d")
+			(tstamps "e768f7bd-415f-48dd-b906-0b2da4885170")
 			(units
 				(unit
 					(name "A")
@@ -712,11 +712,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -726,7 +726,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "60bfee5f-83d5-4cdf-8f64-ede1865e3459")
+			(tstamps "c10c50df-73f7-4022-96cd-6ce7176df24b")
 			(units
 				(unit
 					(name "A")
@@ -745,7 +745,7 @@
 			)
 		)
 		(comp
-			(ref "R2")
+			(ref "R1")
 			(value "220")
 			(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
 			(description "Resistor")
@@ -765,11 +765,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -783,7 +783,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "3eb90d94-e843-4e3e-9674-26d619074190")
+			(tstamps "9b1acf84-5789-4916-8f7c-1ea7fbac267a")
 			(units
 				(unit
 					(name "A")
@@ -799,7 +799,7 @@
 			)
 		)
 		(comp
-			(ref "R3")
+			(ref "R2")
 			(value "10k")
 			(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
 			(description "Resistor")
@@ -819,11 +819,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -837,7 +837,61 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "212559df-5e5e-4456-8ce7-8a54590c41c4")
+			(tstamps "4217b548-d16c-4655-a387-55a2bc1cb1a4")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "R3")
+			(value "220")
+			(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
+			(description "Resistor")
+			(fields
+				(field
+					(name "Footprint") "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
+				(field
+					(name "Datasheet")
+				)
+				(field
+					(name "Description") "Resistor")
+			)
+			(libsource
+				(lib "Device")
+				(part "R")
+				(description "Resistor")
+			)
+			(property
+				(name "Sheetname")
+				(value "根目录")
+			)
+			(property
+				(name "Sheetfile")
+				(value "h-bridge.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "R res resistor")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "R_*")
+			)
+			(sheetpath
+				(names "/")
+				(tstamps "/")
+			)
+			(tstamps "f8a60516-fb19-4f3d-9ca5-b4a48ca6920a")
 			(units
 				(unit
 					(name "A")
@@ -873,11 +927,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -891,7 +945,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "8b252959-7d87-4711-886a-0f2c3bc131c7")
+			(tstamps "8a644fb9-4600-42ab-beda-427fa1b8a97f")
 			(units
 				(unit
 					(name "A")
@@ -927,11 +981,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -945,7 +999,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "472e66a8-0a55-4a1e-900d-175a05c67ca7")
+			(tstamps "257f41e1-2d2c-480e-988f-373c19707549")
 			(units
 				(unit
 					(name "A")
@@ -962,60 +1016,6 @@
 		)
 		(comp
 			(ref "R6")
-			(value "220")
-			(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
-			(description "Resistor")
-			(fields
-				(field
-					(name "Footprint") "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
-				(field
-					(name "Datasheet")
-				)
-				(field
-					(name "Description") "Resistor")
-			)
-			(libsource
-				(lib "Device")
-				(part "R")
-				(description "Resistor")
-			)
-			(property
-				(name "Sheetname")
-				(value "bjt_led")
-			)
-			(property
-				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
-			)
-			(property
-				(name "ki_keywords")
-				(value "R res resistor")
-			)
-			(property
-				(name "ki_fp_filters")
-				(value "R_*")
-			)
-			(sheetpath
-				(names "/")
-				(tstamps "/")
-			)
-			(tstamps "f6d22adc-16d4-4448-9cdb-f566024398e7")
-			(units
-				(unit
-					(name "A")
-					(pins
-						(pin
-							(num "1")
-						)
-						(pin
-							(num "2")
-						)
-					)
-				)
-			)
-		)
-		(comp
-			(ref "R7")
 			(value "10k")
 			(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
 			(description "Resistor")
@@ -1035,11 +1035,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -1053,7 +1053,61 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "1a8a08bb-a8ee-441e-b214-715465ed789d")
+			(tstamps "dd7e05aa-9ac4-4e1b-a55d-8fd3518db4c6")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+					)
+				)
+			)
+		)
+		(comp
+			(ref "R7")
+			(value "220")
+			(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
+			(description "Resistor")
+			(fields
+				(field
+					(name "Footprint") "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
+				(field
+					(name "Datasheet")
+				)
+				(field
+					(name "Description") "Resistor")
+			)
+			(libsource
+				(lib "Device")
+				(part "R")
+				(description "Resistor")
+			)
+			(property
+				(name "Sheetname")
+				(value "根目录")
+			)
+			(property
+				(name "Sheetfile")
+				(value "h-bridge.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "R res resistor")
+			)
+			(property
+				(name "ki_fp_filters")
+				(value "R_*")
+			)
+			(sheetpath
+				(names "/")
+				(tstamps "/")
+			)
+			(tstamps "d8a460ff-7303-4db6-b042-269c0c49ce65")
 			(units
 				(unit
 					(name "A")
@@ -1089,11 +1143,11 @@
 			)
 			(property
 				(name "Sheetname")
-				(value "bjt_led")
+				(value "根目录")
 			)
 			(property
 				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
+				(value "h-bridge.kicad_sch")
 			)
 			(property
 				(name "ki_keywords")
@@ -1107,61 +1161,7 @@
 				(names "/")
 				(tstamps "/")
 			)
-			(tstamps "d0c7c07c-a6d2-4c2b-8744-48ab116db6ca")
-			(units
-				(unit
-					(name "A")
-					(pins
-						(pin
-							(num "1")
-						)
-						(pin
-							(num "2")
-						)
-					)
-				)
-			)
-		)
-		(comp
-			(ref "R9")
-			(value "220")
-			(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
-			(description "Resistor")
-			(fields
-				(field
-					(name "Footprint") "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal")
-				(field
-					(name "Datasheet")
-				)
-				(field
-					(name "Description") "Resistor")
-			)
-			(libsource
-				(lib "Device")
-				(part "R")
-				(description "Resistor")
-			)
-			(property
-				(name "Sheetname")
-				(value "bjt_led")
-			)
-			(property
-				(name "Sheetfile")
-				(value "bjt_led.kicad_sch")
-			)
-			(property
-				(name "ki_keywords")
-				(value "R res resistor")
-			)
-			(property
-				(name "ki_fp_filters")
-				(value "R_*")
-			)
-			(sheetpath
-				(names "/")
-				(tstamps "/")
-			)
-			(tstamps "321e1ed0-77d7-4651-8d56-d06b59a5e767")
+			(tstamps "914cdfd7-5d21-4392-8fff-1fc159628ffe")
 			(units
 				(unit
 					(name "A")
@@ -1180,6 +1180,47 @@
 	(groups)
 	(variants)
 	(libparts
+		(libpart
+			(lib "Device")
+			(part "D")
+			(description "Diode")
+			(footprints
+				(fp "TO-???*")
+				(fp "*_Diode_*")
+				(fp "*SingleDiode*")
+				(fp "D_*")
+			)
+			(fields
+				(field
+					(name "Reference") "D")
+				(field
+					(name "Value") "D")
+				(field
+					(name "Footprint")
+				)
+				(field
+					(name "Datasheet")
+				)
+				(field
+					(name "Description") "Diode")
+				(field
+					(name "Sim.Device") "D")
+				(field
+					(name "Sim.Pins") "1=K 2=A")
+			)
+			(pins
+				(pin
+					(num "1")
+					(name "K")
+					(type "passive")
+				)
+				(pin
+					(num "2")
+					(name "A")
+					(type "passive")
+				)
+			)
+		)
 		(libpart
 			(lib "Device")
 			(part "R")
@@ -1210,43 +1251,6 @@
 				(pin
 					(num "2")
 					(name "")
-					(type "passive")
-				)
-			)
-		)
-		(libpart
-			(lib "Diode")
-			(part "1N4001")
-			(description "50V 1A General Purpose Rectifier Diode, DO-41")
-			(docs "http://www.vishay.com/docs/88503/1n4001.pdf")
-			(footprints
-				(fp "D*DO?41*")
-			)
-			(fields
-				(field
-					(name "Reference") "D")
-				(field
-					(name "Value") "1N4001")
-				(field
-					(name "Footprint") "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal")
-				(field
-					(name "Datasheet") "http://www.vishay.com/docs/88503/1n4001.pdf")
-				(field
-					(name "Description") "50V 1A General Purpose Rectifier Diode, DO-41")
-				(field
-					(name "Sim.Device") "D")
-				(field
-					(name "Sim.Pins") "1=K 2=A")
-			)
-			(pins
-				(pin
-					(num "1")
-					(name "K")
-					(type "passive")
-				)
-				(pin
-					(num "2")
-					(name "A")
 					(type "passive")
 				)
 			)
@@ -1342,10 +1346,6 @@
 			(uri "${KICAD10_SYMBOL_DIR}/Device.kicad_sym")
 		)
 		(library
-			(logical "Diode")
-			(uri "${KICAD10_SYMBOL_DIR}/Diode.kicad_sym")
-		)
-		(library
 			(logical "Simulation_SPICE")
 			(uri "${KICAD10_SYMBOL_DIR}/Simulation_SPICE.kicad_sym")
 		)
@@ -1353,6 +1353,86 @@
 	(nets
 		(net
 			(code "1")
+			(name "+12V")
+			(class "Default")
+			(node
+				(ref "D1")
+				(pin "1")
+				(pinfunction "K_1")
+				(pintype "passive")
+			)
+			(node
+				(ref "D3")
+				(pin "1")
+				(pinfunction "K_1")
+				(pintype "passive")
+			)
+			(node
+				(ref "Q2")
+				(pin "3")
+				(pinfunction "E_3")
+				(pintype "open_emitter")
+			)
+			(node
+				(ref "Q5")
+				(pin "3")
+				(pinfunction "E_3")
+				(pintype "open_emitter")
+			)
+			(node
+				(ref "R2")
+				(pin "2")
+				(pintype "passive")
+			)
+			(node
+				(ref "R6")
+				(pin "2")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "2")
+			(name "GND")
+			(class "Default")
+			(node
+				(ref "D2")
+				(pin "2")
+				(pinfunction "A_2")
+				(pintype "passive")
+			)
+			(node
+				(ref "D4")
+				(pin "2")
+				(pinfunction "A_2")
+				(pintype "passive")
+			)
+			(node
+				(ref "Q1")
+				(pin "3")
+				(pinfunction "E_3")
+				(pintype "open_emitter")
+			)
+			(node
+				(ref "Q3")
+				(pin "3")
+				(pinfunction "E_3")
+				(pintype "open_emitter")
+			)
+			(node
+				(ref "Q4")
+				(pin "3")
+				(pinfunction "E_3")
+				(pintype "open_emitter")
+			)
+			(node
+				(ref "Q6")
+				(pin "3")
+				(pinfunction "E_3")
+				(pintype "open_emitter")
+			)
+		)
+		(net
+			(code "3")
 			(name "Net-(D1-A)")
 			(class "Default")
 			(node
@@ -1368,10 +1448,10 @@
 				(pintype "passive")
 			)
 			(node
-				(ref "Q1")
-				(pin "3")
-				(pinfunction "E_3")
-				(pintype "open_emitter")
+				(ref "Q2")
+				(pin "1")
+				(pinfunction "C_1")
+				(pintype "open_collector")
 			)
 			(node
 				(ref "Q3")
@@ -1381,7 +1461,7 @@
 			)
 		)
 		(net
-			(code "2")
+			(code "4")
 			(name "Net-(D3-A)")
 			(class "Default")
 			(node
@@ -1398,9 +1478,9 @@
 			)
 			(node
 				(ref "Q5")
-				(pin "3")
-				(pinfunction "E_3")
-				(pintype "open_emitter")
+				(pin "1")
+				(pinfunction "C_1")
+				(pintype "open_collector")
 			)
 			(node
 				(ref "Q6")
@@ -1410,7 +1490,7 @@
 			)
 		)
 		(net
-			(code "3")
+			(code "5")
 			(name "Net-(Q1-B)")
 			(class "Default")
 			(node
@@ -1420,13 +1500,34 @@
 				(pintype "input")
 			)
 			(node
-				(ref "R4")
+				(ref "R1")
 				(pin "2")
 				(pintype "passive")
 			)
 		)
 		(net
-			(code "4")
+			(code "6")
+			(name "Net-(Q1-C)")
+			(class "Default")
+			(node
+				(ref "Q1")
+				(pin "1")
+				(pinfunction "C_1")
+				(pintype "open_collector")
+			)
+			(node
+				(ref "R2")
+				(pin "1")
+				(pintype "passive")
+			)
+			(node
+				(ref "R3")
+				(pin "2")
+				(pintype "passive")
+			)
+		)
+		(net
+			(code "7")
 			(name "Net-(Q2-B)")
 			(class "Default")
 			(node
@@ -1436,25 +1537,20 @@
 				(pintype "input")
 			)
 			(node
-				(ref "R2")
-				(pin "2")
+				(ref "R3")
+				(pin "1")
 				(pintype "passive")
 			)
 		)
 		(net
-			(code "5")
-			(name "Net-(Q2-C)")
+			(code "8")
+			(name "Net-(Q3-B)")
 			(class "Default")
 			(node
-				(ref "Q2")
-				(pin "1")
-				(pinfunction "C_1")
-				(pintype "open_collector")
-			)
-			(node
-				(ref "R3")
-				(pin "1")
-				(pintype "passive")
+				(ref "Q3")
+				(pin "2")
+				(pinfunction "B_2")
+				(pintype "input")
 			)
 			(node
 				(ref "R4")
@@ -1463,11 +1559,11 @@
 			)
 		)
 		(net
-			(code "6")
-			(name "Net-(Q3-B)")
+			(code "9")
+			(name "Net-(Q4-B)")
 			(class "Default")
 			(node
-				(ref "Q3")
+				(ref "Q4")
 				(pin "2")
 				(pinfunction "B_2")
 				(pintype "input")
@@ -1479,23 +1575,7 @@
 			)
 		)
 		(net
-			(code "7")
-			(name "Net-(Q4-B)")
-			(class "Default")
-			(node
-				(ref "Q4")
-				(pin "2")
-				(pinfunction "B_2")
-				(pintype "input")
-			)
-			(node
-				(ref "R6")
-				(pin "2")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "8")
+			(code "10")
 			(name "Net-(Q4-C)")
 			(class "Default")
 			(node
@@ -1505,18 +1585,18 @@
 				(pintype "open_collector")
 			)
 			(node
-				(ref "R7")
+				(ref "R6")
 				(pin "1")
 				(pintype "passive")
 			)
 			(node
-				(ref "R9")
-				(pin "1")
+				(ref "R7")
+				(pin "2")
 				(pintype "passive")
 			)
 		)
 		(net
-			(code "9")
+			(code "11")
 			(name "Net-(Q5-B)")
 			(class "Default")
 			(node
@@ -1526,13 +1606,13 @@
 				(pintype "input")
 			)
 			(node
-				(ref "R9")
-				(pin "2")
+				(ref "R7")
+				(pin "1")
 				(pintype "passive")
 			)
 		)
 		(net
-			(code "10")
+			(code "12")
 			(name "Net-(Q6-B)")
 			(class "Default")
 			(node
@@ -1543,142 +1623,32 @@
 			)
 			(node
 				(ref "R8")
-				(pin "2")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "11")
-			(name "unconnected-(D1-K-Pad1)")
-			(class "Default")
-			(node
-				(ref "D1")
 				(pin "1")
-				(pinfunction "K_1")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "12")
-			(name "unconnected-(D2-A-Pad2)")
-			(class "Default")
-			(node
-				(ref "D2")
-				(pin "2")
-				(pinfunction "A_2")
 				(pintype "passive")
 			)
 		)
 		(net
 			(code "13")
-			(name "unconnected-(D3-K-Pad1)")
+			(name "unconnected-(R1-Pad1)")
 			(class "Default")
 			(node
-				(ref "D3")
+				(ref "R1")
 				(pin "1")
-				(pinfunction "K_1")
 				(pintype "passive")
 			)
 		)
 		(net
 			(code "14")
-			(name "unconnected-(D4-A-Pad2)")
+			(name "unconnected-(R4-Pad2)")
 			(class "Default")
 			(node
-				(ref "D4")
+				(ref "R4")
 				(pin "2")
-				(pinfunction "A_2")
 				(pintype "passive")
 			)
 		)
 		(net
 			(code "15")
-			(name "unconnected-(Q1-C-Pad1)")
-			(class "Default")
-			(node
-				(ref "Q1")
-				(pin "1")
-				(pinfunction "C_1")
-				(pintype "open_collector")
-			)
-		)
-		(net
-			(code "16")
-			(name "unconnected-(Q2-E-Pad3)")
-			(class "Default")
-			(node
-				(ref "Q2")
-				(pin "3")
-				(pinfunction "E_3")
-				(pintype "open_emitter")
-			)
-		)
-		(net
-			(code "17")
-			(name "unconnected-(Q3-E-Pad3)")
-			(class "Default")
-			(node
-				(ref "Q3")
-				(pin "3")
-				(pinfunction "E_3")
-				(pintype "open_emitter")
-			)
-		)
-		(net
-			(code "18")
-			(name "unconnected-(Q4-E-Pad3)")
-			(class "Default")
-			(node
-				(ref "Q4")
-				(pin "3")
-				(pinfunction "E_3")
-				(pintype "open_emitter")
-			)
-		)
-		(net
-			(code "19")
-			(name "unconnected-(Q5-C-Pad1)")
-			(class "Default")
-			(node
-				(ref "Q5")
-				(pin "1")
-				(pinfunction "C_1")
-				(pintype "open_collector")
-			)
-		)
-		(net
-			(code "20")
-			(name "unconnected-(Q6-E-Pad3)")
-			(class "Default")
-			(node
-				(ref "Q6")
-				(pin "3")
-				(pinfunction "E_3")
-				(pintype "open_emitter")
-			)
-		)
-		(net
-			(code "21")
-			(name "unconnected-(R2-Pad1)")
-			(class "Default")
-			(node
-				(ref "R2")
-				(pin "1")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "22")
-			(name "unconnected-(R3-Pad2)")
-			(class "Default")
-			(node
-				(ref "R3")
-				(pin "2")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "23")
 			(name "unconnected-(R5-Pad1)")
 			(class "Default")
 			(node
@@ -1688,32 +1658,12 @@
 			)
 		)
 		(net
-			(code "24")
-			(name "unconnected-(R6-Pad1)")
-			(class "Default")
-			(node
-				(ref "R6")
-				(pin "1")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "25")
-			(name "unconnected-(R7-Pad2)")
-			(class "Default")
-			(node
-				(ref "R7")
-				(pin "2")
-				(pintype "passive")
-			)
-		)
-		(net
-			(code "26")
-			(name "unconnected-(R8-Pad1)")
+			(code "16")
+			(name "unconnected-(R8-Pad2)")
 			(class "Default")
 			(node
 				(ref "R8")
-				(pin "1")
+				(pin "2")
 				(pintype "passive")
 			)
 		)

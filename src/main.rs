@@ -1,9 +1,6 @@
-use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
 
-use knead_net::input::footprint::{find_footprint_file, parse_many as parse_footprints};
-use knead_net::input::netlist::parse_netlist;
+use knead_net::input::pcb::parse_pcb;
 use knead_net::{
     Breadboard, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router, SAConfig,
     spectral_debug_positions,
@@ -13,81 +10,20 @@ use knead_net::{
 // shim in `lib.rs` if needed; for now keep them private and reach via a debug
 // helper exposed from the layout module.
 
-/// 系统装的 KiCad 标准 footprint 库根目录 (里面是一堆 `*.pretty/` 子目录)。
-///
-/// 加新例子时不需要手拷 .kicad_mod: netlist 里写 `Package_DIP:DIP-14_W7.62mm`,
-/// 运行时自动找 `/usr/share/kicad/footprints/Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod`。
-///
-/// 找不到时再回退到 `examples/footprints/` (本地手动维护的小库 / 改过的封装)。
-const KICAD_LIB_PATH: &str = "/usr/share/kicad/footprints";
-const FALLBACK_FOOTPRINTS_DIR: &str = "examples/footprints";
-
 fn main() {
     let inputs_dir = "examples/inputs";
     let outputs_dir = "output";
     fs::create_dir_all(outputs_dir).expect("创建 output 目录失败");
 
-    // ── 读 .net 文件 (先读, 才能知道要加载哪些 footprint) ──
-    let netlist_path = format!("{inputs_dir}/h-bridge-power.net");
-    let netlist_text = fs::read_to_string(&netlist_path).unwrap();
-    let netlist = parse_netlist(&netlist_text).unwrap();
-
-    // ── 收集 netlist 用到的所有 footprint ref, 去重 ──
-    let mut needed_refs: Vec<String> = netlist
-        .components
-        .iter()
-        .map(|c| c.footprint_ref.clone())
-        .collect();
-    needed_refs.sort();
-    needed_refs.dedup();
-
-    // ── 解析 footprint ref → 文件路径 ──
-    //   顺序: <KICAD_LIB_PATH>/<LIB>.pretty/<NAME>.kicad_mod
-    //         然后 <FALLBACK_FOOTPRINTS_DIR>/<NAME>.kicad_mod
-    let kicad_lib_path = Path::new(KICAD_LIB_PATH);
-    let fallback_dir = Path::new(FALLBACK_FOOTPRINTS_DIR);
-    let kicad_lib_refs: Vec<&Path> = vec![kicad_lib_path];
-
-    let mut footprint_paths: Vec<PathBuf> = Vec::new();
-    let mut seen_names: HashSet<String> = HashSet::new();
-    for r in &needed_refs {
-        let bare = knead_net::input::footprint::split_footprint_ref(r)
-            .1
-            .to_string();
-        if !seen_names.insert(bare) {
-            // 同一个 bare name 在不同 lib 里出现 (例如 LED_THT + LED_SMD 都有 LED_D5.0mm)
-            // 只解析一次, 后面的 reuse 已加载的那份
-            continue;
-        }
-        match find_footprint_file(r, &kicad_lib_refs, fallback_dir) {
-            Some(p) => {
-                eprintln!("footprint {r} \u{2192} {}", p.display());
-                footprint_paths.push(p);
-            }
-            None => {
-                eprintln!(
-                    "\u{274c} 找不到 footprint '{r}'\n   搜索:\n   - kicad 库: {}/{}.pretty/{}.kicad_mod\n   - fallback: {}/{}.kicad_mod",
-                    KICAD_LIB_PATH,
-                    knead_net::input::footprint::split_footprint_ref(r).0,
-                    knead_net::input::footprint::split_footprint_ref(r).1,
-                    FALLBACK_FOOTPRINTS_DIR,
-                    knead_net::input::footprint::split_footprint_ref(r).1,
-                );
-                std::process::exit(1);
-            }
-        }
-    }
-    // 排个序, 保证 FootprintId 分配顺序稳定
-    footprint_paths.sort();
-
-    let footprint_texts: Vec<String> = footprint_paths
-        .iter()
-        .map(|p| fs::read_to_string(p).unwrap())
-        .collect();
-    let footprints = parse_footprints(footprint_texts).unwrap();
-
-    // ── 组合成 Circuit (footprint ref 在这一步自动连到 FootprintId) ──
-    let mut circuit = netlist.into_circuit(&footprints);
+    // ── 读 .kicad_pcb 文件 (一步到位: 封装几何 + 网络连接都在里面) ──
+    let pcb_path = format!("{inputs_dir}/h-bridge.kicad_pcb");
+    let pcb_text = fs::read_to_string(&pcb_path).unwrap();
+    let mut circuit = parse_pcb(&pcb_text).unwrap();
+    eprintln!(
+        "从 {pcb_path} 加载: {} 元件, {} net",
+        circuit.components().len(),
+        circuit.nets().len()
+    );
 
     // 3b. 自动标记可桥接元件: 2 pin + 一腿 power 一腿 signal
     // 名字列表是独立维护的 power-net 别名表; 标准板的 positive / negative
