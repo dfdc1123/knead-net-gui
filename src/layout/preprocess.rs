@@ -53,6 +53,17 @@ pub fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> Prepr
         // Step 2b: R90 后还有冲突吗?
         if !has_column_conflict(comp.pins(), fp, circuit, true) {
             r90_only.insert(comp.id());
+            // 高宽元件 (SW/DIP 类) 跨通道: R90 bbox 高≥4 且宽≥2 → 尝试 y-lock
+            if blocked_count > 0 {
+                let (rw, rh) = r90_bbox_size(fp);
+                if rh >= 4 && rw >= 2 {
+                    if let Some(locked_y) =
+                        try_y_lock(comp.pins(), fp, circuit, board, blocked_count, true)
+                    {
+                        y_locked.insert(comp.id(), locked_y);
+                    }
+                }
+            }
             continue;
         }
 
@@ -107,6 +118,27 @@ fn has_column_conflict(
     })
 }
 
+/// 计算 footprint 在 R90 旋转后的 bbox 尺寸 (宽, 高)。
+fn r90_bbox_size(fp: &crate::circuit::Footprint) -> (usize, usize) {
+    let pins = fp.pins();
+    if pins.is_empty() {
+        return (0, 0);
+    }
+    let mut min_x = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut min_y = i32::MAX;
+    let mut max_y = i32::MIN;
+    for p in pins {
+        let rx = -p.offset().y;
+        let ry = p.offset().x;
+        min_x = min_x.min(rx);
+        max_x = max_x.max(rx);
+        min_y = min_y.min(ry);
+        max_y = max_y.max(ry);
+    }
+    ((max_x - min_x + 1) as usize, (max_y - min_y + 1) as usize)
+}
+
 /// 尝试为元件计算 y-lock 位置。
 ///
 /// 条件: 在指定旋转下, 所有冲突 pin 分布在恰好 2 个 y 值上,
@@ -147,13 +179,20 @@ fn try_y_lock(
         })
         .collect();
 
-    if conflict_cols.is_empty() {
+    // 没有冲突列时 (SW R90: 每列 net 统一), 用全部列分析 y 间距
+    let target_cols: Vec<&Vec<(i32, Option<NetId>)>> = if conflict_cols.is_empty() {
+        col_pins.values().collect()
+    } else {
+        conflict_cols
+    };
+
+    if target_cols.is_empty() {
         return None;
     }
 
-    // 收集所有冲突列的 y 坐标集合
+    // 收集所有目标列的 y 坐标集合
     let mut all_y: HashSet<i32> = HashSet::new();
-    for pins in &conflict_cols {
+    for pins in &target_cols {
         for &(y, _) in *pins {
             all_y.insert(y);
         }
