@@ -638,7 +638,7 @@ pub fn standard_power_rails(cols: i32) -> PowerRails {
                 },
             ],
         },
-        positive_names: vec!["VCC".into(), "5V".into(), "12V".into(), "3V3".into()],
+        positive_names: vec!["VCC".into(), "+5V".into(), "5V".into(), "+12V".into(), "12V".into(), "3V3".into()],
         negative_names: vec!["GND".into()],
     }
 }

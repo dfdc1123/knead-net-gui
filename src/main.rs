@@ -26,10 +26,17 @@ fn main() {
     );
 
     // 3b. 自动标记可桥接元件: 2 pin + 一腿 power 一腿 signal
+    let power_rails_cfg = knead_net::standard_power_rails(50);
     // 名字列表是独立维护的 power-net 别名表; 标准板的 positive / negative
     // 名字列表在 `breadboard::standard_power_rails` 里硬编码, 跟这里互不相关。
-    let power_names = ["GND", "+12V", "VCC", "5V", "3V3"];
-    knead_net::input::pcb::auto_mark_bridgeable(&mut circuit, &power_names);
+    let power_names: Vec<String> = power_rails_cfg
+        .positive_names
+        .iter()
+        .chain(power_rails_cfg.negative_names.iter())
+        .cloned()
+        .collect();
+    let power_names_ref: Vec<&str> = power_names.iter().map(|s| s.as_str()).collect();
+    knead_net::input::pcb::auto_mark_bridgeable(&mut circuit, &power_names_ref);
     for c in circuit.components() {
         if c.bridgeable {
             eprintln!("  bridgeable: {} (kind={})", c.ref_(), c.kind());
@@ -71,20 +78,49 @@ fn main() {
     }
 
     // 4b. 把电源轨绑到具体 net (让 SA/路由把 rail 强制接进电路)
-    let gnd_net = circuit.nets().iter().find(|n| n.name() == "GND");
-    let v12_net = circuit.nets().iter().find(|n| n.name() == "+12V");
-    if let (Some(gnd), Some(v12)) = (gnd_net, v12_net) {
-        board = board.with_power_rail_binding(PowerRailBinding {
-            positive: v12.id(),
-            negative: gnd.id(),
-        });
-        eprintln!(
-            "Power rail binding: − → GND ({:?}), + → +12V ({:?})",
-            gnd.id(),
-            v12.id()
-        );
-    } else {
-        eprintln!("(电路里没找到 GND / +12V net, 电源轨不绑定)");
+    // 使用 power rails 配置里的名字列表, 按顺序匹配电路中的 net。
+    let pos_net = power_rails_cfg
+        .positive_names
+        .iter()
+        .find_map(|name| circuit.nets().iter().find(|n| n.name() == name.as_str()));
+    let neg_net = power_rails_cfg
+        .negative_names
+        .iter()
+        .find_map(|name| circuit.nets().iter().find(|n| n.name() == name.as_str()));
+    match (pos_net, neg_net) {
+        (Some(pos), Some(neg)) => {
+            board = board.with_power_rail_binding(PowerRailBinding {
+                positive: pos.id(),
+                negative: neg.id(),
+            });
+            eprintln!(
+                "Power rail binding: - -> {} ({:?}), + -> {} ({:?})",
+                neg.name(),
+                neg.id(),
+                pos.name(),
+                pos.id()
+            );
+        }
+        (Some(pos), None) => {
+            eprintln!(
+                "Power rail: only positive {} matched, negative not found ({:?})",
+                pos.name(),
+                &power_rails_cfg.negative_names
+            );
+        }
+        (None, Some(neg)) => {
+            eprintln!(
+                "Power rail: only negative {} matched, positive not found ({:?})",
+                neg.name(),
+                &power_rails_cfg.positive_names
+            );
+        }
+        (None, None) => {
+            eprintln!(
+                "Power rail: no match (positive={:?}, negative={:?})",
+                &power_rails_cfg.positive_names, &power_rails_cfg.negative_names
+            );
+        }
     }
     let mut layout = Layout::new(&circuit);
 
