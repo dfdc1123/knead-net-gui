@@ -50,7 +50,7 @@ fn main() {
     //   - 两个都 true    → 上下都屏蔽, 只剩中央 5/6 行 (本身也 blocked), 元件无处可放
     // 改任一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
     const MASK_UPPER_HALF: bool = false;
-    const MASK_LOWER_HALF: bool = false;
+    const MASK_LOWER_HALF: bool = true;
     let mut board = {
         let mut blocked: Vec<usize> = vec![5, 6]; // 标准中央通道
         if MASK_UPPER_HALF {
@@ -112,8 +112,7 @@ fn main() {
     // SA 是随机算法; 跑 n_seeds 次独立模拟, 取 cost 最低的解
     //
     // 两种预设:
-    // - 慢模式 (默认): n_seeds=100 + max_iters=1M, 接近能力上限 (~3 分 50 秒)。
-    //   默认覆盖到 ~10 wires (从 ~14 wires 提升了 4)。
+    // - 慢模式 (默认): n_seeds=100 + max_iters=1M, 接近能力上限 (10秒)。
     // - 快模式 (--quick): n_seeds=10 + max_iters=5000, ~5 秒。
     //   只用于反复试参数 / 调试; 质量差很多 (wire 数可能 超 过慢模式 1.5 倍)。
     //
