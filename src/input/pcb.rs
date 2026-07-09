@@ -4,7 +4,7 @@
 //! 元件信息、封装几何和网络连接, 一步到位构造 [`Circuit`]。
 //! 不再需要分开的 `.net` 和 `.kicad_mod` 文件。
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::footprint::split_footprint_ref;
 use super::sexp::{ParseError, Sexp, parse};
@@ -65,9 +65,9 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
     let mut components: Vec<Component> = Vec::new();
     let mut pins: Vec<Pin> = Vec::new();
     // net_name → Vec<PinId>
-    let mut net_pins: HashMap<String, Vec<PinId>> = HashMap::new();
+    let mut net_pins: BTreeMap<String, Vec<PinId>> = BTreeMap::new();
     // footprint name → FootprintId (去重: 同名封装共享同一个 FootprintId)
-    let mut fp_by_name: HashMap<String, FootprintId> = HashMap::new();
+    let mut fp_by_name: BTreeMap<String, FootprintId> = BTreeMap::new();
 
     for item in &top[1..] {
         let fp_items = match item {
@@ -288,6 +288,8 @@ fn parse_f64(sexp: &Sexp) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]
