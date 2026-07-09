@@ -343,7 +343,7 @@ fn from_greedy_fits_2d() {
         footprints: vec![fp],
     };
     let placeable: Vec<ComponentId> = (0..5).map(ComponentId).collect();
-    let state = SAState::from_greedy(placeable, &circuit, &board());
+    let state = SAState::from_greedy(placeable, &circuit, &board(), &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
     assert_eq!(state.n(), 5);
     // 所有 y 都在 [0, 4]
     for &y in &state.y {
@@ -396,7 +396,7 @@ fn from_greedy_spills_to_next_row() {
         footprints: vec![fp],
     };
     let placeable: Vec<ComponentId> = (0..4).map(ComponentId).collect();
-    let state = SAState::from_greedy(placeable, &circuit, &board());
+    let state = SAState::from_greedy(placeable, &circuit, &board(), &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
     // 3 个 11-col 放 row 0 占 0..33 (实际放 0, 1, 12, 3 个 footprint 总跨度)
     // 第 4 个放不下 row 0 → 走 row 1
     assert_eq!(
@@ -1523,7 +1523,7 @@ fn populate_bridgeable_info_top_rail_tiebreaker() {
 
     // 从 greedy 造 state, populate_bridgeable_info
     let placeable: Vec<ComponentId> = (0..circuit.components.len()).map(ComponentId).collect();
-    let mut state = SAState::from_greedy(placeable, &circuit, &board);
+    let mut state = SAState::from_greedy(placeable, &circuit, &board, &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
     populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 
     // 验证 cache 不为空 且 cache[0] 的 power_pin 在 top rail (y < 0)
@@ -1575,7 +1575,7 @@ fn init_bridgeable_to_bridged_flips_all() {
     // 多个 bridgeable 元件, 都需要 bridge。
     let (circuit, board) = bridgeable_two_pin_circuit();
     let placeable = bridgeable_placeables(&circuit);
-    let mut state = SAState::from_greedy(placeable.clone(), &circuit, &board);
+    let mut state = SAState::from_greedy(placeable.clone(), &circuit, &board, &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
     populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 
     // 调用前: bridged 全 false
@@ -1611,7 +1611,7 @@ fn init_bridgeable_to_bridged_flips_all() {
 fn init_bridgeable_to_bridged_picks_lowest_cost_pair() {
     let (circuit, board) = bridgeable_two_pin_circuit();
     let placeable = bridgeable_placeables(&circuit);
-    let mut state = SAState::from_greedy(placeable.clone(), &circuit, &board);
+    let mut state = SAState::from_greedy(placeable.clone(), &circuit, &board, &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
     populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 
     let ctx = SAContext::new(&circuit, &placeable);

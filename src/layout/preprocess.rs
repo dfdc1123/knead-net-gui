@@ -7,7 +7,7 @@ use crate::layout::breadboard::Breadboard;
 
 /// 预处理结果: 哪些元件需要特殊 SA 约束。
 #[derive(Debug, Clone)]
-pub(crate) struct PreprocessResult {
+pub struct PreprocessResult {
     /// 只能使用 R90 / R270 的元件
     pub r90_only: HashSet<ComponentId>,
     /// 需要锁定 y 坐标的元件 → 锁定值 (板坐标)
@@ -23,7 +23,7 @@ pub(crate) struct PreprocessResult {
 ///    b. R90 后无同列冲突? → r90_only (竖着进来转横)
 ///    c. R90 下能 y-lock? → r90_only + y_locked (DIP 类)
 ///    d. 以上都不行 → panic
-pub(crate) fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> PreprocessResult {
+pub fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> PreprocessResult {
     let mut r90_only = HashSet::new();
     let mut y_locked = HashMap::new();
 

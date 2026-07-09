@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use crate::circuit::{Circuit, ComponentId, PinId};
 use crate::layout::breadboard::{Breadboard, HoleId};
 use crate::layout::placement::Rotation;
+use crate::layout::preprocess::PreprocessResult;
 
 use super::spectral::{compute_fiedler, compute_second_evec, grid_fill_2d};
 
@@ -121,7 +122,7 @@ impl SAState {
     /// 两个初排 (`from_greedy` / `from_spectral`) 都
     /// 做这个检查, 因此初排结果**保证**不引入列短路 — SA 后续只在 `Flip` /
     /// `ShiftX` 偶尔重新引入时捕捉并罚分。
-    pub fn from_greedy(placeable: Vec<ComponentId>, circuit: &Circuit, board: &Breadboard) -> Self {
+    pub(crate) fn from_greedy(placeable: Vec<ComponentId>, circuit: &Circuit, board: &Breadboard, preprocess: &PreprocessResult) -> Self {
         let n = placeable.len();
         let mut x = vec![0i32; n];
         let mut y = vec![0i32; n];
@@ -220,7 +221,11 @@ impl SAState {
                 }
             }
 
-            let (fx, fy) = found.unwrap_or_else(|| panic!("元件 {} 装不下这块板", comp_id.0));
+            let (fx, mut fy) = found.unwrap_or_else(|| panic!("元件 {} 装不下这块板", comp_id.0));
+        // y-locked: 覆盖为锁定值
+        if let Some(&ly) = preprocess.y_locked.get(&comp_id) {
+            fy = ly;
+        }
             x[idx] = fx;
             y[idx] = fy;
             for &(dx, dy) in &bbox_cells {
@@ -268,15 +273,16 @@ impl SAState {
     /// - 大 net (6+ pin) 不会变成 O(k²) 边的团
     /// - net 权重 1/(k-1) 自动衰减大 net 的影响 (Rent-like scaling)
     /// - 电源网不再把 GND/+12V 侧元件强行聚在一起
-    pub fn from_spectral(
+    pub(crate) fn from_spectral(
         placeable: Vec<ComponentId>,
         circuit: &Circuit,
         board: &Breadboard,
         seed: u64,
+        preprocess: &PreprocessResult,
     ) -> Self {
         let n = placeable.len();
         if n <= 2 {
-            return Self::from_greedy(placeable, circuit, board);
+            return Self::from_greedy(placeable, circuit, board, preprocess);
         }
 
         // ── comp_id → placeable_idx 映射 ──
@@ -337,7 +343,7 @@ impl SAState {
         // ============================================================
         // Phase 3: v₂ 值 → 目标 x, 贪心碰撞解决 → 紧凑格点
         // ============================================================
-        let (x, y) = grid_fill_2d(&v2, &v3, board, n, &placeable, circuit);
+        let (x, y) = grid_fill_2d(&v2, &v3, board, n, &placeable, circuit, preprocess);
 
         Self {
             placeable,

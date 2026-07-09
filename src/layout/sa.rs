@@ -735,9 +735,9 @@ pub(super) fn simulate(
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
-        SAState::from_spectral(placeable, circuit, board, config.seed)
+        SAState::from_spectral(placeable, circuit, board, config.seed, preprocess)
     } else {
-        SAState::from_greedy(placeable, circuit, board)
+        SAState::from_greedy(placeable, circuit, board, preprocess)
     };
     // 预处理: R90 预旋转 + y 锁定
     {
@@ -1041,6 +1041,7 @@ mod tests {
             vec![ComponentId(0), ComponentId(1)],
             &simple_circuit(),
             &board(),
+            &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() },
         );
         let cfg = SAConfig::default();
         let mut rng = fastrand::Rng::with_seed(0);
@@ -1207,7 +1208,7 @@ mod tests {
     /// 跑 populate_bridgeable_info 并启用 bridged 模式, 返回手动设置好的 state。
     fn bridgable_state_in_bridged(placeable: Vec<ComponentId>) -> SAState {
         let (circuit, board) = bridgable_fixture();
-        let mut state = SAState::from_greedy(placeable, &circuit, &board);
+        let mut state = SAState::from_greedy(placeable, &circuit, &board, &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
         populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
         assert!(state.is_bridgeable[0], "fixture 应能提供 bridged candidate");
         assert!(!state.bridged_pin_pairs[0].is_empty(), "cache 不该为空");
@@ -1563,7 +1564,7 @@ mod tests {
     fn from_greedy_avoids_blocked_rows() {
         let board = crate::layout::Breadboard::standard();
         let circuit = simple_circuit();
-        let state = SAState::from_greedy(vec![ComponentId(0), ComponentId(1)], &circuit, &board);
+        let state = SAState::from_greedy(vec![ComponentId(0), ComponentId(1)], &circuit, &board, &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
         for &y in &state.y {
             assert!(
                 !board.is_blocked(y as usize),

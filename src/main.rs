@@ -16,7 +16,7 @@ fn main() {
     fs::create_dir_all(outputs_dir).expect("创建 output 目录失败");
 
     // ── 读 .kicad_pcb 文件 (一步到位: 封装几何 + 网络连接都在里面) ──
-    let pcb_path = format!("{inputs_dir}/h-bridge.kicad_pcb");
+    let pcb_path = format!("{inputs_dir}/SNx4HC00.kicad_pcb");
     let pcb_text = fs::read_to_string(&pcb_path).unwrap();
     let mut circuit = parse_pcb(&pcb_text).unwrap();
     eprintln!(
@@ -89,12 +89,39 @@ fn main() {
     let mut layout = Layout::new(&circuit);
 
     // ============================================================
+    // 预处理: 在 SA 和频谱调试之前算一次
+    // ============================================================
+    let preprocess = knead_net::layout::preprocess::preprocess_for_breadboard(&circuit, &board);
+    if !preprocess.r90_only.is_empty() {
+        let names: Vec<&str> = preprocess
+            .r90_only
+            .iter()
+            .map(|&cid| circuit.components()[cid.raw()].ref_())
+            .collect();
+        eprintln!(
+            "R90 预处理: {} 个元件 → {:?}",
+            preprocess.r90_only.len(),
+            names
+        );
+    }
+    if !preprocess.y_locked.is_empty() {
+        for (&cid, &y) in &preprocess.y_locked {
+            eprintln!(
+                "  y-lock: {} → y={}",
+                circuit.components()[cid.raw()].ref_(),
+                y
+            );
+        }
+    }
+
+    // ============================================================
     // 频谱调试: 输出 spectral 初始化策略的初排 SVG
     // ============================================================
     {
         // --- 频谱布局调试 ---
         eprintln!("=== 频谱布局初排 ===");
-        let (_v2, _v3, spectral_placements) = spectral_debug_positions(&circuit, &board);
+        let (_v2, _v3, spectral_placements) =
+            spectral_debug_positions(&circuit, &board, &preprocess);
         if !spectral_placements.is_empty() {
             let mut sl_layout = Layout::new(&circuit);
             for (i, slot) in spectral_placements.iter().enumerate() {

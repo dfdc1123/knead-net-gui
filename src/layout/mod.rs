@@ -13,7 +13,7 @@
 pub mod breadboard;
 pub mod cost;
 pub mod occupancy;
-pub(crate) mod preprocess;
+pub mod preprocess;
 pub mod placement;
 pub mod routing;
 pub mod sa;
@@ -42,6 +42,7 @@ mod tests;
 pub fn spectral_debug_positions(
     circuit: &Circuit,
     board: &Breadboard,
+    preprocess: &crate::layout::preprocess::PreprocessResult,
 ) -> (Vec<f64>, Vec<f64>, Vec<Option<Placement>>) {
     use crate::circuit::Position;
     use crate::layout::cost::SAState;
@@ -60,7 +61,7 @@ pub fn spectral_debug_positions(
     }
 
     // 调试用: 用一个固定 seed 让跨进程可复现。调成 0 / 1 / 42 跟生产不同。
-    let state = SAState::from_spectral(placeable, circuit, board, 0xDEAD_BEEF);
+    let state = SAState::from_spectral(placeable, circuit, board, 0xDEAD_BEEF, preprocess);
     let n = state.n();
 
     // 打印表格 (按 round 后的 x 排序)
