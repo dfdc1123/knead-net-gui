@@ -2,7 +2,7 @@
 
 把 KiCad 网表 (`.net` + `.kicad_mod`) 投影到面包板上, 自动摆位 + 布线, 输出 SVG 调试图。
 
-数据流: `*.net / *.kicad_mod / *.json` → [`Circuit`] → 模拟退火摆位 → A\* 风格布线 → SVG。
+数据流: `*.net / *.kicad_mod` → [`Circuit`] → 模拟退火摆位 → A\* 风格布线 → SVG。
 
 ## 快速开始
 
@@ -51,8 +51,7 @@ src/
 ├── input/          各种格式 parser
 │   ├── netlist.rs    KiCad .net
 │   ├── footprint.rs  KiCad .kicad_mod (lisp s-expression)
-│   ├── sexp.rs       s-expression 解析小工具
-│   └── json.rs       手写小电路用 (见 examples/inputs/led_bjt.json)
+│   └── sexp.rs       s-expression 解析小工具
 └── layout/         摆位 + 布线核心
     ├── mod.rs        类型 / trait / re-export
     ├── breadboard.rs 面包板几何 + 电源轨
@@ -64,7 +63,7 @@ src/
 
 examples/
 ├── footprints/     .kicad_mod 物理封装
-└── inputs/         测试电路 (.net / .json)
+└── inputs/         测试电路 (.net)
 
 output/             cargo run 渲染出来的 SVG (gitignored)
 ```

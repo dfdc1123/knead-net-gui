@@ -114,7 +114,7 @@ fn main() {
     //   - 两个都 true    → 上下都屏蔽, 只剩中央 5/6 行 (本身也 blocked), 元件无处可放
     // 改任一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
     const MASK_UPPER_HALF: bool = false;
-    const MASK_LOWER_HALF: bool = true;
+    const MASK_LOWER_HALF: bool = false;
     let mut board = {
         let mut blocked: Vec<usize> = vec![5, 6]; // 标准中央通道
         if MASK_UPPER_HALF {

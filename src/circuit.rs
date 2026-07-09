@@ -1,6 +1,6 @@
 //! 领域模型: component / pin / net / footprint 以及链接它们的 ID。
 //!
-//! 这个模块是格式无关的 — JSON、KiCad .net 以及任何其他输入源
+//! 这个模块是格式无关的 — KiCad .net 以及任何其他输入源
 //! 都会转换 *成* 这些类型。具体的解析器见 `input::*`。
 
 // 让 pin 有所属的 component
@@ -198,7 +198,7 @@ impl Circuit {
     /// 替换整个 footprint 注册表
     ///
     /// `NetlistInput::into_circuit` 通过参数 `&[Footprint]` 直接吃 footprint 注册表,
-    /// 走 netlist 主流程时**不需要**额外再调本方法; 本方法主要用于 JSON / 其它
+    /// 走 netlist 主流程时**不需要**额外再调本方法; 本方法主要用于
     /// 不通过 `NetlistInput` 的入口, 或测试时手动灌入。
     pub fn set_footprints(&mut self, footprints: impl IntoIterator<Item = Footprint>) {
         self.footprints = footprints.into_iter().collect();
