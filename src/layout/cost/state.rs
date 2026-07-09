@@ -45,6 +45,10 @@ pub struct SAState {
     pub x: Vec<i32>,
     pub y: Vec<i32>,
     pub rotation: Vec<Rotation>,
+    /// 每个元件是否只能使用 R90 / R270 (由预处理标记)。
+    pub r90_only: Vec<bool>,
+    /// 元件 y 坐标锁定值 (None = 不锁定)。由预处理为跨通道元件设置。
+    pub y_locked: Vec<Option<i32>>,
 }
 
 impl SAState {
@@ -78,6 +82,8 @@ impl SAState {
             x: Vec::new(),
             y: Vec::new(),
             rotation: Vec::new(),
+            r90_only: vec![false; n],
+            y_locked: vec![None; n],
         }
     }
 
@@ -103,6 +109,8 @@ impl SAState {
             x,
             y: vec![row; n],
             rotation: vec![Rotation::R0; n],
+            r90_only: vec![false; n],
+            y_locked: vec![None; n],
         }
     }
 
@@ -243,6 +251,8 @@ impl SAState {
             x,
             y,
             rotation,
+            r90_only: vec![false; n],
+            y_locked: vec![None; n],
         }
     }
 
@@ -338,6 +348,8 @@ impl SAState {
             x,
             y,
             rotation: vec![Rotation::R0; n],
+            r90_only: vec![false; n],
+            y_locked: vec![None; n],
         }
     }
 }

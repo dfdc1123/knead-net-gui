@@ -127,6 +127,11 @@ impl Pin {
     pub fn pinfunction(&self) -> Option<&str> {
         self.pinfunction.as_deref()
     }
+
+    /// 该 pin 连接到的 net; None = unconnected
+    pub fn net(&self) -> Option<NetId> {
+        self.net
+    }
 }
 
 #[derive(Debug)]

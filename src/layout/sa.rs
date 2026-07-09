@@ -431,19 +431,27 @@ impl Backup {
 fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backup> {
     match m {
         Move::Flip(i) => {
-            if state.bridged[*i] {
+            if state.bridged[*i] || state.y_locked[*i].is_some() {
                 return None;
             }
             let old_rot = state.rotation[*i];
-            state.rotation[*i] = match old_rot {
-                Rotation::R0 => Rotation::R180,
-                Rotation::R180 => Rotation::R0,
-                other => panic!("SA 只用 R0/R180, 不该出现 {:?}", other),
+            state.rotation[*i] = if state.r90_only[*i] {
+                match old_rot {
+                    Rotation::R90 => Rotation::R270,
+                    Rotation::R270 => Rotation::R90,
+                    other => panic!("r90_only 元件不该出现 {:?}", other),
+                }
+            } else {
+                match old_rot {
+                    Rotation::R0 => Rotation::R180,
+                    Rotation::R180 => Rotation::R0,
+                    other => panic!("非 r90_only 元件不该出现 {:?}", other),
+                }
             };
             Some(Backup::Flip { idx: *i, old_rot })
         }
         Move::ShiftY(i, dy) => {
-            if state.bridged[*i] {
+            if state.bridged[*i] || state.y_locked[*i].is_some() {
                 return None;
             }
             let old_y = state.y[*i];
@@ -723,15 +731,30 @@ pub(super) fn simulate(
     board: &Breadboard,
     config: &SAConfig,
     bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    preprocess: &crate::layout::preprocess::PreprocessResult,
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
-        // spectral init 使用 config.seed 初始化幂迭代初始向量,
-        // 跨进程同 seed 可复现; 不调全局 fastrand。
         SAState::from_spectral(placeable, circuit, board, config.seed)
     } else {
         SAState::from_greedy(placeable, circuit, board)
     };
+    // 预处理: R90 预旋转 + y 锁定
+    {
+        let n = state.placeable.len();
+        state.r90_only = vec![false; n];
+        state.y_locked = vec![None; n];
+        for (i, &cid) in state.placeable.iter().enumerate() {
+            if preprocess.r90_only.contains(&cid) {
+                state.r90_only[i] = true;
+                state.rotation[i] = Rotation::R90;
+            }
+            if let Some(&ly) = preprocess.y_locked.get(&cid) {
+                state.y[i] = ly;
+                state.y_locked[i] = Some(ly);
+            }
+        }
+    }
     // 从 board 抽 power net ids (绑定的正 / 负极), 然后填桥接字段。
     // 无绑定时 power_net_ids 为空, `populate_bridgeable_info` 内调用的
     // `propose_bridged_pairs` 返空 Vec, 没人会被标 bridgeable, Toggle 不会触发。
@@ -895,7 +918,6 @@ fn state_y_valid(state: &SAState, board: &Breadboard) -> bool {
 /// 在 Move 被接受之前都在走, 之前从不查 pin 位置, 因此 SA 有机会走进越界并被
 /// 1e6 锁死。换 "检查 pin-level OOB" 拦下越界无法表达。
 fn state_onboard_pins_in_bounds(state: &SAState, ctx: &SAContext, board: &Breadboard) -> bool {
-    use crate::layout::placement::Rotation;
     let cols_i = board.cols() as i32;
     let main_rows_i = board.main_rows() as i32;
     for (idx, _) in state.placeable.iter().enumerate() {
@@ -914,10 +936,11 @@ fn state_onboard_pins_in_bounds(state: &SAState, ctx: &SAContext, board: &Breadb
         {
             return false;
         }
-        let is_r180 = state.rotation[idx] == Rotation::R180;
+        let ri = super::cost::context::rot_index(state.rotation[idx]);
         let comp_info = &ctx.comp_infos[idx];
         for pin_data in &comp_info.pins {
-            let offset = if is_r180 { pin_data.1 } else { pin_data.0 };
+            let (offsets, _net) = pin_data;
+            let offset = offsets[ri];
             let x = px + offset.x;
             let y = py + offset.y;
             if x < 0 || x >= cols_i || y < 0 || y >= main_rows_i {
@@ -1572,6 +1595,7 @@ mod tests {
             &board(),
             &config,
             &[],
+            &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() },
         );
         let best_cost = cost(&best, &circuit, &board(), &[], &Weights::default());
         assert!(
@@ -1594,6 +1618,7 @@ mod tests {
             &board(),
             &config,
             &[],
+            &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() },
         );
         // SA 输出本身就是 final 位置 (compact 删了, cost 里的 compactness 替代)
         let xs = best.x.clone();

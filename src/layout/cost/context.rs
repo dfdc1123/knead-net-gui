@@ -4,18 +4,28 @@
 //! - `SAContext`: 把 CompInfo 集合 + 外部桥接位 + 电源 anchor 打包, 一次构造
 //! - `CostBuf`: SA 热循环里复用的 buffer (per-net scratch)
 
-
+use super::state::SAState;
 use crate::circuit::{Circuit, ComponentId, NetId, Position};
 use crate::layout::breadboard::Breadboard;
-use crate::layout::placement::BBox;
-use super::state::SAState;
+use crate::layout::placement::{BBox, Rotation};
+
+/// Rotation → 预计算偏移数组的下标。
+#[inline]
+pub(crate) fn rot_index(rot: Rotation) -> usize {
+    match rot {
+        Rotation::R0 => 0,
+        Rotation::R180 => 1,
+        Rotation::R90 => 2,
+        Rotation::R270 => 3,
+    }
+}
 
 /// 每个 placeable 元件的预计算信息 (只依赖 circuit/footprint, 不随 SA 状态变)。
 #[derive(Debug, Clone)]
 pub struct CompInfo {
     /// 每个 pin 的预计算数据, 按 component.pins 顺序。
-    /// (R0 local offset, R180 local offset, net)
-    pub pins: Vec<(Position, Position, Option<NetId>)>,
+    /// `[R0, R180, R90, R270]` 四个旋转方向的局部偏移 + net。
+    pub pins: Vec<([Position; 4], Option<NetId>)>,
     /// 该元件 footprint 在 R0 旋转下的局部坐标 bbox
     pub bbox_r0: BBox,
     /// 仅 bridgeable 元件有: 每个候选 pin pair 对应的 bbox
@@ -65,7 +75,21 @@ impl SAContext {
                     x: -offset_r0.x,
                     y: -offset_r0.y,
                 };
-                pins.push((offset_r0, offset_r180, pin.net));
+                pins.push((
+                    [
+                        offset_r0,
+                        offset_r180,
+                        Position {
+                            x: -offset_r0.y,
+                            y: offset_r0.x,
+                        },
+                        Position {
+                            x: offset_r0.y,
+                            y: -offset_r0.x,
+                        },
+                    ],
+                    pin.net,
+                ));
                 world_positions.push(offset_r0);
             }
 

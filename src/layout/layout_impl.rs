@@ -118,6 +118,19 @@ impl<'c> super::Layout<'c> {
         // 并行: 每个 seed 互相独立 (输入全 &T 只读, 输出是新 SAState, 局部 RNG),
         // 用 rayon 的 `par_iter` 跨核跑。n_seeds = 100 一般远超核数, 池子喂得饱。
         let n_seeds = config.n_seeds.max(1);
+        let preprocess = super::preprocess::preprocess_for_breadboard(self.circuit, board);
+        if !preprocess.r90_only.is_empty() {
+            let names: Vec<&str> = preprocess.r90_only
+                .iter()
+                .map(|&cid| self.circuit.components()[cid.raw()].ref_())
+                .collect();
+            eprintln!("R90 预处理: {} 个元件 → {:?}", preprocess.r90_only.len(), names);
+        }
+        if !preprocess.y_locked.is_empty() {
+            for (&cid, &y) in &preprocess.y_locked {
+                eprintln!("  y-lock: {} → y={}", self.circuit.components()[cid.raw()].ref_(), y);
+            }
+        }
         use rayon::prelude::*;
         let results: Vec<(f64, SAState)> = (0..n_seeds as u64)
             .into_par_iter()
@@ -133,6 +146,7 @@ impl<'c> super::Layout<'c> {
                     board,
                     &cfg_s,
                     &bridged_pins,
+                    &preprocess,
                 );
                 let cost_s = crate::layout::cost::cost(
                     &state_s,

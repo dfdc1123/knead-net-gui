@@ -21,94 +21,107 @@ use crate::{cp_bbox, cp_call, cp_collect, cp_compact, cp_mst, cp_pin, cp_rail};
 /// 快速版本: 复用预计算的 context 和 buffers。
 /// 在 simulate() 的热循环里替代 `cost()`。
 pub(crate) fn cost_fast(
-    state: &SAState,
-    circuit: &Circuit,
-    board: &Breadboard,
-    bridged_pins: &[(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
-    w: &Weights,
-    ctx: &SAContext,
-    buf: &mut CostBuf,
-) -> f64 {
-    cp_call!();
-    let _t_collect = std::time::Instant::now();
-    buf.clear();
-    buf.pin_idx_sorted.clear(); // fused: 不在 clear() 里 clear, 这里手动
+    
+        state: &SAState,
+        circuit: &Circuit,
+        board: &Breadboard,
+        bridged_pins: &[(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
+        w: &Weights,
+        ctx: &SAContext,
+        buf: &mut CostBuf,
+    ) -> f64 {
+        cp_call!();
+        let _t_collect = std::time::Instant::now();
+        buf.clear();
+        buf.pin_idx_sorted.clear(); // fused: 不在 clear() 里 clear, 这里手动
 
-    let cols_i = board.cols() as i32;
-    let n_comps = state.placeable.len();
-    // fused: 在 collect 阶段同时计算 oob_count + 填 pin_idx_sorted (跳过虚拟 + 越界)。
-    // 省两遍对 buf.holes 的扫描。
-    let mut oob_count = 0u32;
+        let cols_i = board.cols() as i32;
+        let n_comps = state.placeable.len();
+        // fused: 在 collect 阶段同时计算 oob_count + 填 pin_idx_sorted (跳过虚拟 + 越界)。
+        // 省两遍对 buf.holes 的扫描。
+        let mut oob_count = 0u32;
 
-    // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
-    for (idx, _comp_id) in state.placeable.iter().enumerate() {
-        if state.bridged[idx] {
-            // bridged bbox 已预计算进 ctx (fill_bridged_bboxes), O(1) 查表。
-            // 若 ctx 未预计算 (e.g. `cost()` 后向兼容接口从外部调), 退到实时计算。
-            let precomputed = ctx.comp_infos[idx]
-                .bridged_bboxes
-                .as_ref()
-                .and_then(|bbs| bbs.get(state.active_bridge_idx[idx]).copied())
-                .or_else(|| {
-                    state.active_bridge_pair(idx).map(|pair| {
-                        let p0 = board.hole(pair[0].0).position;
-                        let p1 = board.hole(pair[1].0).position;
-                        BBox {
-                            min_x: p0.x.min(p1.x),
-                            max_x: p0.x.max(p1.x),
-                            min_y: p0.y.min(p1.y),
-                            max_y: p0.y.max(p1.y),
-                        }
-                    })
-                });
-            buf.bboxes.push(precomputed);
-            continue;
-        }
+        // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
+        for (idx, _comp_id) in state.placeable.iter().enumerate() {
+            if state.bridged[idx] {
+                // bridged bbox 已预计算进 ctx (fill_bridged_bboxes), O(1) 查表。
+                // 若 ctx 未预计算 (e.g. `cost()` 后向兼容接口从外部调), 退到实时计算。
+                let precomputed = ctx.comp_infos[idx]
+                    .bridged_bboxes
+                    .as_ref()
+                    .and_then(|bbs| bbs.get(state.active_bridge_idx[idx]).copied())
+                    .or_else(|| {
+                        state.active_bridge_pair(idx).map(|pair| {
+                            let p0 = board.hole(pair[0].0).position;
+                            let p1 = board.hole(pair[1].0).position;
+                            BBox {
+                                min_x: p0.x.min(p1.x),
+                                max_x: p0.x.max(p1.x),
+                                min_y: p0.y.min(p1.y),
+                                max_y: p0.y.max(p1.y),
+                            }
+                        })
+                    });
+                buf.bboxes.push(precomputed);
+                continue;
+            }
 
-        let comp_info = &ctx.comp_infos[idx];
-        let px = state.x[idx];
-        let py = state.y[idx];
-        let is_r180 = state.rotation[idx] == Rotation::R180;
+            let comp_info = &ctx.comp_infos[idx];
+            let px = state.x[idx];
+            let py = state.y[idx];
+            let ri = super::context::rot_index(state.rotation[idx]);
 
-        for pin_data in &comp_info.pins {
-            let offset = if is_r180 { pin_data.1 } else { pin_data.0 };
-            let x = px + offset.x;
-            let y = py + offset.y;
-            let rail_id = board.rail_id_at(x, y);
-            let hole_idx = buf.holes.len();
-            buf.holes.push((x, y, rail_id));
-            buf.nets.push(pin_data.2);
-            buf.is_virtual.push(false);
-            if rail_id == u32::MAX {
-                oob_count += 1;
-            } else {
-                buf.pin_idx_sorted.push(hole_idx);
-                buf.rail_map[rail_id as usize].push(pin_data.2);
-                if let Some(net) = pin_data.2 {
-                    buf.net_buckets[net.0].push(hole_idx);
+            for pin_data in &comp_info.pins {
+                let (offsets, net) = pin_data;
+                let offset = offsets[ri];
+                let x = px + offset.x;
+                let y = py + offset.y;
+                let rail_id = board.rail_id_at(x, y);
+                let hole_idx = buf.holes.len();
+                buf.holes.push((x, y, rail_id));
+                buf.nets.push(*net);
+                buf.is_virtual.push(false);
+                if rail_id == u32::MAX {
+                    oob_count += 1;
+                } else {
+                    buf.pin_idx_sorted.push(hole_idx);
+                    buf.rail_map[rail_id as usize].push(*net);
+                    if let Some(n) = net {
+                        buf.net_buckets[n.0].push(hole_idx);
+                    }
                 }
             }
-        }
 
-        // BBox: translate precomputed R0 bbox
-        let bbox_r0 = &comp_info.bbox_r0;
-        let world_bbox = if is_r180 {
-            BBox {
-                min_x: -bbox_r0.max_x + px,
-                max_x: -bbox_r0.min_x + px,
-                min_y: -bbox_r0.max_y + py,
-                max_y: -bbox_r0.min_y + py,
-            }
-        } else {
-            BBox {
-                min_x: bbox_r0.min_x + px,
-                max_x: bbox_r0.max_x + px,
-                min_y: bbox_r0.min_y + py,
-                max_y: bbox_r0.max_y + py,
-            }
-        };
-        buf.bboxes.push(Some(world_bbox));
-    }
+            // BBox: translate precomputed R0 bbox according to rotation
+            let bbox_r0 = &comp_info.bbox_r0;
+            let world_bbox = match state.rotation[idx] {
+                Rotation::R0 => BBox {
+                    min_x: bbox_r0.min_x + px,
+                    max_x: bbox_r0.max_x + px,
+                    min_y: bbox_r0.min_y + py,
+                    max_y: bbox_r0.max_y + py,
+                },
+                Rotation::R180 => BBox {
+                    min_x: -bbox_r0.max_x + px,
+                    max_x: -bbox_r0.min_x + px,
+                    min_y: -bbox_r0.max_y + py,
+                    max_y: -bbox_r0.min_y + py,
+                },
+                Rotation::R90 => BBox {
+                    min_x: -bbox_r0.max_y + px,
+                    max_x: -bbox_r0.min_y + px,
+                    min_y: bbox_r0.min_x + py,
+                    max_y: bbox_r0.max_x + py,
+                },
+                Rotation::R270 => BBox {
+                    min_x: bbox_r0.min_y + px,
+                    max_x: bbox_r0.max_y + px,
+                    min_y: -bbox_r0.max_x + py,
+                    max_y: -bbox_r0.min_x + py,
+                },
+            };
+            buf.bboxes.push(Some(world_bbox));
+        }
 
     // 1b. 注入用户预摆的 bridged 元件的 pin (位置已预计算进 ctx)
     // 当 ctx 未预计算 (外部 cost() 调用且测试手工造 state 时), 退到实时算。
@@ -417,10 +430,11 @@ fn cost_breakdown_inner(
         let comp_info = &ctx.comp_infos[idx];
         let px = state.x[idx];
         let py = state.y[idx];
-        let is_r180 = state.rotation[idx] == Rotation::R180;
+        let ri = super::context::rot_index(state.rotation[idx]);
 
         for pin_data in &comp_info.pins {
-            let offset = if is_r180 { pin_data.1 } else { pin_data.0 };
+            let (offsets, net) = pin_data;
+            let offset = offsets[ri];
             let x = px + offset.x;
             let y = py + offset.y;
             let rail_id = board
@@ -428,25 +442,36 @@ fn cost_breakdown_inner(
                 .map(|h| board.rail_id_of(h))
                 .unwrap_or(u32::MAX);
             buf.holes.push((x, y, rail_id));
-            buf.nets.push(pin_data.2);
+            buf.nets.push(*net);
             buf.is_virtual.push(false);
         }
 
         let bbox_r0 = &comp_info.bbox_r0;
-        let world_bbox = if is_r180 {
-            BBox {
-                min_x: -bbox_r0.max_x + px,
-                max_x: -bbox_r0.min_x + px,
-                min_y: -bbox_r0.max_y + py,
-                max_y: -bbox_r0.min_y + py,
-            }
-        } else {
-            BBox {
+        let world_bbox = match state.rotation[idx] {
+            Rotation::R0 => BBox {
                 min_x: bbox_r0.min_x + px,
                 max_x: bbox_r0.max_x + px,
                 min_y: bbox_r0.min_y + py,
                 max_y: bbox_r0.max_y + py,
-            }
+            },
+            Rotation::R180 => BBox {
+                min_x: -bbox_r0.max_x + px,
+                max_x: -bbox_r0.min_x + px,
+                min_y: -bbox_r0.max_y + py,
+                max_y: -bbox_r0.min_y + py,
+            },
+            Rotation::R90 => BBox {
+                min_x: -bbox_r0.max_y + px,
+                max_x: -bbox_r0.min_y + px,
+                min_y: bbox_r0.min_x + py,
+                max_y: bbox_r0.max_x + py,
+            },
+            Rotation::R270 => BBox {
+                min_x: bbox_r0.min_y + px,
+                max_x: bbox_r0.max_y + px,
+                min_y: -bbox_r0.max_x + py,
+                max_y: -bbox_r0.min_x + py,
+            },
         };
         buf.bboxes.push(Some(world_bbox));
     }

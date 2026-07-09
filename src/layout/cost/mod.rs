@@ -19,7 +19,7 @@ use crate::circuit::Circuit;
 use crate::layout::breadboard::Breadboard;
 
 mod bridge;
-mod context;
+pub(crate) mod context;
 mod cost_fast;
 mod mst;
 #[macro_use]

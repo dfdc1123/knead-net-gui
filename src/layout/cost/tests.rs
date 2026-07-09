@@ -1373,6 +1373,8 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
 
     // X1 放在 (0, 0) — 与 bridged body 的 col 0 重叠
     let state_overlap = SAState {
+            r90_only: vec![false; 4],
+            y_locked: vec![None; 4],
         placeable: vec![ComponentId(0), ComponentId(1)],
         is_bridgeable: vec![true, false],
         bridged: vec![true, false],
@@ -1385,6 +1387,8 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
 
     // X1 放在 (5, 0) — 避开 bridged body
     let state_clear = SAState {
+            r90_only: vec![false; 4],
+            y_locked: vec![None; 4],
         placeable: vec![ComponentId(0), ComponentId(1)],
         is_bridgeable: vec![true, false],
         bridged: vec![true, false],

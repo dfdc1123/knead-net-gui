@@ -13,6 +13,7 @@
 pub mod breadboard;
 pub mod cost;
 pub mod occupancy;
+pub(crate) mod preprocess;
 pub mod placement;
 pub mod routing;
 pub mod sa;
