@@ -565,6 +565,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: None,
             },
             Pin {
@@ -572,6 +573,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: None,
             },
         ];

@@ -451,6 +451,7 @@ mod tests {
                 component: ComponentId(i),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             });
             let p2 = PinId(pins.len());
@@ -459,6 +460,7 @@ mod tests {
                 component: ComponentId(i),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: Some(NetId(0)),
             });
             components.push(Component {
@@ -552,6 +554,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             }],
             nets: vec![Net {
@@ -602,6 +605,7 @@ mod tests {
                 component: ComponentId(i),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(net_for(i)),
             });
             let p2 = PinId(pins.len());
@@ -610,6 +614,7 @@ mod tests {
                 component: ComponentId(i),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: Some(net_for(i)),
             });
             components.push(Component {
@@ -709,11 +714,12 @@ mod tests {
                 },
             ],
         };
-        let make_pin = |id: usize, comp: usize, num: &str, net: NetId| Pin {
+        let make_pin = |id: usize, comp: usize, num: &str, net: NetId, idx: usize| Pin {
             id: PinId(id),
             component: ComponentId(comp),
             num: num.into(),
             pinfunction: None,
+            physical_pin_index: idx,
             net: Some(net),
         };
         let circuit = Box::leak(Box::new(Circuit {
@@ -738,9 +744,9 @@ mod tests {
                 },
             ],
             pins: vec![
-                make_pin(0, 0, "1", NetId(0)),
-                make_pin(1, 0, "2", NetId(0)),
-                make_pin(2, 1, "1", NetId(0)),
+                make_pin(0, 0, "1", NetId(0), 0),
+                make_pin(1, 0, "2", NetId(0), 1),
+                make_pin(2, 1, "1", NetId(0), 0),
             ],
             nets: vec![Net {
                 id: NetId(0),
@@ -827,6 +833,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
                 Pin {
@@ -834,6 +841,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
             ],
@@ -904,6 +912,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             }],
             nets: vec![Net {
@@ -992,6 +1001,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             }],
             nets: vec![Net {

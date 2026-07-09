@@ -161,11 +161,7 @@ pub(super) fn grid_fill_2d(
             .iter()
             .map(|&pin_id| {
                 let pin = &circuit.pins[pin_id.0];
-                let physical = footprint
-                    .pins()
-                    .iter()
-                    .find(|p| p.name() == pin.num())
-                    .expect("footprint 缺 pin");
+                let physical = footprint.physical_pin_for(pin).expect("footprint 缺 pin");
                 let (ox, oy) = if r90 {
                     (-physical.offset.y, physical.offset.x)
                 } else {

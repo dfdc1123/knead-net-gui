@@ -46,13 +46,11 @@ pub(crate) fn propose_bridged_pairs(
     let fp = &circuit.footprints[fp_id.0];
     let power_off = fp
         .pins()
-        .iter()
-        .find(|p| p.name() == circuit.pins[power_pin_id.0].num())
+        .get(circuit.pins[power_pin_id.0].physical_pin_index)
         .map(|p| p.offset);
     let signal_off = fp
         .pins()
-        .iter()
-        .find(|p| p.name() == circuit.pins[signal_pin_id.0].num())
+        .get(circuit.pins[signal_pin_id.0].physical_pin_index)
         .map(|p| p.offset);
     let (Some(power_off), Some(signal_off)) = (power_off, signal_off) else {
         return Vec::new();
@@ -344,9 +342,7 @@ pub(super) fn pin_world_pos(
     let fp_id = comp.footprint.expect("placeable 元件必有 footprint");
     let fp = &circuit.footprints[fp_id.0];
     let physical = fp
-        .pins()
-        .iter()
-        .find(|p| p.name() == pin.num())
+        .physical_pin_for(pin)
         .expect("footprint 缺 pin (解析阶段就该爆)");
     let rotated = rotate(physical.offset, state.rotation[idx]);
     Position {

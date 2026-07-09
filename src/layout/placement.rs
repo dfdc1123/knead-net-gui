@@ -162,16 +162,13 @@ impl Placement {
 
                 for pin_id in &component.pins {
                     let pin = &pins[pin_id.0];
-                    // 按 num 找 footprint 里同名 pad
-                    let physical_pin = footprint
-                        .pins()
-                        .iter()
-                        .find(|pp| pp.name() == pin.num())
-                        .ok_or_else(|| LayoutError::NoFootprintPad {
+                    let physical_pin = footprint.physical_pin_for(pin).ok_or_else(|| {
+                        LayoutError::NoFootprintPad {
                             component: component.id,
                             pin: *pin_id,
                             pad_name: pin.num().to_string(),
-                        })?;
+                        }
+                    })?;
                     let rotated = rotate(physical_pin.offset(), *rotation);
                     let absolute = Position {
                         x: position.x + rotated.x,
@@ -310,6 +307,7 @@ mod tests {
                 component: ComponentId(0),
                 num: (i + 1).to_string(),
                 pinfunction: None,
+                physical_pin_index: i,
                 net: None,
             })
             .collect()
@@ -502,6 +500,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: None,
             },
             Pin {
@@ -509,6 +508,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: None,
             },
             Pin {
@@ -516,6 +516,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "3".into(),
                 pinfunction: None,
+                physical_pin_index: 2,
                 net: None,
             },
         ];
@@ -580,6 +581,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: None,
             },
             Pin {
@@ -587,6 +589,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: None,
             },
         ];

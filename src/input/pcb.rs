@@ -118,7 +118,7 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
         let cid = ComponentId(components.len());
         let mut comp_pin_ids: Vec<PinId> = Vec::new();
 
-        for pad in &pads {
+        for (pad_idx, pad) in pads.iter().enumerate() {
             let pid = PinId(pins.len());
             pins.push(Pin {
                 id: pid,
@@ -126,6 +126,7 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
                 num: pad.num.clone(),
                 pinfunction: pad.pinfunction.clone(),
                 net: None, // 后面建 Net 时回填
+                physical_pin_index: pad_idx,
             });
             comp_pin_ids.push(pid);
 

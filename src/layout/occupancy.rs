@@ -357,6 +357,7 @@ mod bbox_tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 Pin {
@@ -364,6 +365,7 @@ mod bbox_tests {
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
             ],
@@ -466,6 +468,7 @@ mod bbox_tests {
             component: ComponentId(comp_id),
             num: if id.is_multiple_of(2) { "1" } else { "2" }.into(),
             pinfunction: None,
+            physical_pin_index: if id % 2 == 0 { 0 } else { 1 },
             net: None,
         };
         let circuit = Box::leak(Box::new(Circuit {
@@ -537,6 +540,7 @@ mod bbox_tests {
             component: ComponentId(comp),
             num: num.into(),
             pinfunction: None,
+            physical_pin_index: if num == "1" { 0 } else { 1 },
             net: None,
         };
         let circuit = Box::leak(Box::new(Circuit {
@@ -659,6 +663,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -666,6 +671,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -673,6 +679,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "3".into(),
                     pinfunction: None,
+                    physical_pin_index: 2,
                     net: None,
                 },
             ],
@@ -768,6 +775,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
                 Pin {
@@ -775,6 +783,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(1)),
                 },
             ],
@@ -846,6 +855,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             }],
             nets: vec![Net {
@@ -919,6 +929,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
                 Pin {
@@ -926,6 +937,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(1)),
                 },
             ],
@@ -1073,6 +1085,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -1080,6 +1093,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -1087,6 +1101,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -1094,6 +1109,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
             ],
@@ -1204,6 +1220,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -1211,6 +1228,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -1218,6 +1236,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "3".into(),
                     pinfunction: None,
+                    physical_pin_index: 2,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -1225,6 +1244,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 crate::circuit::Pin {
@@ -1232,6 +1252,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
             ],
@@ -1338,6 +1359,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
                 Pin {
@@ -1345,6 +1367,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(1)),
                 },
             ],
@@ -1424,6 +1447,7 @@ mod tests {
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
                 Pin {
@@ -1431,6 +1455,7 @@ mod tests {
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(1)),
                 },
             ],

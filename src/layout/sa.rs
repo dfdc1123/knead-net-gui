@@ -993,6 +993,7 @@ mod tests {
                 component: ComponentId(i / 2),
                 num: ((i % 2) + 1).to_string(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             })
             .collect();
@@ -1041,7 +1042,10 @@ mod tests {
             vec![ComponentId(0), ComponentId(1)],
             &simple_circuit(),
             &board(),
-            &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() },
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
         );
         let cfg = SAConfig::default();
         let mut rng = fastrand::Rng::with_seed(0);
@@ -1170,6 +1174,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             },
             Pin {
@@ -1177,6 +1182,7 @@ mod tests {
                 component: ComponentId(0),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: Some(NetId(1)),
             },
         ];
@@ -1208,7 +1214,15 @@ mod tests {
     /// 跑 populate_bridgeable_info 并启用 bridged 模式, 返回手动设置好的 state。
     fn bridgable_state_in_bridged(placeable: Vec<ComponentId>) -> SAState {
         let (circuit, board) = bridgable_fixture();
-        let mut state = SAState::from_greedy(placeable, &circuit, &board, &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
+        let mut state = SAState::from_greedy(
+            placeable,
+            &circuit,
+            &board,
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+        );
         populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
         assert!(state.is_bridgeable[0], "fixture 应能提供 bridged candidate");
         assert!(!state.bridged_pin_pairs[0].is_empty(), "cache 不该为空");
@@ -1564,7 +1578,15 @@ mod tests {
     fn from_greedy_avoids_blocked_rows() {
         let board = crate::layout::Breadboard::standard();
         let circuit = simple_circuit();
-        let state = SAState::from_greedy(vec![ComponentId(0), ComponentId(1)], &circuit, &board, &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() });
+        let state = SAState::from_greedy(
+            vec![ComponentId(0), ComponentId(1)],
+            &circuit,
+            &board,
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+        );
         for &y in &state.y {
             assert!(
                 !board.is_blocked(y as usize),
@@ -1596,7 +1618,10 @@ mod tests {
             &board(),
             &config,
             &[],
-            &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() },
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
         );
         let best_cost = cost(&best, &circuit, &board(), &[], &Weights::default());
         assert!(
@@ -1619,7 +1644,10 @@ mod tests {
             &board(),
             &config,
             &[],
-            &crate::layout::preprocess::PreprocessResult { r90_only: std::collections::HashSet::new(), y_locked: std::collections::HashMap::new() },
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
         );
         // SA 输出本身就是 final 位置 (compact 删了, cost 里的 compactness 替代)
         let xs = best.x.clone();

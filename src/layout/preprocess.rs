@@ -91,7 +91,7 @@ fn has_column_conflict(
     let mut x_groups: HashMap<i32, Vec<Option<NetId>>> = HashMap::new();
     for &pin_id in comp_pins {
         let pin = &circuit.pins()[pin_id.raw()];
-        let Some(physical) = fp.pins().iter().find(|p| p.name() == pin.num()) else {
+        let Some(physical) = fp.physical_pin_for(pin) else {
             continue;
         };
         let x = if r90 {
@@ -126,7 +126,7 @@ fn try_y_lock(
     let mut col_pins: HashMap<i32, Vec<(i32, Option<NetId>)>> = HashMap::new();
     for &pin_id in comp_pins {
         let pin = &circuit.pins()[pin_id.raw()];
-        let Some(physical) = fp.pins().iter().find(|p| p.name() == pin.num()) else {
+        let Some(physical) = fp.physical_pin_for(pin) else {
             continue;
         };
         let (rx, ry) = if r90 {

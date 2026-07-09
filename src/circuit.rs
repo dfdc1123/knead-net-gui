@@ -107,6 +107,10 @@ pub struct Pin {
     pub(crate) pinfunction: Option<String>,
 
     pub(crate) net: Option<NetId>,
+
+    /// 在所属 footprint 的 `Footprint::pins` 里的下标, 显式建立 1:1 对应。
+    /// 解析阶段 (`pcb.rs`) 填入; 之后 lookup physical pin 时不再按名字匹配。
+    pub(crate) physical_pin_index: usize,
 }
 
 impl Pin {
@@ -131,6 +135,11 @@ impl Pin {
     /// 该 pin 连接到的 net; None = unconnected
     pub fn net(&self) -> Option<NetId> {
         self.net
+    }
+
+    /// 在所属 footprint 的 physical pins 数组里的下标
+    pub fn physical_pin_index(&self) -> usize {
+        self.physical_pin_index
     }
 }
 
@@ -196,6 +205,13 @@ impl Footprint {
 
     pub fn pins(&self) -> &[PhysicalPin] {
         &self.pins
+    }
+
+    /// 通过 Pin 里记录的 [`Pin::physical_pin_index`] 拿到对应的物理引脚。
+    ///
+    /// 这是 Pin → PhysicalPin 的显式 1:1 映射, 替代了之前按名字的 `.find()`。
+    pub fn physical_pin_for(&self, pin: &Pin) -> Option<&PhysicalPin> {
+        self.pins.get(pin.physical_pin_index)
     }
 }
 

@@ -65,9 +65,7 @@ impl SAContext {
             for &pin_id in &component.pins {
                 let pin = &circuit.pins[pin_id.0];
                 let physical = footprint
-                    .pins()
-                    .iter()
-                    .find(|pp| pp.name() == pin.num())
+                    .physical_pin_for(pin)
                     .expect("footprint 缺 pin (解析阶段就该爆)");
                 let offset_r0 = physical.offset;
                 // R180: negate

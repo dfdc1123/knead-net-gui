@@ -20,6 +20,7 @@
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 Pin {
@@ -27,6 +28,7 @@
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
                 Pin {
@@ -34,6 +36,7 @@
                     component: ComponentId(0),
                     num: "3".into(),
                     pinfunction: None,
+                    physical_pin_index: 2,
                     net: None,
                 },
             ],
@@ -176,6 +179,7 @@
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 Pin {
@@ -183,6 +187,7 @@
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
                 Pin {
@@ -190,6 +195,7 @@
                     component: ComponentId(0),
                     num: "3".into(),
                     pinfunction: None,
+                    physical_pin_index: 2,
                     net: None,
                 },
                 Pin {
@@ -197,6 +203,7 @@
                     component: ComponentId(1),
                     num: "x".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
             ],
@@ -282,6 +289,7 @@
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 Pin {
@@ -289,6 +297,7 @@
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
                 Pin {
@@ -296,6 +305,7 @@
                     component: ComponentId(0),
                     num: "3".into(),
                     pinfunction: None,
+                    physical_pin_index: 2,
                     net: None,
                 },
                 Pin {
@@ -303,6 +313,7 @@
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 Pin {
@@ -310,6 +321,7 @@
                     component: ComponentId(1),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: None,
                 },
             ],
@@ -458,6 +470,7 @@
                     component: ComponentId(0),
                     num: "p".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
                 Pin {
@@ -465,6 +478,7 @@
                     component: ComponentId(1),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: None,
                 },
             ],
@@ -674,6 +688,7 @@
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             },
             Pin {
@@ -681,6 +696,7 @@
                 component: ComponentId(0),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: Some(NetId(0)),
             },
         ];
@@ -772,6 +788,7 @@
                 component: ComponentId(0),
                 num: "1".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: Some(NetId(0)),
             },
             Pin {
@@ -779,6 +796,7 @@
                 component: ComponentId(0),
                 num: "2".into(),
                 pinfunction: None,
+                physical_pin_index: 1,
                 net: Some(NetId(0)),
             },
         ];
@@ -890,6 +908,7 @@
                 component: ComponentId(i),
                 num: "0".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: None,
             });
         }
@@ -909,6 +928,7 @@
                 component: ComponentId(i),
                 num: "0".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: None,
             });
         }
@@ -928,6 +948,7 @@
                 component: ComponentId(i),
                 num: "0".into(),
                 pinfunction: None,
+                physical_pin_index: 0,
                 net: None,
             });
         }
@@ -1006,6 +1027,7 @@
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
                 Pin {
@@ -1013,6 +1035,7 @@
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: Some(NetId(1)),
                 },
             ],
@@ -1094,6 +1117,7 @@
                     component: ComponentId(0),
                     num: "1".into(),
                     pinfunction: None,
+                    physical_pin_index: 0,
                     net: Some(NetId(0)),
                 },
                 Pin {
@@ -1101,6 +1125,7 @@
                     component: ComponentId(0),
                     num: "2".into(),
                     pinfunction: None,
+                    physical_pin_index: 1,
                     net: Some(NetId(1)),
                 },
             ],

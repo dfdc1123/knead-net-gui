@@ -140,9 +140,7 @@ fn inspect_state_pins(
             for &pin_id in &comp.pins {
                 let pin = &circuit.pins[pin_id.0];
                 let physical = footprint
-                    .pins()
-                    .iter()
-                    .find(|pp| pp.name() == pin.num())
+                    .physical_pin_for(pin)
                     .unwrap_or_else(|| panic!("footprint pin 不存在 num={}", pin.num()));
                 let offset = if is_r180 {
                     crate::layout::placement::rotate(

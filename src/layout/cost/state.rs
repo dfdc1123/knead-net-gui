@@ -122,7 +122,12 @@ impl SAState {
     /// 两个初排 (`from_greedy` / `from_spectral`) 都
     /// 做这个检查, 因此初排结果**保证**不引入列短路 — SA 后续只在 `Flip` /
     /// `ShiftX` 偶尔重新引入时捕捉并罚分。
-    pub(crate) fn from_greedy(placeable: Vec<ComponentId>, circuit: &Circuit, board: &Breadboard, preprocess: &PreprocessResult) -> Self {
+    pub(crate) fn from_greedy(
+        placeable: Vec<ComponentId>,
+        circuit: &Circuit,
+        board: &Breadboard,
+        preprocess: &PreprocessResult,
+    ) -> Self {
         let n = placeable.len();
         let mut x = vec![0i32; n];
         let mut y = vec![0i32; n];
@@ -145,9 +150,7 @@ impl SAState {
                 .map(|&pin_id| {
                     let pin = &circuit.pins[pin_id.0];
                     let physical = footprint
-                        .pins()
-                        .iter()
-                        .find(|p| p.name() == pin.num())
+                        .physical_pin_for(pin)
                         .expect("footprint 缺 pin (解析阶段就该爆)");
                     (physical.offset.x, physical.offset.y, pin.net)
                 })
@@ -222,10 +225,10 @@ impl SAState {
             }
 
             let (fx, mut fy) = found.unwrap_or_else(|| panic!("元件 {} 装不下这块板", comp_id.0));
-        // y-locked: 覆盖为锁定值
-        if let Some(&ly) = preprocess.y_locked.get(&comp_id) {
-            fy = ly;
-        }
+            // y-locked: 覆盖为锁定值
+            if let Some(&ly) = preprocess.y_locked.get(&comp_id) {
+                fy = ly;
+            }
             x[idx] = fx;
             y[idx] = fy;
             for &(dx, dy) in &bbox_cells {
