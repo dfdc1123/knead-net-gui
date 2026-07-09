@@ -774,8 +774,9 @@ fn compactness_penalizes_horizontal_spread() {
 }
 
 /// 同样 2 个 1-pin 元件, 同列: cost 随垂直跨度增长, 跟水平等价 (x / y 平等)。
+/// 水平拉开应加紧凑度 cost, 垂直拉开不应加 (紧凑度只算 x)。
 #[test]
-fn compactness_treats_xy_equally() {
+fn compactness_only_x_not_y() {
     let fp = one_pin_fp();
     let comps = (0..2)
         .map(|i| Component {
@@ -812,7 +813,7 @@ fn compactness_treats_xy_equally() {
         ..Weights::default()
     };
 
-    // 拉开 5 cells (x 0..4, width 5) → cost = 0.5 * 5 * 1 = 2.5 (同 row)
+    // 水平拉开 5 cells (x 0..4, width 5) → compactness = 0.5 * 5 = 2.5
     let s_horiz = SAState {
         placeable: vec![ComponentId(0), ComponentId(1)],
         x: vec![0, 4],
@@ -821,8 +822,17 @@ fn compactness_treats_xy_equally() {
         ..SAState::no_bridging(2)
     };
     let c_horiz = cost(&s_horiz, &circuit, &board(), &[], &w);
+    assert!(
+        (c_horiz - 2.5).abs() < 1e-9,
+        "水平拉开 5 cells → compactness=2.5, got {c_horiz}"
+    );
+    let c_horiz = cost(&s_horiz, &circuit, &board(), &[], &w);
+    assert!(
+        (c_horiz - 2.5).abs() < 1e-9,
+        "水平拉开 5 cells → compactness=2.5, got {c_horiz}"
+    );
 
-    // 拉开 5 cells (y 0..4, height 5) → cost = 0.5 * 1 * 5 = 2.5 (同 col)
+    // 垂直拉开 5 cells (y 0..4, x 相同) → compactness = 0.5 * 1 = 0.5 (x 跨度仅 1)
     let s_vert = SAState {
         placeable: vec![ComponentId(0), ComponentId(1)],
         x: vec![0, 0],
@@ -831,10 +841,9 @@ fn compactness_treats_xy_equally() {
         ..SAState::no_bridging(2)
     };
     let c_vert = cost(&s_vert, &circuit, &board(), &[], &w);
-
     assert!(
-        (c_horiz - c_vert).abs() < 1e-9,
-        "x / y 应同代价: 水平={c_horiz}, 垂直={c_vert}"
+        (c_vert - 0.5).abs() < 1e-9,
+        "垂直拉开不应加 compactness, got {c_vert}"
     );
 }
 
@@ -877,7 +886,7 @@ fn compactness_rail_crossing_penalty() {
         ..Weights::default()
     };
 
-    // 同 rail: 无 rail_crossing
+    // 同 rail: 无 rail_crossing, compactness = 0.5*1 = 0.5
     let s_same = SAState {
         placeable: vec![ComponentId(0), ComponentId(1)],
         x: vec![0, 0],
@@ -887,7 +896,7 @@ fn compactness_rail_crossing_penalty() {
     };
     let c_same = cost(&s_same, &circuit, &board, &[], &w);
 
-    // 跨 rail (中央通道两侧): 加 rail_crossing
+    // 跨 rail (中央通道两侧): compactness 上下各 0.5, 加 rail_crossing 5.0 = 6.0
     let s_cross = SAState {
         placeable: vec![ComponentId(0), ComponentId(1)],
         x: vec![0, 0],
@@ -897,11 +906,12 @@ fn compactness_rail_crossing_penalty() {
     };
     let c_cross = cost(&s_cross, &circuit, &board, &[], &w);
 
-    let delta = c_cross - c_same;
+    let expected_delta = 0.5 + w.rail_crossing; // compactness diff + rail_crossing
     assert!(
-        (delta - w.rail_crossing).abs() < 1e-9,
-        "跨 rail 多出的 cost 应 = rail_crossing ({}) , 实际多 {delta}",
-        w.rail_crossing
+        (c_cross - c_same - expected_delta).abs() < 1e-9,
+        "跨 rail 应多出 compactness_diff(0.5) + rail_crossing({}) = {expected_delta}, got {}",
+        w.rail_crossing,
+        c_cross - c_same
     );
 }
 
@@ -966,16 +976,16 @@ fn compactness_rail_split_avoids_central_channel_inflation() {
     };
     let c_split = cost(&s_split, &circuit, &board, &[], &w);
 
-    // 都上 rail: x=0..2, y=0..2, bbox = 3×3 = 9 → cost 4.5
+    // 都上 rail: x=0..2, width=3; compactness = 0.5*3 = 1.5; row_squash: 3 comps 3 rows → 0
     assert!(
-        (c_all_upper - 4.5).abs() < 1e-9,
-        "全上 rail 应 cost = 0.5 * 9 = 4.5, got {c_all_upper}"
+        (c_all_upper - 1.5).abs() < 1e-9,
+        "全上 rail 应 cost = 0.5 * 3 = 1.5, got {c_all_upper}"
     );
-    // split: 上 rail bbox 0..1 × 0..1 = 2×2 = 4; 下 rail bbox 2..2 × 10..10 = 1×1 = 1;
-    //        总 area = 5, cost = 2.5; 加 rail_crossing 5 = 7.5
+    // split: 上 rail x=0..1 width=2 compactness=1.0; 下 rail x=2 width=1 compactness=0.5;
+    //        总 compactness = 1.5; 加 rail_crossing 5 = 6.5
     assert!(
-        (c_split - (0.5 * (2.0 * 2.0 + 1.0 * 1.0) + w.rail_crossing)).abs() < 1e-9,
-        "split 布局应 cost = 0.5 * 5 + 5.0 = 7.5, got {c_split}"
+        (c_split - (0.5 * 2.0 + 0.5 * 1.0 + w.rail_crossing)).abs() < 1e-9,
+        "split 布局应 cost = 1.5 + 5.0 = 6.5, got {c_split}"
     );
 }
 

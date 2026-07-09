@@ -10,12 +10,10 @@
 //!
 //!   比 2D HPWL 准 — 普通 HPWL 把 "同列不同 row 同 rail" 算成 Δrow, MST 直接 0,
 //!   推动 SA 主动寻找 rail 短接的低跳线数布局。
-//! - **紧凑度**: 按 rail 分组算 union bbox 面积加和, 阻止 SA 停在"零冲突但留白大"的状态。
-//!   按 rail 切分避免中央通道把"实际占 1 行"的布局算成跨 2 行。
+//! - **紧凑度**: 按 rail 分组算 union bbox 水平跨度加和, 阻止 SA 停在"零冲突但水平留白大"的状态。
 //! - 成本是各项**加权和**, 权在 [`Weights`] 里调。
 //! - `SAState` 是 SA 内部状态, 只在 layout 子模块内共享; v2 起每个元件显式
 //!   持有 `(x, y, rotation)`, 不再由 order 推 x。
-
 
 use crate::circuit::Circuit;
 use crate::layout::breadboard::Breadboard;
@@ -32,9 +30,7 @@ mod state;
 mod tests;
 
 // --- 公共 API 重导出 (供 layout/, sa.rs, main.rs, sa_sweep.rs 使用) ---
-pub(crate) use bridge::{
-    init_bridgeable_to_bridged, populate_bridgeable_info,
-};
+pub(crate) use bridge::{init_bridgeable_to_bridged, populate_bridgeable_info};
 pub(crate) use context::CostBuf;
 pub use context::{CompInfo, SAContext};
 pub(crate) use cost_fast::{cost_breakdown, cost_fast};
@@ -80,9 +76,8 @@ pub struct Weights {
     pub column_conflict: f64,
     /// 越界 pin 数 (在 rail_id == `u32::MAX` 的"板外"孔上)。
     pub out_of_bounds: f64,
-    /// 紧凑度: 按 rail 分组, 每组算 union bbox 面积 `(max_x - min_x + 1) * (max_y - min_y + 1)`,
-    /// 各 rail 加和。**按 rail 切分** 是为了避免中央通道把"实际只占 1 行"的布局算成 2 行高。
-    /// 推动 SA 把元件挤到 union bbox 最小处 (x 和 y 同等对待, 都从 area 项自然得到)。
+    /// 紧凑度: 按 rail 分组, 每组算 union bbox 水平跨度 `(max_x - min_x + 1)`,
+    /// 各 rail 加和。只算 x, 不再算 y — y 方向由 row_squash 管。
     pub compactness: f64,
     /// 同时使用 2+ 个 rail 时的额外固定惩罚, 鼓励同 rail 排布。
     /// 跨 rail 至少要一根 ~3 孔 jumper, 这项比单 cell 紧凑更贵。
@@ -107,8 +102,8 @@ impl Default for Weights {
             column_conflict: 1_000_000.0,
             // 越界基本不允许; 巨大惩罚让 SA 直接拒绝
             out_of_bounds: 1_000_000.0,
-            // 紧凑度: 1 cell² ≈ 0.5 MST cell 的代价, 让 MST 仍有空间优化跨列 net,
-            // 但空隙会被这股力挤掉。
+            // 紧凑度: 1 cell 水平跨度 ≈ 0.5 MST cell 的代价, 让 MST 仍有空间优化跨列 net,
+            // 但水平空隙会被这股力挤掉。
             compactness: 0.5,
             // 跨 rail = 多一根 jumper + 视觉割裂, 取约 5 cell MST, 比单 cell 紧凑贵
             // 但比 column_conflict 软得多, 不会让 SA 为了"必须跨 rail 的电路"去撞列冲突。

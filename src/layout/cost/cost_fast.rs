@@ -344,8 +344,7 @@ pub(crate) fn cost_fast(
         }
         if min_x <= max_x && min_y <= max_y {
             let width = (max_x - min_x + 1) as f64;
-            let height = (max_y - min_y + 1) as f64;
-            area_sum += width * height;
+            area_sum += width;
         }
         // 纵向挤压: 元件数 n vs 实际占用行数 ny
         let ny = row_seen.count_ones() as usize;
@@ -609,8 +608,7 @@ fn cost_breakdown_inner(
         }
         if min_x <= max_x && min_y <= max_y {
             let width = (max_x - min_x + 1) as f64;
-            let height = (max_y - min_y + 1) as f64;
-            area_sum += width * height;
+            area_sum += width;
         }
         let ny = row_seen.count_ones() as usize;
         let n = cells.len();
