@@ -1,6 +1,6 @@
 //! 领域模型: component / pin / net / footprint 以及链接它们的 ID。
 //!
-//! 这个模块是格式无关的 — KiCad .net 以及任何其他输入源
+//! 这个模块是格式无关的 — KiCad `.kicad_pcb` 以及任何其他输入源
 //! 都会转换 *成* 这些类型。具体的解析器见 `input::*`。
 
 // 让 pin 有所属的 component
@@ -42,7 +42,7 @@ impl FootprintId {
 
 /// 物理位置 (x, y), 整数坐标
 ///
-/// 1 单位 = 1 个面包板孔 = 2.54mm。`.kicad_mod` 里的 mm 坐标
+/// 1 单位 = 1 个面包板孔 = 2.54mm。KiCad 格式里的 mm 坐标
 /// 在解析时会先四舍五入到最近孔 (容差 1e-9), 完全对齐不到整数倍孔距才 panic。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {
@@ -74,7 +74,7 @@ pub struct Component {
     /// (例如从 power rail 跨到主区的电阻)。本身**只**是 flag —
     /// 是否真的走 [`Placement::Bridged`] 由 [`Layout::place_sa`] 内的
     /// `ToggleBridging` 扰动决定。
-    /// 由 netlist 解析层的 [`crate::input::netlist::auto_mark_bridgeable`]
+    /// 由 pcb 解析层的 [`crate::input::pcb::auto_mark_bridgeable`]
     /// 自动设定 (规则: 2 pin + 一腿 power net + 另一腿 signal net),
     /// 也可以手动 override。
     pub bridgeable: bool,
@@ -100,7 +100,7 @@ pub struct Pin {
 
     pub(crate) component: ComponentId,
 
-    /// pin num, 跟 .kicad_mod 里 (pad "X") 的 X 一致
+    /// pin num, 跟 KiCad pad 编号一致
     pub(crate) num: String,
 
     /// KiCad netlist 里的 (pinfunction "B"/"C"/"E"/"K"/"A" ...), 用来识别极性

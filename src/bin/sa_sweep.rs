@@ -4,36 +4,16 @@
 
 use std::fs;
 
-use knead_net::input::footprint::parse_many as parse_footprints;
-use knead_net::input::netlist::{auto_mark_bridgeable, parse_netlist};
+use knead_net::input::pcb::{auto_mark_bridgeable, parse_pcb};
 use knead_net::{
     Breadboard, Layout, PathFinderRouter, Placement, PowerRailBinding, Router, SAConfig,
 };
 
 fn main() {
-    let footprints_dir = "examples/footprints";
     let inputs_dir = "examples/inputs";
 
-    let mut footprint_paths: Vec<String> = fs::read_dir(footprints_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("kicad_mod"))
-        .filter_map(|p| p.to_str().map(String::from))
-        .collect();
-    footprint_paths.sort();
-
-    let footprint_texts: Vec<String> = footprint_paths
-        .iter()
-        .map(|p| fs::read_to_string(p).unwrap())
-        .collect();
-    let footprints = parse_footprints(footprint_texts).unwrap();
-
-    let netlist_path = format!("{inputs_dir}/bjt_led.net");
-    let netlist_text = fs::read_to_string(&netlist_path).unwrap();
-    let netlist = parse_netlist(&netlist_text).unwrap();
-
-    let mut circuit = netlist.into_circuit(&footprints);
+    let pcb_text = fs::read_to_string(format!("{inputs_dir}/h-bridge.kicad_pcb")).unwrap();
+    let mut circuit = parse_pcb(&pcb_text).unwrap();
     auto_mark_bridgeable(&mut circuit, &["GND", "+12V", "VCC", "5V", "3V3"]);
 
     const MASK_LOWER_HALF: bool = true;

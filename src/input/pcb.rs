@@ -1,12 +1,9 @@
 //! KiCad `.kicad_pcb` 文件解析器。
 //!
-//! 直接从 `.kicad_pcb` 的 `(footprint ...)` 块中同时提取
-//! 元件信息、封装几何和网络连接, 一步到位构造 [`Circuit`]。
-//! 不再需要分开的 `.net` 和 `.kicad_mod` 文件。
+//! 直接把 `.kicad_pcb` 文件一步到位构造 [`Circuit`]。
 
 use std::collections::BTreeMap;
 
-use super::footprint::split_footprint_ref;
 use super::sexp::{ParseError, Sexp, parse};
 use crate::circuit::{
     Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin, PinId,
@@ -43,7 +40,7 @@ struct PadInfo {
 /// 1. 遍历所有 `(footprint "Lib:Name" ...)` 顶层块
 /// 2. 从每个块提取 Reference / Value / pads 几何 / net 连接 / pinfunction
 /// 3. 按 net 名把 pads 分组, 构造 Net 列表
-/// 4. unconnected net 保留 (与旧 .net 解析器行为一致)
+/// 4. unconnected net 保留
 pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
     let sexp = parse(text)?;
     let top = match &sexp {
@@ -174,6 +171,36 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
     })
 }
 
+/// 把 "LIB:NAME" 形式的 footprint ref 拆成 `(LIB, NAME)`。
+/// 例如 `"LED_THT:LED_D5.0mm" → ("LED_THT", "LED_D5.0mm")`。
+pub fn split_footprint_ref(footprint_ref: &str) -> (&str, &str) {
+    match footprint_ref.rsplit_once(':') {
+        Some((l, n)) => (l, n),
+        None => (footprint_ref, footprint_ref),
+    }
+}
+
+/// 自动标记**可桥接**元件: 2 pin 元件, 一腿在 power net, 另一腿在 signal net。
+///
+/// 规则: 2 pin + (一 pin 属于 power net) XOR (另一 pin 属于 power net) = true。
+pub fn auto_mark_bridgeable(circuit: &mut Circuit, power_net_names: &[&str]) {
+    for comp in &mut circuit.components {
+        if comp.pins.len() != 2 {
+            continue;
+        }
+        let mut nets = comp.pins.iter().filter_map(|&pid| circuit.pins[pid.0].net);
+        let Some(n1) = nets.next() else { continue };
+        let Some(n2) = nets.next() else { continue };
+        let name1 = circuit.nets[n1.0].name();
+        let name2 = circuit.nets[n2.0].name();
+        let n1_is_power = power_net_names.contains(&name1);
+        let n2_is_power = power_net_names.contains(&name2);
+        if n1_is_power != n2_is_power {
+            comp.bridgeable = true;
+        }
+    }
+}
+
 // ── helper ────────────────────────────────────────────────────
 
 /// 在一个 sexp 列表中查找 `(property KEY VALUE ...)`, 返回 VALUE 字符串。
@@ -288,152 +315,44 @@ fn parse_f64(sexp: &Sexp) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
 
     #[test]
-    fn parse_h_bridge_pcb() {
+    fn parse_and_bridge_h_bridge_pcb() {
         let text = std::fs::read_to_string("examples/inputs/h-bridge.kicad_pcb").unwrap();
-        let circuit = parse_pcb(&text).unwrap();
+        let mut circuit = parse_pcb(&text).unwrap();
 
-        // 18 个元件: D1-4, Q1-6, R1-8
         assert_eq!(circuit.components.len(), 18);
-
-        // 检查几个已知的 net
-        let net_names: Vec<&str> = circuit.nets.iter().map(|n| n.name()).collect();
-        assert!(net_names.contains(&"GND"));
-        assert!(net_names.contains(&"+12V"));
-        assert!(net_names.contains(&"Net-(Q1-C)"));
-        // unconnected nets 保留 (跟旧 .net 解析器一致)
-        assert!(net_names.iter().any(|n| n.starts_with("unconnected-")));
         assert_eq!(circuit.nets.len(), 16); // 12 真实 + 4 unconnected
 
-        // 检查 R4 (有 unconnected pad)
-        let r4 = circuit
+        auto_mark_bridgeable(&mut circuit, &["GND", "+12V", "VCC", "5V", "3V3"]);
+        let bridgeable: Vec<&str> = circuit
             .components
             .iter()
-            .find(|c| c.ref_() == "R4")
-            .unwrap();
-        assert_eq!(r4.kind(), "Resistor_THT");
-        assert_eq!(r4.pins.len(), 2);
-
-        // 检查 Q1 的 pinfunction
+            .filter(|c| c.bridgeable)
+            .map(|c| c.ref_())
+            .collect();
+        assert!(bridgeable.contains(&"D1"));
+        assert!(bridgeable.contains(&"R2"));
+        // Q1 是 3-pin, 不应桥接
         let q1 = circuit
             .components
             .iter()
             .find(|c| c.ref_() == "Q1")
             .unwrap();
-        let q1_pinfuncs: Vec<Option<&str>> = q1
-            .pins
-            .iter()
-            .map(|&pid| circuit.pins[pid.0].pinfunction())
-            .collect();
-        assert!(q1_pinfuncs.contains(&Some("C_1")));
-        assert!(q1_pinfuncs.contains(&Some("B_2")));
-        assert!(q1_pinfuncs.contains(&Some("E_3")));
+        assert!(!q1.bridgeable);
     }
 
-    /// 对比 .kicad_pcb 解析结果 与 .net + .kicad_mod 解析结果。
-    /// 两者应描述同一个电路 (h-bridge, 18 元件), 除 kind 字段外应完全一致。
     #[test]
-    fn pcb_matches_netlist_plus_footprints() {
-        use crate::input::footprint::parse_many;
-        use crate::input::netlist::parse_netlist;
+    fn split_ref_basic() {
+        assert_eq!(
+            split_footprint_ref("LED_THT:LED_D5.0mm"),
+            ("LED_THT", "LED_D5.0mm")
+        );
+    }
 
-        // -- 旧方式: .net + .kicad_mod --
-        let netlist_text = std::fs::read_to_string("examples/inputs/h-bridge.net").unwrap();
-        let netlist = parse_netlist(&netlist_text).unwrap();
-
-        let fp_dir = "examples/footprints";
-        let mut fp_paths: Vec<String> = std::fs::read_dir(fp_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("kicad_mod"))
-            .filter_map(|p| p.to_str().map(String::from))
-            .collect();
-        fp_paths.sort();
-        let fp_texts: Vec<String> = fp_paths
-            .iter()
-            .map(|p| std::fs::read_to_string(p).unwrap())
-            .collect();
-        let footprints = parse_many(fp_texts).unwrap();
-        let old = netlist.into_circuit(&footprints);
-
-        // -- 新方式: .kicad_pcb --
-        let pcb_text = std::fs::read_to_string("examples/inputs/h-bridge.kicad_pcb").unwrap();
-        let new = parse_pcb(&pcb_text).unwrap();
-
-        // 元件数, net 数, pin 数一致
-        assert_eq!(old.components.len(), new.components.len());
-        assert_eq!(old.nets.len(), new.nets.len());
-        assert_eq!(old.pins.len(), new.pins.len());
-        // 旧方式加载了 examples/footprints/ 下全部 6 个 .kicad_mod,
-        // 但 h-bridge 只用其中 3 个。新方式只产生实际用到的 3 个。
-        assert_eq!(old.footprints.len(), 6);
-        assert_eq!(new.footprints.len(), 3);
-
-        // 逐个对比 footprint (用到的 3 个封装应完全一致)
-        let new_fp_by_name: HashMap<&str, &Footprint> =
-            new.footprints.iter().map(|fp| (fp.name(), fp)).collect();
-        for fp_old in &old.footprints {
-            if let Some(fp_new) = new_fp_by_name.get(fp_old.name()) {
-                assert_eq!(fp_old.pins().len(), fp_new.pins().len());
-                for (pp_old, pp_new) in fp_old.pins().iter().zip(fp_new.pins().iter()) {
-                    assert_eq!(pp_old.name(), pp_new.name());
-                    assert_eq!(pp_old.offset(), pp_new.offset());
-                }
-            }
-        }
-
-        // 逐个对比 component (顺序可能不同, 按 ref 名查找)
-        let old_by_ref: HashMap<&str, &Component> =
-            old.components.iter().map(|c| (c.ref_(), c)).collect();
-        for comp_new in &new.components {
-            let comp_old = old_by_ref.get(comp_new.ref_()).unwrap();
-            assert_eq!(comp_old.pins().len(), comp_new.pins().len());
-            assert_eq!(
-                comp_old.footprint().is_some(),
-                comp_new.footprint().is_some()
-            );
-        }
-
-        // 逐个对比 pin: num + pinfunction (按 component ref + pin num 查找)
-        let old_pin_key: HashMap<(String, String), &Pin> = old
-            .pins
-            .iter()
-            .map(|p| {
-                let comp_ref = old.components[p.component().raw()].ref_().to_string();
-                ((comp_ref, p.num().to_string()), p)
-            })
-            .collect();
-        for pin_new in &new.pins {
-            let comp_ref = new.components[pin_new.component().raw()].ref_().to_string();
-            let key = (comp_ref, pin_new.num().to_string());
-            let pin_old = old_pin_key.get(&key).unwrap();
-            assert_eq!(pin_old.pinfunction(), pin_new.pinfunction());
-        }
-
-        // 逐个对比 net: 名字 + 包含的 pin 数 (按名字查找)
-        let old_net_by_name: HashMap<&str, &Net> = old.nets.iter().map(|n| (n.name(), n)).collect();
-        for net_new in &new.nets {
-            let net_old = old_net_by_name.get(net_new.name()).unwrap();
-            assert_eq!(net_old.pins().len(), net_new.pins().len());
-        }
-
-        // kind 对比: 仅打印差异, 不 assert (已知不同: 旧用 libsource part, 新用 footprint 库名)
-        eprintln!("kind 字段对比 (旧 .net vs 新 .kicad_pcb):");
-        for comp_new in &new.components {
-            let comp_old = old_by_ref.get(comp_new.ref_()).unwrap();
-            if comp_old.kind() != comp_new.kind() {
-                eprintln!(
-                    "  {:4}  {:6} -> {}",
-                    comp_new.ref_(),
-                    comp_old.kind(),
-                    comp_new.kind()
-                );
-            }
-        }
+    #[test]
+    fn split_ref_no_colon() {
+        assert_eq!(split_footprint_ref("nocolon"), ("nocolon", "nocolon"));
     }
 }

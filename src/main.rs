@@ -29,7 +29,7 @@ fn main() {
     // 名字列表是独立维护的 power-net 别名表; 标准板的 positive / negative
     // 名字列表在 `breadboard::standard_power_rails` 里硬编码, 跟这里互不相关。
     let power_names = ["GND", "+12V", "VCC", "5V", "3V3"];
-    knead_net::input::netlist::auto_mark_bridgeable(&mut circuit, &power_names);
+    knead_net::input::pcb::auto_mark_bridgeable(&mut circuit, &power_names);
     for c in circuit.components() {
         if c.bridgeable {
             eprintln!("  bridgeable: {} (kind={})", c.ref_(), c.kind());
@@ -50,7 +50,7 @@ fn main() {
     //   - 两个都 true    → 上下都屏蔽, 只剩中央 5/6 行 (本身也 blocked), 元件无处可放
     // 改任一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
     const MASK_UPPER_HALF: bool = false;
-    const MASK_LOWER_HALF: bool = true;
+    const MASK_LOWER_HALF: bool = false;
     let mut board = {
         let mut blocked: Vec<usize> = vec![5, 6]; // 标准中央通道
         if MASK_UPPER_HALF {
@@ -71,9 +71,6 @@ fn main() {
     }
 
     // 4b. 把电源轨绑到具体 net (让 SA/路由把 rail 强制接进电路)
-    // - 负极 → GND
-    // - 正极 → +12V (h-bridge-power.net 里用这个名字)
-    // 找不到 net 就跳过, 退回原来的"不绑定"行为
     let gnd_net = circuit.nets().iter().find(|n| n.name() == "GND");
     let v12_net = circuit.nets().iter().find(|n| n.name() == "+12V");
     if let (Some(gnd), Some(v12)) = (gnd_net, v12_net) {

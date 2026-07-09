@@ -191,7 +191,7 @@ impl Placement {
 
                 // 用所有 pin 的世界坐标构 bbox。footprint 暂时没有 "body extent" 字段,
                 // 这里就跟渲染里一样, 用 pin 的范围代表元件占据的网格范围。
-                // 后续如果从 .kicad_mod 解析了 body silk, 可以替换这个 bbox。
+                // 后续如果从 KiCad 解析了 body silk, 可以替换这个 bbox。
                 let bbox = BBox::from_points(world_positions);
                 Ok(PlacedFootprint { pin_holes, bbox })
             }
@@ -495,7 +495,7 @@ mod tests {
         let b = board();
         let fp = to92_footprint();
         let comp = q1_component();
-        // pins 顺序: num "2", "1", "3" (跟 random.net 里 Q1 一样)
+        // pins 顺序: num "2", "1", "3" (测试乱序匹配)
         let pins = vec![
             Pin {
                 id: PinId(0),
