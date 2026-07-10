@@ -449,7 +449,6 @@ fn find_hub_rails(wires: &[(HoleId, HoleId)], board: &Breadboard) -> HashMap<u32
 /// 对一根 wire 在 hub rail 上的上下文: 哪个 wire, 哪端是 hub, target 节点是谁。
 struct WireCtx {
     wire_idx: usize,
-    target_rail: u32,
     target_col: i32,
     target_row: i32,
     is_from_hub: bool,
@@ -470,7 +469,7 @@ fn negotiate_rail(
 ) -> bool {
     let holes = empty_holes_in_rail(rail_id, board, occupancy);
 
-    // 区分原生线和 relay 线 (relay 下标 >= edge_pairs_len, 不参与谈判)
+    // 区分原生线和 relay 线
     let mut relay_holes: HashSet<HoleId> = HashSet::new();
     let mut native_indices: Vec<usize> = Vec::new();
     for &wi in wire_indices {
@@ -499,7 +498,6 @@ fn negotiate_rail(
             let tother = board.hole(hb);
             ctxs.push(WireCtx {
                 wire_idx: wi,
-                target_rail: board.rail_id_of(hb),
                 target_col: tother.position.x,
                 target_row: tother.position.y,
                 is_from_hub: true,
@@ -508,7 +506,6 @@ fn negotiate_rail(
             let tother = board.hole(ha);
             ctxs.push(WireCtx {
                 wire_idx: wi,
-                target_rail: board.rail_id_of(ha),
                 target_col: tother.position.x,
                 target_row: tother.position.y,
                 is_from_hub: false,
@@ -516,39 +513,34 @@ fn negotiate_rail(
         }
     }
 
-    // 谈判迭代
+    // 谈判迭代: 只改 hub 端孔, target 端保持不动 (防止跨 rail 振荡)
     const MAX_HUB_ITERS: usize = 40;
     for _ in 0..MAX_HUB_ITERS {
         let mut best_hole_idx: Vec<Option<usize>> = vec![None; k];
-        let mut best_pair: Vec<Option<(HoleId, HoleId)>> = vec![None; k];
+        let mut best_hub: Vec<Option<HoleId>> = vec![None; k];
         let mut usage: HashMap<usize, usize> = HashMap::new();
 
         // 每根线选自己的最优 hub 孔 (跳过被 relay 占的孔)
         for (ci, ctx) in ctxs.iter().enumerate() {
-            let target_pin = (ctx.target_col, ctx.target_row, ctx.target_rail);
-            let mut best: Option<(f64, usize, HoleId, HoleId)> = None;
+            let target_pos = (ctx.target_col, ctx.target_row);
+            let mut best: Option<(f64, usize, HoleId)> = None;
 
             for (hi, &hub_hole) in holes.iter().enumerate() {
                 if relay_holes.contains(&hub_hole) {
                     continue;
                 }
-                if let Some((cost, target_hole)) =
-                    best_target_given_hub(hub_hole, target_pin, board, occupancy, history)
-                {
-                    let total = cost;
-                    if best.is_none_or(|(c, _, _, _)| total < c) {
-                        best = Some((total, hi, hub_hole, target_hole));
-                    }
+                let pos_hub = board.hole(hub_hole).position;
+                let dist = (pos_hub.x - target_pos.0).unsigned_abs()
+                    + (pos_hub.y - target_pos.1).unsigned_abs();
+                let cost = dist as f64 + history[hub_hole.0];
+                if best.is_none_or(|(c, _, _)| cost < c) {
+                    best = Some((cost, hi, hub_hole));
                 }
             }
 
-            if let Some((_, hi, hub_hole, target_hole)) = best {
+            if let Some((_, hi, hub_hole)) = best {
                 best_hole_idx[ci] = Some(hi);
-                if ctx.is_from_hub {
-                    best_pair[ci] = Some((hub_hole, target_hole));
-                } else {
-                    best_pair[ci] = Some((target_hole, hub_hole));
-                }
+                best_hub[ci] = Some(hub_hole);
                 *usage.entry(hi).or_insert(0) += 1;
             }
         }
@@ -561,10 +553,16 @@ fn negotiate_rail(
             .collect();
 
         if conflicts.is_empty() {
-            // 无冲突 — 应用结果
-            for (ci, pair) in best_pair.iter().enumerate() {
-                if let Some(p) = pair {
-                    wires[ctxs[ci].wire_idx] = *p;
+            // 无冲突 — 应用结果: 只改 hub 端
+            for (ci, &hub_opt) in best_hub.iter().enumerate() {
+                if let Some(hub_hole) = hub_opt {
+                    let ctx = &ctxs[ci];
+                    let (ha, hb) = wires[ctx.wire_idx];
+                    if ctx.is_from_hub {
+                        wires[ctx.wire_idx] = (hub_hole, hb);
+                    } else {
+                        wires[ctx.wire_idx] = (ha, hub_hole);
+                    }
                 }
             }
             return true;
@@ -605,24 +603,16 @@ fn fallback_optimal_assignment(
         return; // 孔不够, 放弃
     }
 
-    // 预计算: cost[wire_i][avail_j] = min total wire cost
-    let zero_history = vec![0.0; board.len()];
-    let mut cost: Vec<Vec<Option<(f64, HoleId)>>> = Vec::with_capacity(k);
+    // 预计算: cost[wire_i][avail_j] = Manhattan(hub_hole, target_pos)
+    let mut cost: Vec<Vec<f64>> = Vec::with_capacity(k);
     for ci in 0..k {
-        let target_pin = (
-            ctxs[ci].target_col,
-            ctxs[ci].target_row,
-            ctxs[ci].target_rail,
-        );
+        let target_pos = (ctxs[ci].target_col, ctxs[ci].target_row);
         let mut row = Vec::with_capacity(ma);
         for &(_, hub_hole) in &avail {
-            row.push(best_target_given_hub(
-                hub_hole,
-                target_pin,
-                board,
-                occupancy,
-                &zero_history,
-            ));
+            let pos_hub = board.hole(hub_hole).position;
+            let dist = (pos_hub.x - target_pos.0).unsigned_abs()
+                + (pos_hub.y - target_pos.1).unsigned_abs();
+            row.push(dist as f64);
         }
         cost.push(row);
     }
@@ -639,13 +629,7 @@ fn fallback_optimal_assignment(
     loop {
         let mut perm: Vec<usize> = (0..k).collect();
         loop {
-            let total: f64 = (0..k)
-                .map(|wi| {
-                    cost[wi][comb[perm[wi]]]
-                        .map(|(c, _)| c)
-                        .unwrap_or(f64::INFINITY)
-                })
-                .sum();
+            let total: f64 = (0..k).map(|wi| cost[wi][comb[perm[wi]]]).sum();
 
             if total < best_total {
                 best_total = total;
@@ -662,15 +646,15 @@ fn fallback_optimal_assignment(
         }
     }
 
-    // 应用最佳分配
+    // 应用最佳分配: 只改 hub 端
     for (wi, &pi) in best_assign.iter().enumerate() {
-        if let Some((_, target_hole)) = cost[wi][comb[pi]] {
-            let hub_hole = avail[comb[pi]].1;
-            if ctxs[wi].is_from_hub {
-                wires[ctxs[wi].wire_idx] = (hub_hole, target_hole);
-            } else {
-                wires[ctxs[wi].wire_idx] = (target_hole, hub_hole);
-            }
+        let hub_hole = avail[comb[pi]].1;
+        let ctx = &ctxs[wi];
+        let (ha, hb) = wires[ctx.wire_idx];
+        if ctx.is_from_hub {
+            wires[ctx.wire_idx] = (hub_hole, hb);
+        } else {
+            wires[ctx.wire_idx] = (ha, hub_hole);
         }
     }
 }
@@ -764,10 +748,8 @@ fn expand_congested_rail(
     let holes = empty_holes_in_rail(rail_id, board, occupancy);
     let k = wire_indices.len();
     let m = holes.len();
-    if k <= m {
-        return false; // 不拥塞
-    }
 
+    // 拉 relay 线: hub ↔ 空列
     // 拿到 hub rail 的代表性位置
     let anchor = board
         .holes()
@@ -799,11 +781,7 @@ fn expand_congested_rail(
     let relay_hole = pick_best_hole_in_rail(empty_rail_id, hub_hole, board, occupancy, history);
     wires.push((hub_hole, relay_hole));
 
-    // 需要从 hub 迁走多少根线: 全部迁走, hub 只留 relay 线
-    // (这样 hub 只有 1 根线啦, 肯定不拥塞; 所有原 hub 线都改连到空列)
-    let to_move = wire_indices.len();
-
-    // 对每根连到 hub 的线, 算它的 target 列, 挑离空列最近的那几根迁过去
+    // 对每根连到 hub 的线, 算它的 target 列
     struct MoveCand {
         wire_idx: usize,
         target_col: i32,
@@ -829,7 +807,14 @@ fn expand_congested_rail(
     }
     cands.sort_by_key(|c| (c.target_col - empty_col).abs());
 
-    for i in 0..to_move.min(cands.len()) {
+    // 需要从 hub 迁走多少根线:
+    //   原来: k 根线 + 新增 1 根 relay = k+1
+    //   要降到 ≤ m 根: 迁走 x 根, 剩 (k+1 - x) ≤ m → x ≥ k + 1 - m
+    //   至少迁 1 根 (即使 k≤m, 也要打破跨 rail 振荡导致的共用孔)
+    //   迁过去的线 + relay 不能超过空列的容量 (5 孔)
+    let to_move = (k + 1).saturating_sub(m).max(1).min(cands.len()).min(4); // 空列最多 5 孔, relay 占 1, 留 4 给迁来的线
+
+    for i in 0..to_move {
         let wi = cands[i].wire_idx;
         let (ha, hb) = wires[wi];
         let is_from_hub = board.rail_id_of(ha) == rail_id;
@@ -952,32 +937,6 @@ fn best_wire(
             if best.is_none_or(|(c, _, _)| cost < c) {
                 best = Some((cost, ha, hb));
             }
-        }
-    }
-    best
-}
-
-/// 固定 hub 端孔, 找 target rail 里的最优孔。
-fn best_target_given_hub(
-    hub_hole: HoleId,
-    target: (i32, i32, u32),
-    board: &Breadboard,
-    occupancy: &Occupancy,
-    history: &[f64],
-) -> Option<(f64, HoleId)> {
-    let holes = empty_holes_in_rail(target.2, board, occupancy);
-    if holes.is_empty() {
-        return None;
-    }
-
-    let pos_hub = board.hole(hub_hole).position;
-    let mut best: Option<(f64, HoleId)> = None;
-    for &ht in &holes {
-        let pos_t = board.hole(ht).position;
-        let dist = (pos_hub.x - pos_t.x).unsigned_abs() + (pos_hub.y - pos_t.y).unsigned_abs();
-        let cost = dist as f64 + history[hub_hole.0] + history[ht.0];
-        if best.is_none_or(|(c, _)| cost < c) {
-            best = Some((cost, ht));
         }
     }
     best
