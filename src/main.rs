@@ -16,7 +16,7 @@ fn main() {
     fs::create_dir_all(outputs_dir).expect("创建 output 目录失败");
 
     // ── 读 .kicad_pcb 文件 (一步到位: 封装几何 + 网络连接都在里面) ──
-    let pcb_path = format!("{inputs_dir}/SNx4HC00.kicad_pcb");
+    let pcb_path = format!("{inputs_dir}/large_net.kicad_pcb");
     let pcb_text = fs::read_to_string(&pcb_path).unwrap();
     let mut circuit = parse_pcb(&pcb_text).unwrap();
     eprintln!(
