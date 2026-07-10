@@ -360,7 +360,7 @@ fn assign_and_negotiate(
     let k = edge_pairs.len();
     let zero_history = vec![0.0; board.len()];
 
-    // 初始分配: 每条边用 best_wire 选最优孔对 (不排除 used_holes)
+    // 初始分配: 每条边用 best_wire 选最优孔对
     let mut wires: Vec<(HoleId, HoleId)> = Vec::with_capacity(k);
     for &(i, j) in edge_pairs {
         if let Some((_, ha, hb)) = best_wire(pins[i], pins[j], board, occupancy, &zero_history) {
@@ -404,6 +404,9 @@ fn assign_and_negotiate(
                 break;
             }
         }
+
+        // 1b. 优化非 hub rail 上的端点 (只有一根线, 直接挪最优孔)
+        optimize_solo_endpoints(&mut wires, board, occupancy);
 
         // 2. 检查是否有拥塞 (线多于空孔的 main rail)
         let congested = find_congested_main_rail(&wires, board, occupancy);
@@ -513,20 +516,20 @@ fn negotiate_rail(
         }
     }
 
-    // 谈判迭代: 只改 hub 端孔, target 端保持不动 (防止跨 rail 振荡)
+    // 谈判迭代: 逐线分配, 后选的线必须跳过已被占的孔
     const MAX_HUB_ITERS: usize = 40;
     for _ in 0..MAX_HUB_ITERS {
         let mut best_hole_idx: Vec<Option<usize>> = vec![None; k];
         let mut best_hub: Vec<Option<HoleId>> = vec![None; k];
-        let mut usage: HashMap<usize, usize> = HashMap::new();
+        let mut taken: HashSet<usize> = HashSet::new();
 
-        // 每根线选自己的最优 hub 孔 (跳过被 relay 占的孔)
+        // 逐线分配: 先选最优孔, 后选的跳过已占的
         for (ci, ctx) in ctxs.iter().enumerate() {
             let target_pos = (ctx.target_col, ctx.target_row);
             let mut best: Option<(f64, usize, HoleId)> = None;
 
             for (hi, &hub_hole) in holes.iter().enumerate() {
-                if relay_holes.contains(&hub_hole) {
+                if relay_holes.contains(&hub_hole) || taken.contains(&hi) {
                     continue;
                 }
                 let pos_hub = board.hole(hub_hole).position;
@@ -541,41 +544,36 @@ fn negotiate_rail(
             if let Some((_, hi, hub_hole)) = best {
                 best_hole_idx[ci] = Some(hi);
                 best_hub[ci] = Some(hub_hole);
-                *usage.entry(hi).or_insert(0) += 1;
+                taken.insert(hi);
             }
         }
 
-        // 检查是否有冲突
-        let conflicts: Vec<usize> = usage
-            .iter()
-            .filter(|&(_, &c)| c >= 2)
-            .map(|(&hi, _)| hi)
-            .collect();
-
-        if conflicts.is_empty() {
-            // 无冲突 — 应用结果: 只改 hub 端
-            for (ci, &hub_opt) in best_hub.iter().enumerate() {
-                if let Some(hub_hole) = hub_opt {
-                    let ctx = &ctxs[ci];
-                    let (ha, hb) = wires[ctx.wire_idx];
-                    if ctx.is_from_hub {
-                        wires[ctx.wire_idx] = (hub_hole, hb);
-                    } else {
-                        wires[ctx.wire_idx] = (ha, hub_hole);
-                    }
+        // 逐线分配保证无冲突 — 直接应用
+        for (ci, &hub_opt) in best_hub.iter().enumerate() {
+            if let Some(hub_hole) = hub_opt {
+                let ctx = &ctxs[ci];
+                let (ha, hb) = wires[ctx.wire_idx];
+                if ctx.is_from_hub {
+                    wires[ctx.wire_idx] = (hub_hole, hb);
+                } else {
+                    wires[ctx.wire_idx] = (ha, hub_hole);
                 }
             }
+        }
+
+        // 如果所有线都分到了孔, 谈判成功
+        if best_hub.iter().all(|h| h.is_some()) {
             return true;
         }
 
-        // 惩罚冲突孔
-        for &hi in &conflicts {
+        // 有线没分到孔 — 惩罚被占的孔, 下轮这些线可能换孔
+        for &hi in &taken {
             history[holes[hi].0] += increment;
         }
     }
 
     // 谈判未能收敛 — 暴搜最优分配 (跳过 relay 占的孔)
-    fallback_optimal_assignment(&ctxs, &holes, &relay_holes, board, occupancy, wires);
+    fallback_optimal_assignment(&ctxs, &holes, &relay_holes, board, wires);
     true
 }
 
@@ -586,7 +584,6 @@ fn fallback_optimal_assignment(
     holes: &[HoleId],
     relay_holes: &HashSet<HoleId>,
     board: &Breadboard,
-    occupancy: &Occupancy,
     wires: &mut [(HoleId, HoleId)],
 ) {
     let k = ctxs.len();
@@ -702,8 +699,61 @@ fn next_permutation(p: &mut [usize]) -> bool {
 //  Hub 容量扩展: 当 rail 空孔不够时拉 relay 线到空列
 // ============================================================
 
-/// 找到一个"线比孔多"的 main rail (非 power rail)。
-/// 返回 (rail_id, 用到该 rail 的所有 wire 下标)。
+/// 对每条 wire, 如果它的某个端点所在 rail 只有它一根线 (非 hub),
+/// 就把该端点挪到 rail 上离另一端最近的空孔。
+fn optimize_solo_endpoints(
+    wires: &mut [(HoleId, HoleId)],
+    board: &Breadboard,
+    occupancy: &Occupancy,
+) {
+    // 先统计每个 rail 有几根线
+    let mut rail_count: HashMap<u32, usize> = HashMap::new();
+    for &(ha, hb) in wires.iter() {
+        *rail_count.entry(board.rail_id_of(ha)).or_default() += 1;
+        *rail_count.entry(board.rail_id_of(hb)).or_default() += 1;
+    }
+
+    for w in wires.iter_mut() {
+        let ra = board.rail_id_of(w.0);
+        let rb = board.rail_id_of(w.1);
+
+        // 如果 col A 只有这根线, 优化 A 端
+        if rail_count.get(&ra).copied().unwrap_or(0) == 1 {
+            let holes = empty_holes_in_rail(ra, board, occupancy);
+            if let Some(best) = pick_best_hole_in_list(&holes, w.1, board) {
+                w.0 = best;
+            }
+        }
+        // 如果 col B 也只有这根线, 优化 B 端
+        if rail_count.get(&rb).copied().unwrap_or(0) == 1 {
+            let holes = empty_holes_in_rail(rb, board, occupancy);
+            if let Some(best) = pick_best_hole_in_list(&holes, w.0, board) {
+                w.1 = best;
+            }
+        }
+    }
+}
+
+/// 从孔列表里选离 target 最近的那个 (不含 history)。
+fn pick_best_hole_in_list(holes: &[HoleId], target: HoleId, board: &Breadboard) -> Option<HoleId> {
+    if holes.is_empty() {
+        return None;
+    }
+    let pos_t = board.hole(target).position;
+    let mut best = holes[0];
+    let mut best_d = (board.hole(holes[0]).position.x - pos_t.x).unsigned_abs()
+        + (board.hole(holes[0]).position.y - pos_t.y).unsigned_abs();
+    for &h in &holes[1..] {
+        let pos = board.hole(h).position;
+        let d = (pos.x - pos_t.x).unsigned_abs() + (pos.y - pos_t.y).unsigned_abs();
+        if d < best_d {
+            best_d = d;
+            best = h;
+        }
+    }
+    Some(best)
+}
+
 fn find_congested_main_rail(
     wires: &[(HoleId, HoleId)],
     board: &Breadboard,
