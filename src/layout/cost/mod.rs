@@ -115,7 +115,7 @@ impl Default for Weights {
             // 纵向挤压: 同一 rail 内元件挤在少量行 → 加罚。
             // 1.0 等价于 ~2 cell² 紧凑度, 比 MST 的 5.0 轻, 给 SA 温和推力。
             row_squash: 1.0,
-            mst_congestion: 10.0,
+            mst_congestion: 2.0,
         }
     }
 }
