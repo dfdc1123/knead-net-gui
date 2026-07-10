@@ -252,8 +252,9 @@ impl Router for PathFinderRouter {
 //  MST 构建
 // ============================================================
 
-/// Kruskal MST: 返回边的节点索引对 `(node_i, node_j)`。
-/// 边的结构由"理想" cost 排序决定 (不考虑 used_holes)。
+/// Kruskal MST with capacity constraint: 每条边的端点 rail 度数不能超过其空孔数。
+///
+/// 先跑受限 Kruskal (skip 会超容的边), 再跑一次不限容的补漏。
 fn build_mst(
     pins: &[(i32, i32, u32)],
     board: &Breadboard,
@@ -264,6 +265,12 @@ fn build_mst(
     if n < 2 {
         return Vec::new();
     }
+
+    // 每个 rail 的容量 = 空孔数
+    let capacity: Vec<usize> = pins
+        .iter()
+        .map(|&(_, _, rail_id)| empty_holes_in_rail(rail_id, board, occupancy).len())
+        .collect();
 
     let zero_history = vec![0.0; board.len()];
 
@@ -279,7 +286,7 @@ fn build_mst(
     }
     edges.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
-    // 2. Union-Find
+    // 2. Union-Find, 预合并内部跳线
     let mut parent: Vec<usize> = (0..n).collect();
     for &(i, j) in internal_pairs {
         let ri = find(&mut parent, i);
@@ -289,15 +296,40 @@ fn build_mst(
         }
     }
 
-    // 3. Kruskal 加边
+    // 3. 第一轮 Kruskal: 只加不超容的边
+    let mut degree: Vec<usize> = vec![0; n];
     let mut edge_pairs: Vec<(usize, usize)> = Vec::new();
+    let mut used: HashSet<(usize, usize)> = HashSet::new();
+
     for (i, j, _) in &edges {
         let ri = find(&mut parent, *i);
         let rj = find(&mut parent, *j);
-        if ri != rj {
-            parent[ri] = rj;
-            edge_pairs.push((*i, *j));
+        if ri == rj {
+            continue;
         }
+        // 容量检查: 加了这条边后, 两个端点的度数都不能超
+        if degree[*i] >= capacity[*i] || degree[*j] >= capacity[*j] {
+            continue;
+        }
+        parent[ri] = rj;
+        degree[*i] += 1;
+        degree[*j] += 1;
+        edge_pairs.push((*i, *j));
+        used.insert((*i, *j));
+    }
+
+    // 4. 第二轮: 不限容补漏 (确保连通)
+    for (i, j, _) in &edges {
+        let ri = find(&mut parent, *i);
+        let rj = find(&mut parent, *j);
+        if ri == rj {
+            continue;
+        }
+        if used.contains(&(*i, *j)) {
+            continue;
+        }
+        parent[ri] = rj;
+        edge_pairs.push((*i, *j));
     }
 
     edge_pairs
