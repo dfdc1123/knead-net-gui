@@ -86,6 +86,10 @@ pub struct Weights {
     /// `penalty = Σ max(0, n_comps - unique_min_y) (按 rail 分组, n_comps 是元件数, unique_min_y 是该 rail 上 bbox min_y 的不同行数)`, 推 SA 把元件散布到不同行,
     /// 避免所有元件挤在同一行导致水平跨度过大。
     pub row_squash: f64,
+    /// MST 拥塞惩罚: 对 MST 中每条超过 rail 容量 (空孔数) 的边加罚。
+    /// 推动 SA 产出的布局对容量约束友好, 避免后续路由产生 relay 列。
+    /// 0 = 不启用。
+    pub mst_congestion: f64,
 }
 
 impl Default for Weights {
@@ -111,6 +115,7 @@ impl Default for Weights {
             // 纵向挤压: 同一 rail 内元件挤在少量行 → 加罚。
             // 1.0 等价于 ~2 cell² 紧凑度, 比 MST 的 5.0 轻, 给 SA 温和推力。
             row_squash: 1.0,
+            mst_congestion: 10.0,
         }
     }
 }

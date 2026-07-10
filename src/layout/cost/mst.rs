@@ -169,3 +169,76 @@ pub(super) fn kruskal_union(edges: &[(i32, usize, usize)], n: usize) -> f64 {
     }
     total as f64
 }
+
+/// 算 MST 并返回每个节点的度数 (用于拥塞惩罚)。
+pub(super) fn mst_degrees(indices: &[usize], holes: &[(i32, i32, u32)]) -> Vec<usize> {
+    let n = indices.len();
+    let mut degree = vec![0; n];
+    match n {
+        0..=1 => {}
+        2 => {
+            degree[0] = 1;
+            degree[1] = 1;
+        }
+        3 => {
+            let p0 = holes[indices[0]];
+            let p1 = holes[indices[1]];
+            let p2 = holes[indices[2]];
+            let d01 = if p0.2 == p1.2 {
+                0
+            } else {
+                (p0.0 - p1.0).abs() + (p0.1 - p1.1).abs()
+            };
+            let d02 = if p0.2 == p2.2 {
+                0
+            } else {
+                (p0.0 - p2.0).abs() + (p0.1 - p2.1).abs()
+            };
+            let d12 = if p1.2 == p2.2 {
+                0
+            } else {
+                (p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()
+            };
+            let mut edges = [(d01, 0usize, 1usize), (d02, 0, 2), (d12, 1, 2)];
+            edges.sort_by_key(|e| e.0);
+            degree[edges[0].1] += 1;
+            degree[edges[0].2] += 1;
+            degree[edges[1].1] += 1;
+            degree[edges[1].2] += 1;
+        }
+        _ => {
+            let mut edge_list: Vec<(i32, usize, usize)> = Vec::with_capacity(n * (n - 1) / 2);
+            for a in 0..n {
+                let ha = holes[indices[a]];
+                for b in (a + 1)..n {
+                    let hb = holes[indices[b]];
+                    let d = if ha.2 == hb.2 {
+                        0
+                    } else {
+                        (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()
+                    };
+                    edge_list.push((d, a, b));
+                }
+            }
+            edge_list.sort_by_key(|e| e.0);
+            let mut parent: Vec<usize> = (0..n).collect();
+            for &(_, i, j) in &edge_list {
+                let (mut ri, mut rj) = (i, j);
+                while parent[ri] != ri {
+                    parent[ri] = parent[parent[ri]];
+                    ri = parent[ri];
+                }
+                while parent[rj] != rj {
+                    parent[rj] = parent[parent[rj]];
+                    rj = parent[rj];
+                }
+                if ri != rj {
+                    parent[ri] = rj;
+                    degree[i] += 1;
+                    degree[j] += 1;
+                }
+            }
+        }
+    }
+    degree
+}
