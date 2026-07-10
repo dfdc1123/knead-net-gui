@@ -144,7 +144,6 @@ impl Router for PathFinderRouter {
                     Some((pos.x, pos.y, rail_id))
                 })
                 .collect();
-            // 按 (rail_id, x, y) 排序, 然后按 rail_id dedup
             pins.sort_by_key(|&(x, y, r)| (r, x, y));
             pins.dedup_by_key(|&mut (_, _, r)| r);
             net_pins[net.id.0] = pins;
@@ -186,14 +185,68 @@ impl Router for PathFinderRouter {
             }
         }
 
+        // 检测元件内部跳线: 同 component 同 num 的 pin 电气短路 (SW 上下同名 pad)。
+        // 为每个 net 记录 pre-connected 的 rail-index 对, 在 MST 中插零 cost 边。
+        // **必须在 bridged / power rail 注入之后计算**, 否则注入会改变 net_pins
+        // 索引顺序 (power rail anchor 的 rail_id=0 插入到最前面), 导致跳线索引
+        // 指到错误的 rail。
+        let mut internal_jumpers: Vec<Vec<(usize, usize)>> = vec![Vec::new(); circuit.nets().len()];
+        {
+            let mut comp_pin_rails: HashMap<(crate::circuit::ComponentId, String), Vec<u32>> =
+                HashMap::new();
+            for net in circuit.nets() {
+                comp_pin_rails.clear();
+                for pin_id in &net.pins {
+                    let pin = &circuit.pins()[pin_id.0];
+                    let Some(&hole) = pin_hole.get(pin_id) else {
+                        continue;
+                    };
+                    let rail = board.rail_id_of(hole);
+                    comp_pin_rails
+                        .entry((pin.component(), pin.num().to_string()))
+                        .or_default()
+                        .push(rail);
+                }
+                for ((_cid, _pin_num), rails) in &comp_pin_rails {
+                    if rails.len() < 2 {
+                        continue;
+                    }
+                    let unique: HashSet<u32> = rails.iter().copied().collect();
+                    if unique.len() < 2 {
+                        continue;
+                    }
+                    let ur: Vec<u32> = unique.into_iter().collect();
+                    for i in 0..ur.len() {
+                        for j in (i + 1)..ur.len() {
+                            if let (Some(ri), Some(rj)) = (
+                                net_pins[net.id.0].iter().position(|&(_, _, r)| r == ur[i]),
+                                net_pins[net.id.0].iter().position(|&(_, _, r)| r == ur[j]),
+                            ) {
+                                if ri != rj {
+                                    internal_jumpers[net.id.0].push((ri, rj));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut history: Vec<f64> = vec![0.0; board.len()];
         let mut best_solution: Vec<Wire> = Vec::new();
         let mut best_conflicts = usize::MAX;
         let mut next_id: usize = 0;
 
         for _ in 0..self.max_iterations {
-            let (wires, conflicts) =
-                route_iteration(circuit, board, occupancy, &net_pins, &history, &mut next_id);
+            let (wires, conflicts) = route_iteration(
+                circuit,
+                board,
+                occupancy,
+                &net_pins,
+                &internal_jumpers,
+                &history,
+                &mut next_id,
+            );
 
             if conflicts == 0 {
                 return rewire_ids(wires);
@@ -217,6 +270,7 @@ fn route_iteration(
     board: &Breadboard,
     occupancy: &Occupancy,
     net_pins: &[Vec<(i32, i32, u32)>],
+    internal_jumpers: &[Vec<(usize, usize)>],
     history: &[f64],
     next_id: &mut usize,
 ) -> (Vec<Wire>, usize) {
@@ -230,7 +284,7 @@ fn route_iteration(
             continue;
         }
 
-        for (from, to) in mst_wires(pins, board, occupancy, history) {
+        for (from, to) in mst_wires(pins, board, occupancy, history, &internal_jumpers[net.id.0]) {
             *usage.entry(from).or_insert(0) += 1;
             *usage.entry(to).or_insert(0) += 1;
             all_wires.push(Wire {
@@ -260,6 +314,7 @@ fn mst_wires(
     board: &Breadboard,
     occupancy: &Occupancy,
     history: &[f64],
+    internal_pairs: &[(usize, usize)],
 ) -> Vec<(HoleId, HoleId)> {
     let n = pins.len();
     if n < 2 {
@@ -277,8 +332,17 @@ fn mst_wires(
     }
     edges.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
-    // 2. Kruskal 加边, 带上本 net 已用孔的约束
+    // 3. 预合并内部跳线: 同元件同名 pin 在 MST 中视为已连通, 不产生 wire
     let mut parent: Vec<usize> = (0..n).collect();
+    for &(i, j) in internal_pairs {
+        let ri = find(&mut parent, i);
+        let rj = find(&mut parent, j);
+        if ri != rj {
+            parent[ri] = rj;
+        }
+    }
+
+    // 4. Kruskal 加边
     let mut wires: Vec<(HoleId, HoleId)> = Vec::new();
     let mut used_holes: HashSet<HoleId> = HashSet::new();
 
@@ -288,7 +352,6 @@ fn mst_wires(
         if ri == rj {
             continue;
         }
-        // 重算 best wire, 排除本 net 已用孔
         if let Some((_, ha, hb)) =
             best_wire_avoiding(pins[i], pins[j], board, occupancy, history, &used_holes)
         {

@@ -16,7 +16,7 @@ fn main() {
     fs::create_dir_all(outputs_dir).expect("创建 output 目录失败");
 
     // ── 读 .kicad_pcb 文件 (一步到位: 封装几何 + 网络连接都在里面) ──
-    let pcb_path = format!("{inputs_dir}/large_net.kicad_pcb");
+    let pcb_path = format!("{inputs_dir}/SNx4HC00.kicad_pcb");
     let pcb_text = fs::read_to_string(&pcb_path).unwrap();
     let mut circuit = parse_pcb(&pcb_text).unwrap();
     eprintln!(
@@ -57,7 +57,7 @@ fn main() {
     //   - 两个都 true    → 上下都屏蔽, 只剩中央 5/6 行 (本身也 blocked), 元件无处可放
     // 改任一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
     const MASK_UPPER_HALF: bool = false;
-    const MASK_LOWER_HALF: bool = true;
+    const MASK_LOWER_HALF: bool = false;
     let mut board = {
         let mut blocked: Vec<usize> = vec![5, 6]; // 标准中央通道
         if MASK_UPPER_HALF {
