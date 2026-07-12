@@ -1,35 +1,25 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import Dock from "$lib/components/Dock.svelte";
+  import Step1SelectFiles from "$lib/components/Step1SelectFiles.svelte";
+  import Step2SelectBoard from "$lib/components/Step2SelectBoard.svelte";
+  import Step3Compute from "$lib/components/Step3Compute.svelte";
+  import Step4Result from "$lib/components/Step4Result.svelte";
 
-  let name = $state("");
-  let greetMsg = $state("");
-
-  async function greet(event: Event) {
-    event.preventDefault();
-    greetMsg = await invoke("greet", { name });
-  }
+  let step = $state(0);
 </script>
 
-<main class="min-h-screen flex flex-col items-center justify-center gap-6 bg-base-200 p-8">
-  <h1 class="text-4xl font-bold">Welcome to Tauri + Svelte</h1>
+<div class="h-screen flex flex-col bg-base-100">
+  <main class="flex-1 overflow-auto">
+    {#if step === 0}
+      <Step1SelectFiles />
+    {:else if step === 1}
+      <Step2SelectBoard />
+    {:else if step === 2}
+      <Step3Compute />
+    {:else}
+      <Step4Result />
+    {/if}
+  </main>
 
-  <div class="flex gap-4">
-    <a href="https://vite.dev" target="_blank" class="link link-hover">Vite</a>
-    <a href="https://tauri.app" target="_blank" class="link link-hover">Tauri</a>
-    <a href="https://svelte.dev" target="_blank" class="link link-hover">SvelteKit</a>
-  </div>
-
-  <form class="flex gap-2" onsubmit={greet}>
-    <input
-      id="greet-input"
-      class="input input-bordered w-64"
-      placeholder="Enter a name..."
-      bind:value={name}
-    />
-    <button type="submit" class="btn btn-primary">Greet</button>
-  </form>
-
-  {#if greetMsg}
-    <p class="text-lg">{greetMsg}</p>
-  {/if}
-</main>
+  <Dock bind:current={step} />
+</div>
