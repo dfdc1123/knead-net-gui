@@ -1,3 +1,7 @@
+[workspace]
+members = ["src-tauri"]
+resolver = "2"
+
 [package]
 name = "knead-net"
 version = "0.1.0"
