@@ -115,8 +115,8 @@ pub(super) fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32
 
     // Union-find 也用栈数组
     let mut parent: [usize; MAX_N] = [0; MAX_N];
-    for i in 0..n {
-        parent[i] = i;
+    for (i, p) in parent.iter_mut().enumerate().take(n) {
+        *p = i;
     }
 
     let mut total: i32 = 0;

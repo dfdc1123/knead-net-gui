@@ -397,7 +397,7 @@ impl Breadboard {
         if y < self.at_y_min || y > self.at_y_max {
             return None;
         }
-        let idx = ((y - self.at_y_min) as usize) * (self.cols as usize) + (x as usize);
+        let idx = ((y - self.at_y_min) as usize) * self.cols + (x as usize);
         // 初始化为 None 的位置 (blocked row / gap / 板外) 直接返 None
         unsafe { *self.at_grid.get_unchecked(idx) }
     }
@@ -513,7 +513,7 @@ impl Breadboard {
         if x < 0 || x >= self.cols as i32 || y < self.at_y_min || y > self.at_y_max {
             return u32::MAX;
         }
-        let idx = ((y - self.at_y_min) as usize) * (self.cols as usize) + (x as usize);
+        let idx = ((y - self.at_y_min) as usize) * self.cols + (x as usize);
         // 安全: idx 在 Vec 范围内 (by bounds check above)
         unsafe {
             self.at_grid
@@ -638,7 +638,14 @@ pub fn standard_power_rails(cols: i32) -> PowerRails {
                 },
             ],
         },
-        positive_names: vec!["VCC".into(), "+5V".into(), "5V".into(), "+12V".into(), "12V".into(), "3V3".into()],
+        positive_names: vec![
+            "VCC".into(),
+            "+5V".into(),
+            "5V".into(),
+            "+12V".into(),
+            "12V".into(),
+            "3V3".into(),
+        ],
         negative_names: vec!["GND".into()],
     }
 }

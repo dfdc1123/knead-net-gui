@@ -41,13 +41,12 @@ pub fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> Prepr
         }
 
         // Step 2a: R0 下能 y-lock 吗? (横着进来直接跨通道)
-        if blocked_count > 0 {
-            if let Some(locked_y) =
+        if blocked_count > 0
+            && let Some(locked_y) =
                 try_y_lock(comp.pins(), fp, circuit, board, blocked_count, false)
-            {
-                y_locked.insert(comp.id(), locked_y);
-                continue;
-            }
+        {
+            y_locked.insert(comp.id(), locked_y);
+            continue;
         }
 
         // Step 2b: R90 后还有冲突吗?
@@ -56,12 +55,12 @@ pub fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> Prepr
             // 高宽元件 (SW/DIP 类) 跨通道: R90 bbox 高≥4 且宽≥2 → 尝试 y-lock
             if blocked_count > 0 {
                 let (rw, rh) = r90_bbox_size(fp);
-                if rh >= 4 && rw >= 2 {
-                    if let Some(locked_y) =
+                if rh >= 4
+                    && rw >= 2
+                    && let Some(locked_y) =
                         try_y_lock(comp.pins(), fp, circuit, board, blocked_count, true)
-                    {
-                        y_locked.insert(comp.id(), locked_y);
-                    }
+                {
+                    y_locked.insert(comp.id(), locked_y);
                 }
             }
             continue;

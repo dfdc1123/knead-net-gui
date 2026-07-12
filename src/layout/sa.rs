@@ -366,8 +366,8 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
 ///   退一步 (dx + sign(dx)) 跳过电源轨 gap 再试一次, 仍失败再返 `false`。
 /// - `ShiftGroup` 见 `apply_group_shift_x`: 两段式验证 / 落写, 任何成员失败
 ///   则全组放弃, 不留半成品。
-/// 备份: apply 成功后保存的原始状态, 用于在 reject 时还原。
-/// (不分配: 全部 inline, ShiftGroup 最多同时几项, 用 SmallVec/array 存)。
+///   备份: apply 成功后保存的原始状态, 用于在 reject 时还原。
+///   (不分配: 全部 inline, ShiftGroup 最多同时几项, 用 SmallVec/array 存)。
 #[derive(Debug, Clone)]
 enum Backup {
     Flip {
@@ -824,29 +824,30 @@ pub(super) fn simulate(
         // ToggleBridging 翻到 bridge 模式时: 遍历该元件的候选, 选 cost 最低的那对
         // 写回 active_bridge_idx。 翻到 OnBoard 时不用管 active_bridge_idx。
         let mut toggled_best_idx: Option<usize> = None;
-        if let Move::ToggleBridging(i) = &m {
-            if state.bridged[*i] && state.bridged_pin_pairs[*i].len() > 1 {
-                let mut best_cost = f64::INFINITY;
-                let mut best_idx = state.active_bridge_idx[*i];
-                for (j, _) in state.bridged_pin_pairs[*i].iter().enumerate() {
-                    state.active_bridge_idx[*i] = j;
-                    let c = cost_fast(
-                        &state,
-                        circuit,
-                        board,
-                        bridged_pins,
-                        &config.weights,
-                        &ctx,
-                        &mut buf,
-                    );
-                    if c < best_cost {
-                        best_cost = c;
-                        best_idx = j;
-                    }
+        if let Move::ToggleBridging(i) = &m
+            && state.bridged[*i]
+            && state.bridged_pin_pairs[*i].len() > 1
+        {
+            let mut best_cost = f64::INFINITY;
+            let mut best_idx = state.active_bridge_idx[*i];
+            for (j, _) in state.bridged_pin_pairs[*i].iter().enumerate() {
+                state.active_bridge_idx[*i] = j;
+                let c = cost_fast(
+                    &state,
+                    circuit,
+                    board,
+                    bridged_pins,
+                    &config.weights,
+                    &ctx,
+                    &mut buf,
+                );
+                if c < best_cost {
+                    best_cost = c;
+                    best_idx = j;
                 }
-                state.active_bridge_idx[*i] = best_idx;
-                toggled_best_idx = Some(best_idx);
             }
+            state.active_bridge_idx[*i] = best_idx;
+            toggled_best_idx = Some(best_idx);
         }
         #[cfg(profile_sa)]
         let t_cost_start = std::time::Instant::now();

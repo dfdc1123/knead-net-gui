@@ -20,6 +20,11 @@ pub(crate) fn rot_index(rot: Rotation) -> usize {
     }
 }
 
+/// 一个 bridged pin pair 的世界坐标 + rail_id + net (两个 pin 各一份)。
+/// 在 `CompInfo::bridged_pair_world` 里按候选 pair 顺序存放; cost_fast 热路径
+/// 直接索引, 不再查 board。
+pub(super) type BridgedPair = [(i32, i32, u32, Option<NetId>); 2];
+
 /// 每个 placeable 元件的预计算信息 (只依赖 circuit/footprint, 不随 SA 状态变)。
 #[derive(Debug, Clone)]
 pub struct CompInfo {
@@ -34,7 +39,7 @@ pub struct CompInfo {
     pub bridged_bboxes: Option<Vec<BBox>>,
     /// 仅 bridgeable 元件有: 每个候选 pin pair 对应的世界坐标 (x, y, rail_id, net) × 2。
     /// cost_fast 热路径里不需再查 board。
-    pub bridged_pair_world: Option<Vec<[(i32, i32, u32, Option<NetId>); 2]>>,
+    pub bridged_pair_world: Option<Vec<BridgedPair>>,
 }
 
 /// SA 上下文: 预计算数据 + reusable buffers。

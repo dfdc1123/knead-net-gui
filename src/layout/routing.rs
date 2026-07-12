@@ -201,10 +201,9 @@ impl Router for PathFinderRouter {
                             if let (Some(ri), Some(rj)) = (
                                 net_pins[net.id.0].iter().position(|&(_, _, r)| r == ur[i]),
                                 net_pins[net.id.0].iter().position(|&(_, _, r)| r == ur[j]),
-                            ) {
-                                if ri != rj {
-                                    internal_jumpers[net.id.0].push((ri, rj));
-                                }
+                            ) && ri != rj
+                            {
+                                internal_jumpers[net.id.0].push((ri, rj));
                             }
                         }
                     }
@@ -387,16 +386,16 @@ fn assign_and_negotiate(
             }
             let mut any_progress = false;
             for (rail_id, wire_indices) in &hub_rails {
-                if negotiate_rail(
-                    *rail_id,
+                if negotiate_rail(NegotiateRailArgs {
+                    rail_id: *rail_id,
                     wire_indices,
-                    &mut wires,
-                    edge_pairs.len(),
+                    wires: &mut wires,
+                    edge_pairs_len: edge_pairs.len(),
                     board,
                     occupancy,
-                    &mut history,
+                    history: &mut history,
                     increment,
-                ) {
+                }) {
                     any_progress = true;
                 }
             }
@@ -457,19 +456,34 @@ struct WireCtx {
     is_from_hub: bool,
 }
 
+/// 对一个 hub rail 上的 k 根 wire 进行孔位谈判所需的参数。
+///
+/// 单独打包是为了绕开 `clippy::too_many_arguments`;行为与原来逐参传入完全一致。
+struct NegotiateRailArgs<'a> {
+    rail_id: u32,
+    wire_indices: &'a [usize],
+    wires: &'a mut [(HoleId, HoleId)],
+    edge_pairs_len: usize,
+    board: &'a Breadboard,
+    occupancy: &'a Occupancy,
+    history: &'a mut [f64],
+    increment: f64,
+}
+
 /// 对一个 hub rail 上的 k 根 wire 进行孔位谈判。
 ///
 /// 返回 true 表示 wires 被修改了。
-fn negotiate_rail(
-    rail_id: u32,
-    wire_indices: &[usize],
-    wires: &mut [(HoleId, HoleId)],
-    edge_pairs_len: usize,
-    board: &Breadboard,
-    occupancy: &Occupancy,
-    history: &mut [f64],
-    increment: f64,
-) -> bool {
+fn negotiate_rail(args: NegotiateRailArgs<'_>) -> bool {
+    let NegotiateRailArgs {
+        rail_id,
+        wire_indices,
+        wires,
+        edge_pairs_len,
+        board,
+        occupancy,
+        history,
+        increment,
+    } = args;
     let holes = empty_holes_in_rail(rail_id, board, occupancy);
 
     // 区分原生线和 relay 线
@@ -602,8 +616,8 @@ fn fallback_optimal_assignment(
 
     // 预计算: cost[wire_i][avail_j] = Manhattan(hub_hole, target_pos)
     let mut cost: Vec<Vec<f64>> = Vec::with_capacity(k);
-    for ci in 0..k {
-        let target_pos = (ctxs[ci].target_col, ctxs[ci].target_row);
+    for ctx in ctxs.iter().take(k) {
+        let target_pos = (ctx.target_col, ctx.target_row);
         let mut row = Vec::with_capacity(ma);
         for &(_, hub_hole) in &avail {
             let pos_hub = board.hole(hub_hole).position;
@@ -619,8 +633,8 @@ fn fallback_optimal_assignment(
     let mut best_assign: Vec<usize> = vec![0; k];
 
     let mut comb = vec![0; k];
-    for i in 0..k {
-        comb[i] = i;
+    for (i, v) in comb.iter_mut().enumerate().take(k) {
+        *v = i;
     }
 
     loop {
@@ -864,8 +878,8 @@ fn expand_congested_rail(
     //   迁过去的线 + relay 不能超过空列的容量 (5 孔)
     let to_move = (k + 1).saturating_sub(m).max(1).min(cands.len()).min(4); // 空列最多 5 孔, relay 占 1, 留 4 给迁来的线
 
-    for i in 0..to_move {
-        let wi = cands[i].wire_idx;
+    for cand in cands.iter().take(to_move) {
+        let wi = cand.wire_idx;
         let (ha, hb) = wires[wi];
         let is_from_hub = board.rail_id_of(ha) == rail_id;
         let other = if is_from_hub { hb } else { ha };

@@ -12,12 +12,6 @@ cargo run --release
 # 输出 layout.svg / layout-spectral.svg 到 output/
 ```
 
-跑参数扫描:
-
-```bash
-cargo run --release --bin sa_sweep
-```
-
 ## 输入格式
 
 只需要一个 `.kicad_pcb` 文件 (KiCad 的 PCB 文件, S-expression 格式)。

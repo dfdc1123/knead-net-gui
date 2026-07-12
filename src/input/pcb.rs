@@ -207,10 +207,9 @@ fn find_property<'a>(items: &'a [Sexp], key: &str) -> Option<&'a str> {
             && sub.len() >= 3
             && matches!(&sub[0], Sexp::Atom(s) if s == "property")
             && matches!(&sub[1], Sexp::Atom(s) if s == key)
+            && let Sexp::Atom(val) = &sub[2]
         {
-            if let Sexp::Atom(val) = &sub[2] {
-                return Some(val.as_str());
-            }
+            return Some(val.as_str());
         }
     }
     None
@@ -293,10 +292,9 @@ fn find_atom_value(items: &[Sexp], key: &str) -> Option<String> {
         if let Sexp::List(sub) = item
             && sub.len() >= 2
             && matches!(sub.first(), Some(Sexp::Atom(s)) if s == key)
+            && let Sexp::Atom(val) = &sub[1]
         {
-            if let Sexp::Atom(val) = &sub[1] {
-                return Some(val.clone());
-            }
+            return Some(val.clone());
         }
     }
     None

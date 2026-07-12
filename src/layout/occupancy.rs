@@ -468,7 +468,7 @@ mod bbox_tests {
             component: ComponentId(comp_id),
             num: if id.is_multiple_of(2) { "1" } else { "2" }.into(),
             pinfunction: None,
-            physical_pin_index: if id % 2 == 0 { 0 } else { 1 },
+            physical_pin_index: if id.is_multiple_of(2) { 0 } else { 1 },
             net: None,
         };
         let circuit = Box::leak(Box::new(Circuit {
