@@ -2,7 +2,7 @@ use std::fs;
 
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
-    Breadboard, Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Router, SAConfig,
+    Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Preset, Router, SAConfig,
     spectral_debug_positions,
 };
 
@@ -11,12 +11,21 @@ use knead_net::{
 // helper exposed from the layout module.
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let render_empty_boards = args.iter().any(|a| a == "--render-empty-boards");
+
     let inputs_dir = "examples/inputs";
     let outputs_dir = "output";
     fs::create_dir_all(outputs_dir).expect("创建 output 目录失败");
 
+    // ── 仅渲染空板 (调试/验证用, 不读 .kicad_pcb, 不跑 SA) ──
+    if render_empty_boards {
+        render_empty_boards_to(outputs_dir);
+        return;
+    }
+
     // ── 读 .kicad_pcb 文件 (一步到位: 封装几何 + 网络连接都在里面) ──
-    let pcb_path = format!("{inputs_dir}/large_net.kicad_pcb");
+    let pcb_path = format!("{inputs_dir}/h-bridge.kicad_pcb");
     let pcb_text = fs::read_to_string(&pcb_path).unwrap();
     let mut circuit = parse_pcb(&pcb_text).unwrap();
     eprintln!(
@@ -25,14 +34,35 @@ fn main() {
         circuit.nets().len()
     );
 
+    // ============================================================
+    // 选板 — main.rs 里唯一一块“换板型”的地方。
+    // 换 Preset 或改 BOARD_COLS 都能调。
+    //   - Preset::Hole170: 无电源轨迷你板
+    //   - Preset::Hole400: 5×5 电源轨标准板 (本次默认)
+    //   - Preset::Hole800: 10×5 电源轨宽板, 左右各空 2
+    // 电源轨存在与否、名字列表、宽度适配全都由 Preset::make 内部处理。
+    // ============================================================
+    const BOARD_PRESET: Preset = Preset::Hole800;
+    const BOARD_COLS: usize = 40;
+    let mut board = BOARD_PRESET.make(BOARD_COLS);
+    let main_holes = board.cols() * 10; // 12 rows − 2 blocked = 10 main rows
+    let rail_holes = board.len() - main_holes;
+    eprintln!(
+        "板子: {} preset × {} cols → {} cols × {} main rows + {} rail holes = {} total",
+        BOARD_PRESET.name(),
+        BOARD_COLS,
+        board.cols(),
+        main_holes / board.cols(),
+        rail_holes,
+        board.len()
+    );
+
     // 3b. 自动标记可桥接元件: 2 pin + 一腿 power 一腿 signal
-    let power_rails_cfg = knead_net::standard_power_rails(50);
-    // 名字列表是独立维护的 power-net 别名表; 标准板的 positive / negative
-    // 名字列表在 `breadboard::standard_power_rails` 里硬编码, 跟这里互不相关。
-    let power_names: Vec<String> = power_rails_cfg
-        .positive_names
+    // 名字从 board 自己拿, 不再单独造 power_rails_cfg。
+    let power_names: Vec<String> = board
+        .positive_names()
         .iter()
-        .chain(power_rails_cfg.negative_names.iter())
+        .chain(board.negative_names().iter())
         .cloned()
         .collect();
     let power_names_ref: Vec<&str> = power_names.iter().map(|s| s.as_str()).collect();
@@ -43,48 +73,14 @@ fn main() {
         }
     }
 
-    // 4. 布局: 模拟退火 + 压缩
-    // 标准板: 50 cols × 12 rows, rows 5..7 是中央通道 (物理占位),
-    // 上下半各自独立 rail, 同列不同 rail 互不连通。 上下各一组 power rail。
-    //
-    // 两个独立开关, 能随时切换:
-    //   - MASK_UPPER_HALF=true  → 上半 rows 0..4 全 blocked
-    //   - MASK_LOWER_HALF=true  → 下半 rows 7..11 全 blocked
-    // 组合:
-    //   - 两个都 false → 完整标准板, 上下各 5 行都能用
-    //   - 只 MASK_LOWER_HALF=true (默认) → 上半可用, 原本测试状态
-    //   - 只 MASK_UPPER_HALF=true  → 下半可用 (rows 7..11)
-    //   - 两个都 true    → 上下都屏蔽, 只剩中央 5/6 行 (本身也 blocked), 元件无处可放
-    // 改任一行就能切换; SA / 路由 / 渲染 都会自动尊重 blocked row。
-    const MASK_UPPER_HALF: bool = false;
-    const MASK_LOWER_HALF: bool = false;
-    let mut board = {
-        let mut blocked: Vec<usize> = vec![5, 6]; // 标准中央通道
-        if MASK_UPPER_HALF {
-            blocked.extend(0..5); // 屏蔽上半
-        }
-        if MASK_LOWER_HALF {
-            blocked.extend(7..12); // 屏蔽下半
-        }
-        Breadboard::with_power_rails(50, 12, blocked, knead_net::standard_power_rails(50))
-    };
-    match (MASK_UPPER_HALF, MASK_LOWER_HALF) {
-        (false, false) => {
-            eprintln!("板子使用完整标准板 (rows 0..5 上半 + rows 7..11 下半, 中央 5/6 blocked)")
-        }
-        (true, false) => eprintln!("⚠ 上半已屏蔽, 元件只能摆在 rows 7..11 (下半)"),
-        (false, true) => eprintln!("⚠ 下半已屏蔽, 元件只能摆在 rows 0..5 (上半)"),
-        (true, true) => eprintln!("⚠ 上下都屏蔽, 中央 5/6 blocked, 元件无处可放"),
-    }
-
     // 4b. 把电源轨绑到具体 net (让 SA/路由把 rail 强制接进电路)
-    // 使用 power rails 配置里的名字列表, 按顺序匹配电路中的 net。
-    let pos_net = power_rails_cfg
-        .positive_names
+    // 名字列表直接从 board 里拿; 170 没电源轨, pos/neg 都查不到, 走 (None, None) 分支。
+    let pos_net = board
+        .positive_names()
         .iter()
         .find_map(|name| circuit.nets().iter().find(|n| n.name() == name.as_str()));
-    let neg_net = power_rails_cfg
-        .negative_names
+    let neg_net = board
+        .negative_names()
         .iter()
         .find_map(|name| circuit.nets().iter().find(|n| n.name() == name.as_str()));
     match (pos_net, neg_net) {
@@ -105,21 +101,26 @@ fn main() {
             eprintln!(
                 "Power rail: only positive {} matched, negative not found ({:?})",
                 pos.name(),
-                &power_rails_cfg.negative_names
+                board.negative_names()
             );
         }
         (None, Some(neg)) => {
             eprintln!(
                 "Power rail: only negative {} matched, positive not found ({:?})",
                 neg.name(),
-                &power_rails_cfg.positive_names
+                board.positive_names()
             );
         }
         (None, None) => {
-            eprintln!(
-                "Power rail: no match (positive={:?}, negative={:?})",
-                &power_rails_cfg.positive_names, &power_rails_cfg.negative_names
-            );
+            if board.power_rails().is_some() {
+                eprintln!(
+                    "Power rail: no match (positive={:?}, negative={:?})",
+                    board.positive_names(),
+                    board.negative_names()
+                );
+            } else {
+                eprintln!("Power rail: 板子没电源轨 (preset={})", BOARD_PRESET.name());
+            }
         }
     }
     let mut layout = Layout::new(&circuit);
@@ -328,4 +329,53 @@ fn main() {
     let svg_path = format!("{outputs_dir}/layout.svg");
     fs::write(&svg_path, &svg).expect("写 SVG 失败");
     println!("=== SVG 已写入 {svg_path} ({} 字节) ===", svg.len());
+}
+
+/// 仅渲染三种预设的空板到 `output/board-{preset}.svg`。供调试/核实用。
+///
+/// 输出:
+/// - `board-170.svg`: 17 cols, 无电源轨
+/// - `board-400.svg`: 30 cols, 上下各 2 条 5×5 电源轨
+/// - `board-800.svg`: 63 cols, 上下各 2 条 10×5 电源轨 (左右各空 2 格)
+fn render_empty_boards_to(outputs_dir: &str) {
+    let cases: &[(Preset, usize)] = &[
+        (Preset::Hole170, 17),
+        (Preset::Hole400, 30),
+        (Preset::Hole800, 63),
+    ];
+    for &(preset, cols) in cases {
+        let board = preset.make(cols);
+        let main_rows = board.main_rows();
+        let blocked = board.blocked_rows().len();
+        let rail_holes = board
+            .power_rails()
+            .map(|pr| {
+                pr.top
+                    .rows
+                    .iter()
+                    .chain(pr.bottom.rows.iter())
+                    .fold(0usize, |acc, r| {
+                        acc + r
+                            .groups
+                            .iter()
+                            .map(|g| g.end() - g.start() + 1)
+                            .sum::<i32>() as usize
+                    })
+            })
+            .unwrap_or(0);
+        eprintln!(
+            "preset_{}({}): {}×{} main, {} blocked rows, {} rail holes = {} total",
+            preset.name(),
+            cols,
+            cols,
+            main_rows,
+            blocked,
+            rail_holes,
+            board.len()
+        );
+        let svg = knead_net::render::to_svg_board(&board);
+        let path = format!("{outputs_dir}/board-{}.svg", preset.name());
+        fs::write(&path, &svg).expect("写空板 SVG 失败");
+        eprintln!("  → {path} ({} 字节)", svg.len());
+    }
 }

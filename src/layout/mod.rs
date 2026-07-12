@@ -13,14 +13,14 @@
 pub mod breadboard;
 pub mod cost;
 pub mod occupancy;
-pub mod preprocess;
 pub mod placement;
+pub mod preprocess;
 pub mod routing;
 pub mod sa;
 
 pub use breadboard::{
     Breadboard, Hole, HoleId, Polarity, PowerRail, PowerRailBinding, PowerRails, PowerStrip,
-    Region, standard_power_rails,
+    Preset, Region, standard_power_rails, wide_power_rails_800,
 };
 pub use cost::Weights;
 pub use occupancy::{Occupancy, Occupant};

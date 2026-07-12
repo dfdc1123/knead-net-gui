@@ -31,6 +31,18 @@ const CHANNEL_FRAC: f32 = 0.30; // 通道相对 row 中心的偏移 (向下)
 /// 用 lossy occupancy 渲染, 未摆放的 component 不画, 撞孔时后到者覆盖先到者。
 /// 颜色信息本身不会"缺失" — net/线色取自 [`Circuit::nets`] 和 `net_color()`,
 /// pin 覆盖关系才是 lossless / lossy 的差别。
+/// 渲染一个空板 (没元件、没接线) 到 SVG。仅画板几何 + 电源轨色带 + 所有孔。
+///
+/// 给 `--render-empty-boards` 这类验证场景用 — 能一眼看清板子尺寸、blocked row、
+/// 电源轨 group 划分对不对。
+pub fn to_svg_board(board: &Breadboard) -> String {
+    use crate::circuit::Circuit;
+    use crate::layout::Layout;
+    let circuit = Circuit::empty();
+    let layout = Layout::new(&circuit);
+    to_svg(&circuit, board, &layout)
+}
+
 pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String {
     let w = board.cols() as f32 * CELL_X + MARGIN * 2.0;
     // 画布高度 = 从板上最小 y 到最大 y 覆盖 (含 power rail 的负 y 和 >= main_rows)

@@ -216,6 +216,17 @@ impl Footprint {
 }
 
 impl Circuit {
+    /// 创建一个空电路 (0 元件, 0 pin, 0 net, 0 footprint)。
+    /// 主要给"只渲染板子几何"的场景用 (e.g. `--render-empty-boards`)。
+    pub fn empty() -> Self {
+        Self {
+            components: Vec::new(),
+            pins: Vec::new(),
+            nets: Vec::new(),
+            footprints: Vec::new(),
+        }
+    }
+
     /// 替换整个 footprint 注册表
     ///
     /// `NetlistInput::into_circuit` 通过参数 `&[Footprint]` 直接吃 footprint 注册表,

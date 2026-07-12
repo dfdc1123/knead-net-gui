@@ -146,6 +146,51 @@ pub struct PowerRailBinding {
     pub negative: NetId,
 }
 
+/// 预设板型 (170 / 400 / 800 孔) — main.rs 唯一选择点。
+///
+/// 选 `Preset` + 传 `cols` 调 [`Preset::make`] 就能拿到 [`Breadboard`]。
+/// 电源轨 (`Preset::Hole170` 无, `Preset::Hole400` 是 5×5, `Preset::Hole800` 是 10×5 左右空 2)
+/// 全部由 `make` 内部决定, 上层不用拼。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Preset {
+    /// 17×10 main, 无电源轨。默认 cols=17 → 170 孔; cols=N → N×10 孔。
+    Hole170,
+    /// 30×10 main + 4 条 5×5 电源轨 (无左右留白)。默认 cols=30 → 400 孔; cols=N → N×10 + 4 rail 孔。
+    Hole400,
+    /// 63×10 main + 4 条 10×5 电源轨 (左右各空 2)。默认 cols=63 → 830 孔; cols=N → N×10 + 4 rail 孔。
+    Hole800,
+}
+
+impl Preset {
+    /// 用这个预设 + `cols` 列宽生成一块 [`Breadboard`]。
+    /// `cols` 改了后内部电源轨会自动按 6-col 节拍重排。
+    pub fn make(self, cols: usize) -> Breadboard {
+        match self {
+            Self::Hole170 => Breadboard::preset_170(cols),
+            Self::Hole400 => Breadboard::preset_400(cols),
+            Self::Hole800 => Breadboard::preset_800(cols),
+        }
+    }
+
+    /// 默认 `cols` 值 (这个预设“典型”的宽度)。
+    pub fn default_cols(self) -> usize {
+        match self {
+            Self::Hole170 => 17,
+            Self::Hole400 => 30,
+            Self::Hole800 => 63,
+        }
+    }
+
+    /// 预设名 (“170” / “400” / “800”), 跟文件名 / 日志一起用。
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Hole170 => "170",
+            Self::Hole400 => "400",
+            Self::Hole800 => "800",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Breadboard {
     cols: usize,
@@ -343,6 +388,51 @@ impl Breadboard {
     pub fn standard() -> Self {
         let power_rails = standard_power_rails(30);
         Self::with_power_rails(30, 12, [5, 6], power_rails)
+    }
+
+    // ============================================================
+    //  预设板 (preset) — 170 / 400 / 800 孔
+    // ============================================================
+
+    /// 170 孔预设: `cols` 列 × 12 行 main (中央 2 行 blocked, 上半 5 行 + 下半 5 行 = 10 行),
+    /// 没有电源轨。`cols` 是板子横向 col 数, 默认 17 → 170 孔;
+    /// 传 20 → 200 孔, 传 30 → 300 孔, 依此类推。
+    pub fn preset_170(cols: usize) -> Self {
+        Self::with_blocked_rows(cols, 12, [5, 6])
+    }
+
+    /// 400 孔预设: `cols` 列 × 12 行 main (10 行可用 + 2 行中央 blocked),
+    /// 上下各两组 5×5 横向短接的电源轨 (无左右留白, 轨从 x=0 开始)。
+    /// 默认 30 列: 30 × 10 = 300 main + 4 × 25 = 100 rail = 400 孔。
+    /// 改 `cols` 后电源轨自动按 6-col 节拍重新生成 (5 孔 + 1 空), 最后一组可能被裁短。
+    pub fn preset_400(cols: usize) -> Self {
+        Self::with_power_rails(cols, 12, [5, 6], standard_power_rails(cols as i32))
+    }
+
+    /// 800 孔预设: `cols` 列 × 12 行 main (10 行可用 + 2 行中央 blocked),
+    /// 上下各两组 10×5 横向短接的电源轨 (左右各留 2 格空)。
+    /// 默认 63 列: 63 × 10 = 630 main + 4 × 50 = 200 rail = 830 孔 (名“800”是约数)。
+    /// 改 `cols` 后电源轨在 [2, cols-2) 区间按 6-col 节拍重新生成。
+    pub fn preset_800(cols: usize) -> Self {
+        Self::with_power_rails(cols, 12, [5, 6], wide_power_rails_800(cols as i32))
+    }
+
+    /// 返回正极电源轨允许绑定的 net 名字列表。
+    /// 没有电源轨的板子 (e.g. `preset_170`) 返回空切片。
+    pub fn positive_names(&self) -> &[String] {
+        self.power_rails
+            .as_ref()
+            .map(|pr| pr.positive_names.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// 返回负极电源轨允许绑定的 net 名字列表。
+    /// 没有电源轨的板子 (e.g. `preset_170`) 返回空切片。
+    pub fn negative_names(&self) -> &[String] {
+        self.power_rails
+            .as_ref()
+            .map(|pr| pr.negative_names.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn cols(&self) -> usize {
@@ -606,6 +696,60 @@ pub fn standard_power_rails(cols: i32) -> PowerRails {
     let mut start = 0;
     while start < cols {
         let end = (start + 4).min(cols - 1);
+        groups.push(start..=end);
+        start += 6;
+    }
+    PowerRails {
+        top: PowerStrip {
+            rows: [
+                PowerRail {
+                    y: -4,
+                    polarity: Polarity::Negative,
+                    groups: groups.clone(),
+                },
+                PowerRail {
+                    y: -3,
+                    polarity: Polarity::Positive,
+                    groups: groups.clone(),
+                },
+            ],
+        },
+        bottom: PowerStrip {
+            rows: [
+                PowerRail {
+                    y: 14,
+                    polarity: Polarity::Negative,
+                    groups: groups.clone(),
+                },
+                PowerRail {
+                    y: 15,
+                    polarity: Polarity::Positive,
+                    groups,
+                },
+            ],
+        },
+        positive_names: vec![
+            "VCC".into(),
+            "+5V".into(),
+            "5V".into(),
+            "+12V".into(),
+            "12V".into(),
+            "3V3".into(),
+        ],
+        negative_names: vec!["GND".into()],
+    }
+}
+
+/// 800 预设的电源轨: 左右各留 2 格空, 中间按 6-col 节拍排 5-孔 group
+/// (e.g. cols=63: x=2..60 排 10 个 5-孔 group, 间隔 1 空)。
+/// 与 [`standard_power_rails`] 唯一区别: 这里从 `start = 2` 开始, 终点上限是 `cols - 3`。
+pub fn wide_power_rails_800(cols: i32) -> PowerRails {
+    assert!(cols >= 4, "800 preset 需要 cols >= 4 (左右各留 2 格)");
+    let margin: i32 = 2;
+    let mut groups: Vec<RangeInclusive<i32>> = Vec::new();
+    let mut start = margin;
+    while start < cols - margin {
+        let end = (start + 4).min(cols - margin - 1);
         groups.push(start..=end);
         start += 6;
     }
@@ -988,5 +1132,135 @@ mod tests {
     fn external_gaps_empty_without_rails() {
         let b = Breadboard::new(30, 5);
         assert!(b.external_gaps().is_empty());
+    }
+
+    // ============================================================
+    //  预设板 (preset_170 / preset_400 / preset_800)
+    // ============================================================
+
+    #[test]
+    fn preset_170_default_17_cols_has_170_holes() {
+        let b = Breadboard::preset_170(17);
+        assert_eq!(b.cols(), 17);
+        assert_eq!(b.main_rows(), 12);
+        assert_eq!(b.blocked_rows(), vec![5, 6]);
+        assert!(b.power_rails().is_none());
+        assert_eq!(b.len(), 170); // 17 × (12-2)
+    }
+
+    #[test]
+    fn preset_170_with_20_cols_has_200_holes() {
+        let b = Breadboard::preset_170(20);
+        assert_eq!(b.cols(), 20);
+        assert_eq!(b.len(), 200); // 20 × 10
+    }
+
+    #[test]
+    fn preset_400_default_30_cols_has_400_holes() {
+        let b = Breadboard::preset_400(30);
+        assert_eq!(b.cols(), 30);
+        assert_eq!(b.main_rows(), 12);
+        assert_eq!(b.blocked_rows(), vec![5, 6]);
+        assert!(b.power_rails().is_some());
+        assert_eq!(b.len(), 400); // 300 main + 100 rail (5组×5×4)
+    }
+
+    #[test]
+    fn preset_400_with_50_cols_scales_rails() {
+        // 50 cols 上 6-col 节拍能排 8 个完整 5-孔 group + 1 个裁短的 2-孔 group = 42 孔/行
+        let b = Breadboard::preset_400(50);
+        assert_eq!(b.cols(), 50);
+        assert_eq!(b.len(), 500 + 168); // 50×10 main + 4×42 rail
+    }
+
+    #[test]
+    fn preset_800_default_63_cols_has_2_col_margins() {
+        let b = Breadboard::preset_800(63);
+        assert_eq!(b.cols(), 63);
+        assert_eq!(b.main_rows(), 12);
+        assert_eq!(b.blocked_rows(), vec![5, 6]);
+        let pr = b.power_rails().unwrap();
+        // 左边 2 空 (x=0,1 不在 power rail 里)
+        for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+            assert!(!rail.contains(0));
+            assert!(!rail.contains(1));
+            assert!(!rail.contains(62));
+            assert!(!rail.contains(61));
+            assert!(rail.contains(2));
+            assert!(rail.contains(60));
+        }
+        // 63 × 10 main + 4 × 50 rail = 830
+        assert_eq!(b.len(), 830);
+    }
+
+    #[test]
+    fn preset_800_with_50_cols_still_has_margins() {
+        let b = Breadboard::preset_800(50);
+        assert_eq!(b.cols(), 50);
+        let pr = b.power_rails().unwrap();
+        for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
+            assert!(!rail.contains(0));
+            assert!(!rail.contains(1));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "800 preset 需要 cols >= 4")]
+    fn preset_800_panics_with_cols_too_small() {
+        let _ = Breadboard::preset_800(3);
+    }
+
+    // ============================================================
+    //  Preset 枚举 + board.positive_names / board.negative_names
+    // ============================================================
+
+    #[test]
+    fn preset_enum_dispatches_to_right_constructor() {
+        assert_eq!(Preset::Hole170.make(17).len(), 170);
+        assert_eq!(Preset::Hole400.make(30).len(), 400);
+        assert_eq!(Preset::Hole800.make(63).len(), 830);
+        // 改 cols 走同一预设仍 OK
+        assert_eq!(Preset::Hole400.make(50).len(), 668);
+        // wide_power_rails_800(50): 7 组 5 孔 + 1 组 4 孔 = 39 孔/行 × 4 行 = 156 rail
+        assert_eq!(Preset::Hole800.make(50).len(), 500 + 156);
+    }
+
+    #[test]
+    fn preset_default_cols_match_naming() {
+        assert_eq!(Preset::Hole170.default_cols(), 17);
+        assert_eq!(Preset::Hole400.default_cols(), 30);
+        assert_eq!(Preset::Hole800.default_cols(), 63);
+    }
+
+    #[test]
+    fn preset_name_is_stable_label() {
+        assert_eq!(Preset::Hole170.name(), "170");
+        assert_eq!(Preset::Hole400.name(), "400");
+        assert_eq!(Preset::Hole800.name(), "800");
+    }
+
+    #[test]
+    fn board_positive_negative_names_from_400() {
+        let b = Breadboard::preset_400(50);
+        assert_eq!(
+            b.positive_names(),
+            &["VCC", "+5V", "5V", "+12V", "12V", "3V3"]
+        );
+        assert_eq!(b.negative_names(), &["GND"]);
+    }
+
+    #[test]
+    fn board_170_has_no_power_rail_names() {
+        let b = Breadboard::preset_170(17);
+        assert!(b.positive_names().is_empty());
+        assert!(b.negative_names().is_empty());
+    }
+
+    #[test]
+    fn board_800_has_same_rail_names_as_400() {
+        let a = Breadboard::preset_400(30);
+        let b = Breadboard::preset_800(63);
+        assert_eq!(a.positive_names(), b.positive_names());
+        assert_eq!(a.negative_names(), b.negative_names());
     }
 }
