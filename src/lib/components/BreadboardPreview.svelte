@@ -27,10 +27,9 @@
   let columns = $derived(range(safeCols));
   let powerColumns = $derived(railColumns(preset, safeCols));
 
-  // 400 孔参考板的首个电源轨孔位于主区第 1、2 列之间之后：
-  // (31 - 13.65) / 9 ≈ 1.928 个孔距。这只是绘图坐标；算法仍然
-  // 使用它自己的整数列坐标。
-  let railOffset = $derived(preset === "hole400" ? pitch * 1.928 : 0);
+  // 400 孔电源轨的 5 组孔占 0..28 节拍，主区占 0..29 节拍；
+  // 横移半个孔距后两者中心重合。这只是绘图坐标，算法仍使用整数列。
+  let railOffset = $derived(preset === "hole400" ? pitch * 0.5 : 0);
   let contentWidth = $derived(
     Math.max(
       (safeCols - 1) * pitch,
