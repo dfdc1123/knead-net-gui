@@ -18,8 +18,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+lexpr = "0.2"
 
 # 引用根目录的 knead-net crate (Cargo workspace 兄弟 member)
 knead-net = { path = ".." }
