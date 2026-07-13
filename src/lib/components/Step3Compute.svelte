@@ -22,12 +22,12 @@
   } = $props();
 
   type ProfileId = "quick" | "standard" | "full";
-  type ComputeProfile = ComputeRequest & { id: ProfileId; name: string; description: string };
+  type ComputeProfile = { id: ProfileId; name: string; description: string };
 
   const profiles: ComputeProfile[] = [
-    { id: "quick", name: "快速", description: "8 seeds · 5,000 次", n_seeds: 8, max_iters: 5_000 },
-    { id: "standard", name: "标准", description: "32 seeds · 200,000 次", n_seeds: 32, max_iters: 200_000 },
-    { id: "full", name: "完整", description: "100 seeds · 1,000,000 次", n_seeds: 100, max_iters: 1_000_000 },
+    { id: "quick", name: "快速", description: "8 seeds · 5,000 次" },
+    { id: "standard", name: "标准", description: "32 seeds · 200,000 次" },
+    { id: "full", name: "完整", description: "100 seeds · 1,000,000 次" },
   ];
   const phases: { id: Exclude<ComputePhase, "idle" | "error">; label: string; hint: string }[] = [
     { id: "spectral", label: "Spectral", hint: "生成初始布局" },
@@ -116,8 +116,7 @@
     message = `正在启动${selectedProfile.name}计算…`;
 
     const request: ComputeRequest = {
-      n_seeds: selectedProfile.n_seeds,
-      max_iters: selectedProfile.max_iters,
+      profile: selectedProfile.id,
     };
     try {
       await invoke("start_compute", { request });

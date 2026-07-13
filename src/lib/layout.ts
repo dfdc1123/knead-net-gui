@@ -52,8 +52,7 @@ export type LayoutFrame = {
 export type ComputePhase = "idle" | "spectral" | "annealing" | "routing" | "done" | "error";
 
 export type ComputeRequest = {
-  n_seeds: number;
-  max_iters: number;
+  profile: "quick" | "standard" | "full";
 };
 
 export type ComputeProgressEvent = {

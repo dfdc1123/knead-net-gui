@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
@@ -14,10 +15,44 @@ use crate::AppState;
 
 const PROGRESS_EVENT: &str = "compute-progress";
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ComputeProfile {
+    Quick,
+    Standard,
+    Full,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ComputeRequest {
-    n_seeds: usize,
-    max_iters: usize,
+    profile: ComputeProfile,
+}
+
+impl ComputeProfile {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Quick => "快速",
+            Self::Standard => "标准",
+            Self::Full => "完整",
+        }
+    }
+
+    fn config(self) -> SAConfig {
+        let (n_seeds, max_iters) = match self {
+            Self::Quick => (8, 5_000),
+            Self::Standard => (32, 200_000),
+            Self::Full => (100, 1_000_000),
+        };
+        SAConfig {
+            max_iters,
+            n_seeds,
+            use_spectral: true,
+            // 与 CLI 的正式 SA 配置保持一致；默认的 0.95 会过早冻结。
+            t0: 40.0,
+            cool_rate: 0.99999,
+            ..SAConfig::default()
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -88,7 +123,6 @@ pub async fn start_compute(
     state: State<'_, AppState>,
     request: ComputeRequest,
 ) -> Result<(), String> {
-    validate_request(&request)?;
     if state
         .compute_running
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -132,16 +166,6 @@ pub async fn start_compute(
     result
 }
 
-fn validate_request(request: &ComputeRequest) -> Result<(), String> {
-    if !(1..=256).contains(&request.n_seeds) {
-        return Err("种子数量必须在 1 到 256 之间".into());
-    }
-    if !(1..=2_000_000).contains(&request.max_iters) {
-        return Err("每个种子的迭代次数必须在 1 到 2,000,000 之间".into());
-    }
-    Ok(())
-}
-
 fn run_compute(
     app: AppHandle,
     run_id: u64,
@@ -149,20 +173,16 @@ fn run_compute(
     board: Breadboard,
     request: ComputeRequest,
 ) -> Result<(), String> {
+    let started = Instant::now();
     let text = fs::read_to_string(pcb_path).map_err(|e| format!("读取 PCB 失败: {e}"))?;
     let mut circuit = parse_pcb(&text).map_err(|e| format!("解析 PCB 失败: {}", e.message))?;
     let board = knead_net::prepare_for_layout(&mut circuit, board).board;
     let mut layout = Layout::new(&circuit);
 
-    let config = SAConfig {
-        max_iters: request.max_iters,
-        n_seeds: request.n_seeds,
-        use_spectral: true,
-        ..SAConfig::default()
-    };
+    let config = request.profile.config();
     let options = ProgressOptions {
         display_seed: 0,
-        sample_every: (request.max_iters / 120).max(1),
+        sample_every: (config.max_iters / 120).max(1),
     };
 
     // Rayon worker 只构造纯数据并送入 channel；窗口事件由专用转发线程发布。
@@ -176,10 +196,25 @@ fn run_compute(
         }
     });
 
+    sender
+        .send(ComputeEvent {
+            run_id,
+            phase: "spectral",
+            progress: 0.0,
+            message: format!(
+                "{}模式 · {} seeds × {} 次迭代",
+                request.profile.label(),
+                config.n_seeds,
+                config.max_iters
+            ),
+            frame: None,
+        })
+        .map_err(|_| "进度转发线程已退出".to_string())?;
+
     let callback_sender = sender.clone();
     layout
         .place_sa_with_progress(&board, &config, options, |progress| {
-            let event = progress_event(run_id, progress, &circuit, &board);
+            let event = progress_event(run_id, progress, &circuit, &board, &started);
             let _ = callback_sender.send(event);
         })
         .map_err(|errors| format_layout_errors("布局失败", &errors))?;
@@ -206,7 +241,7 @@ fn run_compute(
     let route_sender = sender.clone();
     layout
         .route_with_progress(&board, &PathFinderRouter::default(), |progress| {
-            let _ = route_sender.send(progress_event(run_id, progress, &circuit, &board));
+            let _ = route_sender.send(progress_event(run_id, progress, &circuit, &board, &started));
         })
         .map_err(|errors| format_layout_errors("布线失败", &errors))?;
 
@@ -224,6 +259,7 @@ fn progress_event(
     progress: LayoutProgress,
     circuit: &Circuit,
     board: &Breadboard,
+    started: &Instant,
 ) -> ComputeEvent {
     match progress {
         LayoutProgress::SpectralInitial { seed, snapshot } => ComputeEvent {
@@ -268,7 +304,10 @@ fn progress_event(
             run_id,
             phase: "done",
             progress: 100.0,
-            message: "布局与布线完成".into(),
+            message: format!(
+                "布局与布线完成 · 用时 {:.2}s",
+                started.elapsed().as_secs_f64()
+            ),
             frame: Some(snapshot_frame(&snapshot, circuit, board, None, None)),
         },
     }
@@ -431,4 +470,25 @@ fn format_layout_errors(context: &str, errors: &[knead_net::LayoutError]) -> Str
         .collect::<Vec<_>>()
         .join("; ");
     format!("{context}: {details}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_profiles_map_to_distinct_backend_configs() {
+        let quick = ComputeProfile::Quick.config();
+        let standard = ComputeProfile::Standard.config();
+        let full = ComputeProfile::Full.config();
+
+        assert_eq!((quick.n_seeds, quick.max_iters), (8, 5_000));
+        assert_eq!((standard.n_seeds, standard.max_iters), (32, 200_000));
+        assert_eq!((full.n_seeds, full.max_iters), (100, 1_000_000));
+        for config in [quick, standard, full] {
+            assert_eq!(config.t0, 40.0);
+            assert_eq!(config.cool_rate, 0.99999);
+            assert!(config.use_spectral);
+        }
+    }
 }
