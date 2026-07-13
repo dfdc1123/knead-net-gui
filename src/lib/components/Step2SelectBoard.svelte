@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import BreadboardPreview from "./BreadboardPreview.svelte";
 
   let { onStatusChange = () => {} }: { onStatusChange?: (ready: boolean) => void } = $props();
 
@@ -93,38 +94,14 @@
 
   {#if info}
     <div class="card bg-base-200 p-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">
-        预览 · {info.cols} × 12
-      </h3>
-      <div class="bg-white rounded p-2 overflow-auto">
-        <div class="flex flex-col gap-1.5 select-none" style="width: max-content">
-          {#if info.has_power_rails}
-            {#each [0, 1] as _railIdx}
-              <div class="grid gap-px" style="grid-template-columns: repeat({info.cols}, 6px)">
-                {#each Array(info.cols) as _, c}
-                  <div class="w-1.5 h-1.5 rounded-full {c % 6 < 5 ? 'bg-red-400' : 'bg-base-300'}"></div>
-                {/each}
-              </div>
-            {/each}
-          {/if}
-          {#each Array(12) as _, r}
-            <div class="grid gap-px" style="grid-template-columns: repeat({info.cols}, 6px)">
-              {#each Array(info.cols) as _, c}
-                <div class="w-1.5 h-1.5 rounded-full
-                            {r === 5 || r === 6 ? 'bg-base-300' : 'bg-base-content/40'}"></div>
-              {/each}
-            </div>
-          {/each}
-          {#if info.has_power_rails}
-            {#each [0, 1] as _railIdx}
-              <div class="grid gap-px" style="grid-template-columns: repeat({info.cols}, 6px)">
-                {#each Array(info.cols) as _, c}
-                  <div class="w-1.5 h-1.5 rounded-full {c % 6 < 5 ? 'bg-blue-400' : 'bg-base-300'}"></div>
-                {/each}
-              </div>
-            {/each}
-          {/if}
-        </div>
+      <div class="mb-3 flex items-center justify-between gap-3">
+        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+          预览 · 主区 {info.cols} × 10
+        </h3>
+        <span class="text-[10px] text-base-content/40">视觉比例参考真实板型</span>
+      </div>
+      <div class="overflow-auto rounded-box bg-base-100">
+        <BreadboardPreview {preset} cols={info.cols} />
       </div>
     </div>
   {/if}
