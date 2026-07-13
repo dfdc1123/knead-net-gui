@@ -13,6 +13,12 @@ pub fn test_render_sch(path: &str) -> Result<String, String> {
     sch::render(path)
 }
 
+/// 给集成测试验证 Step 4 的元件/net 语义标记。
+#[doc(hidden)]
+pub fn test_render_sch_with_pcb(path: &str, pcb_path: &str) -> Result<String, String> {
+    sch::render_with_pcb(path, Some(pcb_path))
+}
+
 /// 全局状态:记住用户当前选中的 .kicad_pcb 路径 + 面包板配置
 #[derive(Default)]
 pub(crate) struct AppState {
@@ -71,8 +77,8 @@ fn list_folder(path: String) -> Result<Vec<FolderEntry>, String> {
 
 /// 渲染 .kicad_sch → SVG 字符串 (Step 1 调用)
 #[tauri::command]
-fn render_sch(path: String) -> Result<String, String> {
-    sch::render(&path)
+fn render_sch(path: String, pcb_path: Option<String>) -> Result<String, String> {
+    sch::render_with_pcb(&path, pcb_path.as_deref())
 }
 
 /// 把选中的 .pcb 路径存到全局 state, 供 Step 3 布局用

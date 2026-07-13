@@ -2,6 +2,7 @@
   import type {
     BreadboardHole,
     BreadboardPreset,
+    CircuitSelection,
     LayoutFrame,
     LayoutPart,
   } from "$lib/layout";
@@ -10,7 +11,15 @@
     preset,
     cols,
     frame,
-  }: { preset: BreadboardPreset; cols: number; frame?: LayoutFrame | null } = $props();
+    selected = null,
+    onSelect = () => {},
+  }: {
+    preset: BreadboardPreset;
+    cols: number;
+    frame?: LayoutFrame | null;
+    selected?: CircuitSelection | null;
+    onSelect?: (selection: CircuitSelection | null) => void;
+  } = $props();
 
   const pitch = 12;
   const mainRows = [0, 1, 2, 3, 4];
@@ -95,9 +104,28 @@
       cy: (minY + maxY) / 2,
     };
   }
+
+  function selectComponent(event: Event, reference: string) {
+    event.stopPropagation();
+    onSelect(
+      selected?.type === "component" && selected.id === reference
+        ? null
+        : { type: "component", id: reference, label: reference },
+    );
+  }
+
+  function selectNet(event: Event, id?: string, label?: string) {
+    event.stopPropagation();
+    if (!id) return;
+    onSelect(
+      selected?.type === "net" && selected.id === id
+        ? null
+        : { type: "net", id, label: label || id },
+    );
+  }
 </script>
 
-<div class="flex min-w-full justify-center p-3">
+<div class="flex min-w-full justify-center p-3" role="presentation" onclick={() => onSelect(null)}>
   <svg
     width={displayWidth}
     height={displayHeight}
@@ -119,6 +147,9 @@
       </radialGradient>
       <filter id="inset-shadow" x="-20%" y="-20%" width="140%" height="140%">
         <feDropShadow dx="0" dy="0.7" stdDeviation="0.45" flood-color="#000" flood-opacity="0.45" />
+      </filter>
+      <filter id="selection-glow" x="-40%" y="-40%" width="180%" height="180%">
+        <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#f59e0b" flood-opacity="1" />
       </filter>
     </defs>
 
@@ -189,10 +220,18 @@
             d="M {from.x} {from.y} C {from.x} {(from.y + to.y) / 2}, {to.x} {(from.y + to.y) / 2}, {to.x} {to.y}"
             fill="none"
             stroke={wire.color ?? (wire.kind === "routed" ? "#2563eb" : "#64748b")}
-            stroke-width={wire.kind === "routed" ? 2.5 : 1.2}
+            stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : wire.kind === "routed" ? 2.5 : 1.2}
             stroke-dasharray={wire.kind === "routed" ? undefined : "4 3"}
             stroke-linecap="round"
-            opacity={wire.kind === "routed" ? 0.9 : 0.65}
+            opacity={selected ? (selected.type === "net" && selected.id === wire.net_id ? 1 : 0.18) : wire.kind === "routed" ? 0.9 : 0.65}
+            class="cursor-pointer transition-all"
+            role="button"
+            tabindex="0"
+            aria-label="选择网络 {wire.net_name ?? wire.net_id ?? wire.id}"
+            onclick={(event) => selectNet(event, wire.net_id, wire.net_name)}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") selectNet(event, wire.net_id, wire.net_name);
+            }}
           />
         {/each}
       </g>
@@ -200,6 +239,18 @@
       <g aria-label="布局元件">
         {#each frame.parts as part (part.id)}
           {@const bounds = partBounds(part)}
+          <g
+            class="cursor-pointer transition-opacity"
+            role="button"
+            tabindex="0"
+            aria-label="选择元件 {part.reference}"
+            opacity={selected?.type === "component" ? (selected.id === part.reference ? 1 : 0.25) : 1}
+            filter={selected?.type === "component" && selected.id === part.reference ? "url(#selection-glow)" : undefined}
+            onclick={(event) => selectComponent(event, part.reference)}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") selectComponent(event, part.reference);
+            }}
+          >
           {#if part.kind === "axial" && part.pins.length >= 2}
             {@const first = holePosition(part.pins[0].hole)}
             {@const last = holePosition(part.pins[part.pins.length - 1].hole)}
@@ -229,7 +280,14 @@
 
           {#each part.pins as pin}
             {@const point = holePosition(pin.hole)}
-            <circle cx={point.x} cy={point.y} r="2.4" fill="#d4d4d8" stroke="#3f3f46" stroke-width="0.8">
+            <circle
+              cx={point.x}
+              cy={point.y}
+              r={selected?.type === "net" && selected.id === pin.net_id ? 4 : 2.4}
+              fill={selected?.type === "net" && selected.id === pin.net_id ? "#f59e0b" : "#d4d4d8"}
+              stroke="#3f3f46"
+              stroke-width="0.8"
+            >
               <title>{part.reference} pin {pin.number ?? "?"}{pin.name ? ` · ${pin.name}` : ""}</title>
             </circle>
           {/each}
@@ -244,6 +302,7 @@
             pointer-events="none"
           >{part.reference}</text>
           <title>{part.reference}{part.value ? ` · ${part.value}` : ""}</title>
+          </g>
         {/each}
       </g>
     {/if}

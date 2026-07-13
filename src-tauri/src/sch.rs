@@ -12,6 +12,8 @@ use lexpr::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
+use knead_net::input::pcb::parse_pcb;
+
 const SCALE: f64 = 10.0;
 
 // KiCad 默认浅色原理图主题的核心配色。将颜色集中在这里，既避免 SVG
@@ -283,8 +285,14 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
                 let length = child(item, "length")
                     .and_then(parse_number_child)
                     .unwrap_or(0.0);
-                let name = child(item, "name").and_then(as_str).unwrap_or_default();
-                let number = child(item, "number").and_then(as_str).unwrap_or_default();
+                let name = child(item, "name")
+                    .and_then(|value| value.list_iter().into_iter().flatten().nth(1))
+                    .and_then(as_str)
+                    .unwrap_or_default();
+                let number = child(item, "number")
+                    .and_then(|value| value.list_iter().into_iter().flatten().nth(1))
+                    .and_then(as_str)
+                    .unwrap_or_default();
                 pins.push(Pin {
                     at,
                     length,
@@ -582,6 +590,132 @@ fn escape_xml_text(text: &str) -> String {
     escaped
 }
 
+fn property_value<'a>(inst: &'a Inst, key: &str) -> Option<&'a str> {
+    inst.properties
+        .iter()
+        .find(|property| property.key == key)
+        .map(|property| property.value.as_str())
+}
+
+fn instance_pins<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a Pin> {
+    let Some(units) = libs.get(&inst.lib_id) else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    units
+        .get(&inst.unit)
+        .or_else(|| units.get(&0))
+        .map(|styles| {
+            styles
+                .values()
+                .flat_map(|sub| sub.pins.iter())
+                .filter(|pin| {
+                    seen.insert((pin.number.clone(), pin.at.0.to_bits(), pin.at.1.to_bits()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn point_on_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> bool {
+    let cross = (point.0 - start.0) * (end.1 - start.1) - (point.1 - start.1) * (end.0 - start.0);
+    if cross.abs() > 1e-5 {
+        return false;
+    }
+    let dot = (point.0 - start.0) * (end.0 - start.0) + (point.1 - start.1) * (end.1 - start.1);
+    let length_sq = (end.0 - start.0).powi(2) + (end.1 - start.1).powi(2);
+    dot >= -1e-5 && dot <= length_sq + 1e-5
+}
+
+fn point_on_wire(point: (f64, f64), wire: &[(f64, f64)]) -> bool {
+    wire.windows(2)
+        .any(|segment| point_on_segment(point, segment[0], segment[1]))
+}
+
+fn wire_net_names(
+    wires: &[Vec<(f64, f64)>],
+    instances: &[Inst],
+    libs: &LibMap,
+    pcb_path: Option<&str>,
+) -> Vec<Option<String>> {
+    let Some(pcb_path) = pcb_path else {
+        return vec![None; wires.len()];
+    };
+    let Ok(text) = fs::read_to_string(pcb_path) else {
+        return vec![None; wires.len()];
+    };
+    let Ok(circuit) = parse_pcb(&text) else {
+        return vec![None; wires.len()];
+    };
+
+    let mut pin_nets = HashMap::new();
+    for component in circuit.components() {
+        for pin_id in component.pins() {
+            let pin = &circuit.pins()[pin_id.raw()];
+            if let Some(net_id) = pin.net() {
+                pin_nets.insert(
+                    (component.ref_().to_string(), pin.num().to_string()),
+                    circuit.nets()[net_id.raw()].name().to_string(),
+                );
+            }
+        }
+    }
+
+    // KiCad 会把一条逻辑网络拆成多个 wire 节点。只要两段共享端点（包括
+    // T 形连接落在另一段中间），就把它们并入同一个连通分量。
+    let mut parents: Vec<usize> = (0..wires.len()).collect();
+    fn root(parents: &mut [usize], mut index: usize) -> usize {
+        while parents[index] != index {
+            parents[index] = parents[parents[index]];
+            index = parents[index];
+        }
+        index
+    }
+    for left in 0..wires.len() {
+        for right in (left + 1)..wires.len() {
+            let touches = wires[left]
+                .iter()
+                .any(|&point| point_on_wire(point, &wires[right]))
+                || wires[right]
+                    .iter()
+                    .any(|&point| point_on_wire(point, &wires[left]));
+            if touches {
+                let left_root = root(&mut parents, left);
+                let right_root = root(&mut parents, right);
+                parents[right_root] = left_root;
+            }
+        }
+    }
+
+    let mut component_nets: HashMap<usize, String> = HashMap::new();
+    for inst in instances {
+        let Some(reference) = property_value(inst, "Reference") else {
+            continue;
+        };
+        for pin in instance_pins(inst, libs) {
+            let Some(net_name) = pin_nets.get(&(reference.to_string(), pin.number.clone())) else {
+                continue;
+            };
+            let connection = transform(pin.at.0, pin.at.1, inst.at, inst.mirror_x, inst.mirror_y);
+            for (index, wire) in wires.iter().enumerate() {
+                if point_on_wire(connection, wire) {
+                    let group = root(&mut parents, index);
+                    component_nets
+                        .entry(group)
+                        .or_insert_with(|| net_name.clone());
+                }
+            }
+        }
+    }
+
+    (0..wires.len())
+        .map(|index| {
+            let group = root(&mut parents, index);
+            component_nets.get(&group).cloned()
+        })
+        .collect()
+}
+
 fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) {
     match g {
         Graphic::Polyline { pts, stroke } => {
@@ -760,6 +894,10 @@ fn render_junction(svg: &mut String, x: f64, y: f64, ox: f64, oy: f64) {
 // ─────────────────────────── 入口 ───────────────────────────
 
 pub fn render(path: &str) -> Result<String, String> {
+    render_with_pcb(path, None)
+}
+
+pub fn render_with_pcb(path: &str, pcb_path: Option<&str>) -> Result<String, String> {
     let text = fs::read_to_string(path).map_err(|e| format!("读 .sch 失败: {e}"))?;
     let root = lexpr::from_str(&text).map_err(|e| format!("S-Expression 解析失败: {e}"))?;
 
@@ -767,6 +905,7 @@ pub fn render(path: &str) -> Result<String, String> {
     let wires = extract_wires(&root);
     let junctions = extract_junctions(&root);
     let instances = extract_instances(&root);
+    let wire_nets = wire_net_names(&wires, &instances, &libs, pcb_path);
 
     let (min_x, min_y, max_x, max_y) = compute_bbox(&wires, &junctions, &instances, &libs)?;
     let margin = 5.0;
@@ -786,14 +925,22 @@ pub fn render(path: &str) -> Result<String, String> {
     ));
 
     // 导线
-    for pts in &wires {
+    for (wire_index, pts) in wires.iter().enumerate() {
         for w in pts.windows(2) {
             let (x1, y1) = to_svg(w[0].0, w[0].1, ox, oy);
             let (x2, y2) = to_svg(w[1].0, w[1].1, ox, oy);
-            svg.push_str(&format!(
-                r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
-                x1, y1, x2, y2, COLOR_WIRE
-            ));
+            if let Some(net_name) = &wire_nets[wire_index] {
+                let net_name = escape_xml_text(net_name);
+                svg.push_str(&format!(
+                    r##"<line class="sch-net-hit" data-net="{}" x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="transparent" stroke-width="12"/><line class="sch-net-line" data-net="{}" x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+                    net_name, x1, y1, x2, y2, net_name, x1, y1, x2, y2, COLOR_WIRE
+                ));
+            } else {
+                svg.push_str(&format!(
+                    r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+                    x1, y1, x2, y2, COLOR_WIRE
+                ));
+            }
         }
     }
 
@@ -804,7 +951,16 @@ pub fn render(path: &str) -> Result<String, String> {
 
     // 符号实例
     for inst in &instances {
+        if let Some(reference) = property_value(inst, "Reference") {
+            svg.push_str(&format!(
+                r##"<g class="sch-component" data-component="{}">"##,
+                escape_xml_text(reference)
+            ));
+        } else {
+            svg.push_str("<g>");
+        }
         render_instance(&mut svg, inst, &libs, ox, oy);
+        svg.push_str("</g>");
     }
 
     svg.push_str("</svg>");

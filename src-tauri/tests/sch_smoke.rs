@@ -8,3 +8,15 @@ fn render_lm741_sch() {
     assert!(svg.ends_with("</svg>"));
     eprintln!("SVG length: {} bytes", svg.len());
 }
+
+#[test]
+fn render_lm741_sch_contains_step4_selection_metadata() {
+    let svg = knead_net_gui_lib::test_render_sch_with_pcb(
+        "../examples/folders/lm741/lm741.kicad_sch",
+        "../examples/folders/lm741/lm741.kicad_pcb",
+    )
+    .expect("render with PCB metadata failed");
+
+    assert!(svg.contains(r#"class="sch-component" data-component="#));
+    assert!(svg.contains(r#"class="sch-net-line" data-net="#));
+}

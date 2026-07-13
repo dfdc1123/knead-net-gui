@@ -5,7 +5,13 @@
   type FolderEntry = { name: string; path: string; ext: string; bytes: number };
   type Project = { name: string; sch?: FolderEntry; pcb?: FolderEntry };
 
-  let { onStatusChange = () => {} }: { onStatusChange?: (ready: boolean) => void } = $props();
+  let {
+    onStatusChange = () => {},
+    onSchematicChange = () => {},
+  }: {
+    onStatusChange?: (ready: boolean) => void;
+    onSchematicChange?: (svg: string) => void;
+  } = $props();
 
   let folder = $state<string | null>(null);
   let entries = $state<FolderEntry[]>([]);
@@ -37,6 +43,7 @@
     selectedProject = null;
     selectedHasSchematic = false;
     svg = "";
+    onSchematicChange("");
     onStatusChange(false);
     try {
       await invoke("clear_pcb_path");
@@ -76,12 +83,17 @@
     selectedProject = project.name;
     selectedHasSchematic = Boolean(project.sch);
     svg = "";
+    onSchematicChange("");
     onStatusChange(false);
 
     try {
       await invoke("clear_pcb_path");
       if (project.sch) {
-        svg = await invoke<string>("render_sch", { path: project.sch.path });
+        svg = await invoke<string>("render_sch", {
+          path: project.sch.path,
+          pcbPath: project.pcb?.path ?? null,
+        });
+        onSchematicChange(svg);
       }
       if (!project.pcb) {
         error = `找不到与 ${project.name}.kicad_sch 同名的 .kicad_pcb 文件`;

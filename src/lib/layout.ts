@@ -22,6 +22,8 @@ export type LayoutPin = {
   hole: BreadboardHole;
   number?: string;
   name?: string;
+  net_id?: string;
+  net_name?: string;
 };
 
 export type LayoutPart = {
@@ -40,7 +42,13 @@ export type LayoutWire = {
   color?: string;
   /** Air wires describe unrouted nets; routed wires describe the final result. */
   kind?: "air" | "routed";
+  net_id?: string;
+  net_name?: string;
 };
+
+export type CircuitSelection =
+  | { type: "component"; id: string; label: string }
+  | { type: "net"; id: string; label: string };
 
 export type LayoutFrame = {
   parts: LayoutPart[];

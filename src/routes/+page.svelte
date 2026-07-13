@@ -4,13 +4,15 @@
   import Step2SelectBoard from "$lib/components/Step2SelectBoard.svelte";
   import Step3Compute from "$lib/components/Step3Compute.svelte";
   import Step4Result from "$lib/components/Step4Result.svelte";
-  import type { BreadboardSelection } from "$lib/layout";
+  import type { BreadboardSelection, LayoutFrame } from "$lib/layout";
 
   let step = $state(0);
   let sourceReady = $state(false);
   let boardReady = $state(false);
   let resultReady = $state(false);
   let board = $state<BreadboardSelection | null>(null);
+  let schematicSvg = $state("");
+  let resultFrame = $state<LayoutFrame | null>(null);
 
   const enabledSteps = $derived([
     true,
@@ -24,18 +26,21 @@
     boardReady = false;
     board = null;
     resultReady = false;
+    resultFrame = null;
   }
 
   function handleBoardStatus(ready: boolean) {
     boardReady = ready;
     resultReady = false;
+    resultFrame = null;
   }
 
   function handleBoardChange(selection: BreadboardSelection | null) {
     board = selection;
   }
 
-  function handleComputeComplete() {
+  function handleComputeComplete(frame: LayoutFrame) {
+    resultFrame = frame;
     resultReady = true;
   }
 </script>
@@ -43,7 +48,7 @@
 <div class="h-screen flex flex-col bg-base-100">
   <main class="flex-1 overflow-auto">
     <div class:hidden={step !== 0} class="h-full">
-      <Step1SelectFiles onStatusChange={handleSourceStatus} />
+      <Step1SelectFiles onStatusChange={handleSourceStatus} onSchematicChange={(svg) => (schematicSvg = svg)} />
     </div>
     {#if sourceReady}
       <div class:hidden={step !== 1} class="h-full">
@@ -55,9 +60,14 @@
         <Step3Compute preset={board.preset} cols={board.cols} onComplete={handleComputeComplete} />
       </div>
     {/if}
-    {#if resultReady}
+    {#if resultReady && board && resultFrame}
       <div class:hidden={step !== 3} class="h-full">
-        <Step4Result />
+        <Step4Result
+          preset={board.preset}
+          cols={board.cols}
+          frame={resultFrame}
+          {schematicSvg}
+        />
       </div>
     {/if}
   </main>

@@ -91,6 +91,10 @@ struct LayoutPin {
     number: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_name: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -100,6 +104,8 @@ struct LayoutWire {
     to: BreadboardHole,
     color: &'static str,
     kind: &'static str,
+    net_id: String,
+    net_name: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -406,6 +412,12 @@ fn snapshot_frame(
                     hole,
                     number: pin.num().to_string(),
                     name: pin.pinfunction().map(str::to_string),
+                    net_id: pin
+                        .net()
+                        .map(|net| circuit.nets()[net.raw()].name().to_string()),
+                    net_name: pin
+                        .net()
+                        .map(|net| circuit.nets()[net.raw()].name().to_string()),
                 }
             })
             .collect();
@@ -437,6 +449,8 @@ fn snapshot_frame(
                 to: display_hole(board, wire.to),
                 color: net_color(wire.net.raw()),
                 kind: "routed",
+                net_id: circuit.nets()[wire.net.raw()].name().to_string(),
+                net_name: circuit.nets()[wire.net.raw()].name().to_string(),
             })
             .collect()
     };
@@ -470,6 +484,8 @@ fn air_wires(
                 to,
                 color: net_color(net.id().raw()),
                 kind: "air",
+                net_id: net.name().to_string(),
+                net_name: net.name().to_string(),
             });
         }
     }
