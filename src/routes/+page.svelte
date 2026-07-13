@@ -6,20 +6,50 @@
   import Step4Result from "$lib/components/Step4Result.svelte";
 
   let step = $state(0);
+  let sourceReady = $state(false);
+  let boardReady = $state(false);
+  let resultReady = $state(false);
+
+  const enabledSteps = $derived([
+    true,
+    sourceReady,
+    sourceReady && boardReady,
+    resultReady,
+  ]);
+
+  function handleSourceStatus(ready: boolean) {
+    sourceReady = ready;
+    boardReady = false;
+    resultReady = false;
+  }
+
+  function handleBoardStatus(ready: boolean) {
+    boardReady = ready;
+    resultReady = false;
+  }
 </script>
 
 <div class="h-screen flex flex-col bg-base-100">
   <main class="flex-1 overflow-auto">
-    {#if step === 0}
-      <Step1SelectFiles />
-    {:else if step === 1}
-      <Step2SelectBoard />
-    {:else if step === 2}
-      <Step3Compute />
-    {:else}
-      <Step4Result />
+    <div class:hidden={step !== 0} class="h-full">
+      <Step1SelectFiles onStatusChange={handleSourceStatus} />
+    </div>
+    {#if sourceReady}
+      <div class:hidden={step !== 1} class="h-full">
+        <Step2SelectBoard onStatusChange={handleBoardStatus} />
+      </div>
+    {/if}
+    {#if sourceReady && boardReady}
+      <div class:hidden={step !== 2} class="h-full">
+        <Step3Compute />
+      </div>
+    {/if}
+    {#if resultReady}
+      <div class:hidden={step !== 3} class="h-full">
+        <Step4Result />
+      </div>
     {/if}
   </main>
 
-  <Dock bind:current={step} />
+  <Dock bind:current={step} enabled={enabledSteps} />
 </div>

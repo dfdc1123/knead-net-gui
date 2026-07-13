@@ -120,15 +120,24 @@ impl<'c> super::Layout<'c> {
         let n_seeds = config.n_seeds.max(1);
         let preprocess = super::preprocess::preprocess_for_breadboard(self.circuit, board);
         if !preprocess.r90_only.is_empty() {
-            let names: Vec<&str> = preprocess.r90_only
+            let names: Vec<&str> = preprocess
+                .r90_only
                 .iter()
                 .map(|&cid| self.circuit.components()[cid.raw()].ref_())
                 .collect();
-            eprintln!("R90 预处理: {} 个元件 → {:?}", preprocess.r90_only.len(), names);
+            eprintln!(
+                "R90 预处理: {} 个元件 → {:?}",
+                preprocess.r90_only.len(),
+                names
+            );
         }
         if !preprocess.y_locked.is_empty() {
             for (&cid, &y) in &preprocess.y_locked {
-                eprintln!("  y-lock: {} → y={}", self.circuit.components()[cid.raw()].ref_(), y);
+                eprintln!(
+                    "  y-lock: {} → y={}",
+                    self.circuit.components()[cid.raw()].ref_(),
+                    y
+                );
             }
         }
         use rayon::prelude::*;

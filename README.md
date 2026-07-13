@@ -21,7 +21,8 @@ pnpm install
 pnpm tauri dev
 ```
 
-会弹出一个 800×600 的桌面窗口，通过 SvelteKit 前端调用同一个 Rust 核心算法（不再写 SVG 文件，直接在窗口里看交互结果）。
+会弹出一个 800×600 的桌面窗口。目前 GUI 已支持选择 KiCad 工程目录、预览原理图，
+以及选择和配置面包板；计算流程和最终布线结果页面仍在开发中。
 
 ## 输入格式
 
@@ -41,29 +42,32 @@ cargo run --release
 ```
 knead-net-gui/
 ├── Cargo.toml          # workspace 根 + knead-net crate (老 Rust 核心)
-├── src/                # 老 knead-net Rust 源码 (CLI 入口 + lib)
+├── src/                # Rust 核心/CLI 与 SvelteKit 前端源码
 │   ├── lib.rs
 │   ├── main.rs
 │   ├── circuit.rs
 │   ├── render.rs
 │   ├── input/
-│   └── layout/
-├── examples/inputs/    # 测试电路 (.kicad_pcb)
+│   ├── layout/
+│   ├── app.html
+│   ├── app.css
+│   ├── lib/components/
+│   └── routes/
+├── examples/inputs/    # 示例/测试电路 (.kicad_pcb)
 ├── src-tauri/          # Tauri crate (workspace member)
 │   ├── Cargo.toml      # depends on knead-net (path = "..")
 │   └── src/
 │       ├── main.rs
-│       └── lib.rs      # use knead_net::xxx; #[tauri::command]
-├── src/                # SvelteKit 前端
-│   ├── app.html
-│   ├── app.css
-│   └── routes/
+│       ├── lib.rs      # use knead_net::xxx; #[tauri::command]
+│       └── sch.rs      # KiCad 原理图解析与 SVG 渲染
 └── package.json
 ```
 
 ## 状态
 
-实验性项目。核心算法 (SA + 路由) 可跑, 周边工程化 (CI / 正式测试 / CLI 框架) 是后续工作。
+实验性项目。Rust 核心算法（模拟退火摆位 + 路由）和 CLI 已可运行，并已有单元测试与集成测试覆盖；
+GUI 的 Step 1（选择工程、原理图预览）和 Step 2（面包板配置）已可用，Step 3（计算）与
+Step 4（结果展示）仍在开发中。仓库已配置基础 CI，完整 CLI 参数框架仍是后续工作。
 
 ## License
 

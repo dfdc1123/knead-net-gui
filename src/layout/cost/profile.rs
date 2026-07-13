@@ -18,47 +18,54 @@ mod cost_profile {
 }
 
 #[cfg(profile_cost)]
-#[macro_export] macro_rules! cp_collect {
+#[macro_export]
+macro_rules! cp_collect {
     ($n:expr) => {
         $crate::layout::cost::cost_profile::COLLECT
             .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
     };
 }
 #[cfg(profile_cost)]
-#[macro_export] macro_rules! cp_pin {
+#[macro_export]
+macro_rules! cp_pin {
     ($n:expr) => {
         $crate::layout::cost::cost_profile::PIN.fetch_add($n, std::sync::atomic::Ordering::Relaxed);
     };
 }
 #[cfg(profile_cost)]
-#[macro_export] macro_rules! cp_bbox {
+#[macro_export]
+macro_rules! cp_bbox {
     ($n:expr) => {
         $crate::layout::cost::cost_profile::BBOX
             .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
     };
 }
 #[cfg(profile_cost)]
-#[macro_export] macro_rules! cp_mst {
+#[macro_export]
+macro_rules! cp_mst {
     ($n:expr) => {
         $crate::layout::cost::cost_profile::MST.fetch_add($n, std::sync::atomic::Ordering::Relaxed);
     };
 }
 #[cfg(profile_cost)]
-#[macro_export] macro_rules! cp_rail {
+#[macro_export]
+macro_rules! cp_rail {
     ($n:expr) => {
         $crate::layout::cost::cost_profile::RAIL
             .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
     };
 }
 #[cfg(profile_cost)]
-#[macro_export] macro_rules! cp_compact {
+#[macro_export]
+macro_rules! cp_compact {
     ($n:expr) => {
         $crate::layout::cost::cost_profile::COMPACT
             .fetch_add($n, std::sync::atomic::Ordering::Relaxed);
     };
 }
 #[cfg(profile_cost)]
-#[macro_export] macro_rules! cp_call {
+#[macro_export]
+macro_rules! cp_call {
     () => {
         $crate::layout::cost::cost_profile::CALLS
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -66,31 +73,38 @@ mod cost_profile {
 }
 
 #[cfg(not(profile_cost))]
-#[macro_export] macro_rules! cp_collect {
+#[macro_export]
+macro_rules! cp_collect {
     ($n:expr) => {};
 }
 #[cfg(not(profile_cost))]
-#[macro_export] macro_rules! cp_pin {
+#[macro_export]
+macro_rules! cp_pin {
     ($n:expr) => {};
 }
 #[cfg(not(profile_cost))]
-#[macro_export] macro_rules! cp_bbox {
+#[macro_export]
+macro_rules! cp_bbox {
     ($n:expr) => {};
 }
 #[cfg(not(profile_cost))]
-#[macro_export] macro_rules! cp_mst {
+#[macro_export]
+macro_rules! cp_mst {
     ($n:expr) => {};
 }
 #[cfg(not(profile_cost))]
-#[macro_export] macro_rules! cp_rail {
+#[macro_export]
+macro_rules! cp_rail {
     ($n:expr) => {};
 }
 #[cfg(not(profile_cost))]
-#[macro_export] macro_rules! cp_compact {
+#[macro_export]
+macro_rules! cp_compact {
     ($n:expr) => {};
 }
 #[cfg(not(profile_cost))]
-#[macro_export] macro_rules! cp_call {
+#[macro_export]
+macro_rules! cp_call {
     () => {};
 }
 
@@ -129,4 +143,3 @@ pub fn reset_cost_profile() {
 pub fn dump_cost_profile(_prefix: &str) {}
 #[cfg(not(profile_cost))]
 pub fn reset_cost_profile() {}
-

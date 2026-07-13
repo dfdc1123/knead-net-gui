@@ -53,6 +53,10 @@ enum Fill {
 struct Pin {
     at: (f64, f64, f64), // x, y, direction(度)
     length: f64,
+    #[expect(
+        dead_code,
+        reason = "Step 4 will display pin names in the rendered result"
+    )]
     name: String,
     number: String,
 }
@@ -217,7 +221,7 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
                 let pts: Vec<(f64, f64)> = children(item, "pts")
                     .iter()
                     .flat_map(|pts_node| children(pts_node, "xy"))
-                    .filter_map(|xy| parse_xy(xy))
+                    .filter_map(parse_xy)
                     .collect();
                 graphics.push(Graphic::Polyline {
                     pts,
@@ -291,7 +295,7 @@ fn extract_wires(root: &Value) -> Vec<Vec<(f64, f64)>> {
             children(w, "pts")
                 .iter()
                 .flat_map(|pts| children(pts, "xy"))
-                .filter_map(|xy| parse_xy(xy))
+                .filter_map(parse_xy)
                 .collect()
         })
         .collect()
@@ -548,6 +552,26 @@ fn fmt_pts(pts: &[(f64, f64)]) -> String {
         .join(" ")
 }
 
+/// Escape untrusted KiCad text before embedding it in an SVG text node.
+///
+/// KiCad files can be supplied by the user, and the generated SVG is inserted
+/// into the webview as HTML. Escaping all XML-significant characters here keeps
+/// property values as text instead of allowing them to create SVG/HTML nodes.
+fn escape_xml_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) {
     match g {
         Graphic::Polyline { pts, stroke } => {
@@ -570,25 +594,6 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
             stroke,
             fill,
         } => {
-            let corners = [
-                (*start, (start.0, end.1)),
-                (*start, (end.0, start.1)),
-                (*end, (end.0, start.1)),
-                (*end, (start.0, end.1)),
-            ];
-            let svg_pts: Vec<(f64, f64)> = corners
-                .iter()
-                .map(|&(a, b)| {
-                    let (gx, gy) = transform(a.0, a.1, inst.at, inst.mirror_x, inst.mirror_y);
-                    let (gx2, gy2) = transform(b.0, b.1, inst.at, inst.mirror_x, inst.mirror_y);
-                    // 用两个角定矩形的"两侧",但简化:只画四条边
-                    to_svg(gx, gy, ox, oy).0; // dummy
-                    to_svg(gx2, gy2, ox, oy).0; // dummy
-                    (0.0, 0.0)
-                })
-                .collect();
-            let _ = svg_pts;
-            // 实际:直接用 transform 把 4 个角点变换
             let pts = [
                 transform(start.0, start.1, inst.at, inst.mirror_x, inst.mirror_y),
                 transform(end.0, start.1, inst.at, inst.mirror_x, inst.mirror_y),
@@ -721,10 +726,12 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
             continue;
         }
         let (sx, sy) = to_svg(prop.at.0, prop.at.1, ox, oy);
+        let key = escape_xml_text(&prop.key);
+        let value = escape_xml_text(&prop.value);
         svg.push_str(&format!(
-                    r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="10" fill="#000">{}: {}</text>"##,
-                    sx, sy, prop.key, prop.value
-                ));
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="10" fill="#000">{}: {}</text>"##,
+            sx, sy, key, value
+        ));
     }
 }
 
@@ -781,4 +788,50 @@ pub fn render(path: &str) -> Result<String, String> {
 
     svg.push_str("</svg>");
     Ok(svg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn property_text_is_xml_escaped_before_svg_insertion() {
+        let malicious = r#"<script>alert("owned")</script>&'"#;
+        let inst = Inst {
+            lib_id: "Device:R".into(),
+            at: (0.0, 0.0, 0.0),
+            mirror_x: false,
+            mirror_y: false,
+            unit: 0,
+            body_style: 1,
+            properties: vec![
+                Property {
+                    key: "Reference".into(),
+                    value: malicious.into(),
+                    at: (0.0, 0.0, 0.0),
+                    hide: false,
+                },
+                Property {
+                    key: "Value".into(),
+                    value: "R1 > R2 & R3".into(),
+                    at: (0.0, 1.0, 0.0),
+                    hide: false,
+                },
+            ],
+        };
+        let libs = HashMap::from([(
+            "Device:R".into(),
+            HashMap::from([(0, HashMap::from([(1, SubSymbol::default())]))]),
+        )]);
+        let mut svg = String::new();
+
+        render_instance(&mut svg, &inst, &libs, 0.0, 0.0);
+
+        assert!(!svg.contains("<script>"));
+        assert!(!svg.contains(malicious));
+        assert!(svg.contains(
+            "Reference: &lt;script&gt;alert(&quot;owned&quot;)&lt;/script&gt;&amp;&apos;"
+        ));
+        assert!(svg.contains("Value: R1 &gt; R2 &amp; R3"));
+    }
 }

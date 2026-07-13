@@ -1,5 +1,3 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use knead_net::input::pcb;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
@@ -18,65 +16,6 @@ pub fn test_render_sch(path: &str) -> Result<String, String> {
 struct AppState {
     pcb_path: Mutex<Option<String>>,
     breadboard_cfg: Mutex<Option<(String, knead_net::layout::Breadboard)>>,
-}
-
-/// 默认的问候命令 (Tauri 模板保留)
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[derive(Serialize)]
-struct ExampleFile {
-    name: String,
-    path: String,
-    bytes: u64,
-}
-
-/// 列出 examples/inputs/ 下所有可加载的 PCB 文件
-#[tauri::command]
-fn list_examples() -> Result<Vec<ExampleFile>, String> {
-    let dir = PathBuf::from("../examples/inputs");
-    if !dir.exists() {
-        return Err(format!("examples/inputs 不存在: {}", dir.display()));
-    }
-    let mut out = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("kicad_pcb") {
-            let meta = entry.metadata().map_err(|e| e.to_string())?;
-            out.push(ExampleFile {
-                name: path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                path: path.to_string_lossy().to_string(),
-                bytes: meta.len(),
-            });
-        }
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
-}
-
-/// 解析一个 PCB 文件, 返回最基础的领域统计
-#[derive(Serialize)]
-struct CircuitStats {
-    components: usize,
-    nets: usize,
-    pins: usize,
-}
-
-#[tauri::command]
-fn parse_circuit(path: String) -> Result<CircuitStats, String> {
-    let circuit = pcb::parse_pcb(&path).map_err(|e| format!("解析失败: {e:?}"))?;
-    Ok(CircuitStats {
-        components: circuit.components().len(),
-        nets: circuit.nets().len(),
-        pins: circuit.pins().len(),
-    })
 }
 
 // ─────────────── Step 1: 选目录 + 渲染 .sch ───────────────
@@ -139,6 +78,14 @@ fn set_pcb_path(state: tauri::State<AppState>, path: String) -> Result<(), Strin
     Ok(())
 }
 
+/// 清除之前选择的 PCB，避免重新选择无 PCB 的目录后沿用旧路径。
+#[tauri::command]
+fn clear_pcb_path(state: tauri::State<AppState>) -> Result<(), String> {
+    let mut guard = state.pcb_path.lock().map_err(|e| e.to_string())?;
+    *guard = None;
+    Ok(())
+}
+
 /// 读出当前选中的 .pcb 路径 (Step 3 用)
 #[tauri::command]
 fn get_pcb_path(state: tauri::State<AppState>) -> Result<Option<String>, String> {
@@ -169,6 +116,19 @@ fn preset_from_str(s: &str) -> Result<knead_net::layout::Preset, String> {
     }
 }
 
+fn make_breadboard(
+    preset: knead_net::layout::Preset,
+    cols: usize,
+) -> Result<knead_net::layout::Breadboard, String> {
+    if !(3..=120).contains(&cols) {
+        return Err("面包板列数必须在 3 到 120 之间".into());
+    }
+    if preset == knead_net::layout::Preset::Hole800 && cols < 4 {
+        return Err("800 孔预设需要至少 4 列".into());
+    }
+    Ok(preset.make(cols))
+}
+
 #[tauri::command]
 fn set_breadboard(
     state: tauri::State<AppState>,
@@ -176,7 +136,7 @@ fn set_breadboard(
     cols: usize,
 ) -> Result<BreadboardInfo, String> {
     let p = preset_from_str(&preset)?;
-    let board = p.make(cols);
+    let board = make_breadboard(p, cols)?;
     let info = BreadboardInfo {
         preset: preset.clone(),
         cols: board.cols(),
@@ -206,16 +166,45 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
-            greet,
-            list_examples,
-            parse_circuit,
             list_folder,
             render_sch,
             set_pcb_path,
+            clear_pcb_path,
             get_pcb_path,
             set_breadboard,
             get_breadboard_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use knead_net::layout::Preset;
+
+    #[test]
+    fn hole800_with_too_few_columns_returns_error_without_panicking() {
+        for cols in 0..4 {
+            let result = std::panic::catch_unwind(|| make_breadboard(Preset::Hole800, cols));
+            assert!(result.is_ok(), "cols={cols} must not panic");
+            assert!(result.unwrap().is_err(), "cols={cols} must return an error");
+        }
+    }
+
+    #[test]
+    fn column_limits_are_enforced_by_the_backend() {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+            assert!(make_breadboard(preset, 0).is_err());
+            assert!(make_breadboard(preset, 2).is_err());
+            assert!(make_breadboard(preset, 121).is_err());
+        }
+    }
+
+    #[test]
+    fn valid_breadboard_dimensions_are_still_accepted() {
+        assert_eq!(make_breadboard(Preset::Hole170, 17).unwrap().len(), 170);
+        assert_eq!(make_breadboard(Preset::Hole400, 30).unwrap().len(), 400);
+        assert_eq!(make_breadboard(Preset::Hole800, 4).unwrap().cols(), 4);
+    }
 }

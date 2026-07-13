@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
 
+  let { onStatusChange = () => {} }: { onStatusChange?: (ready: boolean) => void } = $props();
+
   type Preset = "hole170" | "hole400" | "hole800";
   type Info = { preset: string; cols: number; holes: number; has_power_rails: boolean };
 
@@ -14,6 +16,7 @@
   let cols = $state(30);
   let info = $state<Info | null>(null);
   let busy = $state(false);
+  let error = $state("");
 
   function pick(p: Preset) {
     if (busy) return;
@@ -31,10 +34,14 @@
 
   async function submit(p: Preset, c: number) {
     busy = true;
+    error = "";
+    onStatusChange(false);
     try {
       info = await invoke<Info>("set_breadboard", { preset: p, cols: c });
+      onStatusChange(true);
     } catch (e) {
-      console.error(e);
+      info = null;
+      error = String(e);
     } finally {
       busy = false;
     }
@@ -79,6 +86,10 @@
       </div>
     {/if}
   </div>
+
+  {#if error}
+    <div class="alert alert-error text-sm">{error}</div>
+  {/if}
 
   {#if info}
     <div class="card bg-base-200 p-4">
