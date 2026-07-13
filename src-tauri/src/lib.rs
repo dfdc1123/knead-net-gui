@@ -20,6 +20,7 @@ pub(crate) struct AppState {
     pub(crate) breadboard_cfg: Mutex<Option<(String, knead_net::layout::Breadboard)>>,
     pub(crate) compute_running: AtomicBool,
     pub(crate) next_run_id: AtomicU64,
+    pub(crate) compute_cancellation: Mutex<Option<knead_net::CancellationToken>>,
 }
 
 // ─────────────── Step 1: 选目录 + 渲染 .sch ───────────────
@@ -177,7 +178,8 @@ pub fn run() {
             get_pcb_path,
             set_breadboard,
             get_breadboard_info,
-            compute::start_compute
+            compute::start_compute,
+            compute::cancel_compute
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

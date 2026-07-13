@@ -43,6 +43,7 @@
   let message = $state("准备计算");
   let error = $state("");
   let listenerReady = $state(false);
+  let interrupting = $state(false);
   let activeRunId: string | number | null = null;
   let queue: ComputeProgressEvent[] = [];
   let playbackTimer: ReturnType<typeof setInterval> | undefined;
@@ -66,11 +67,15 @@
     message = event.message;
     if (event.frame) frame = event.frame;
     if (event.phase === "error") error = event.message;
+    if (event.phase === "routing" || event.phase === "done" || event.phase === "error") {
+      interrupting = false;
+    }
     if (event.phase === "done" && frame) onComplete(frame);
   }
 
   function enqueue(event: ComputeProgressEvent) {
     if (!busy || (activeRunId !== null && event.run_id !== activeRunId)) return;
+    if (interrupting && event.phase === "annealing" && event.progress < 88) return;
     queue.push(event);
   }
 
@@ -111,6 +116,7 @@
     activeRunId = null;
     frame = null;
     error = "";
+    interrupting = false;
     progress = 0;
     phase = "spectral";
     message = `正在启动${selectedProfile.name}计算…`;
@@ -127,6 +133,23 @@
       message = "计算失败";
     }
   }
+
+  async function interruptAndRoute() {
+    if (phase !== "annealing" || interrupting) return;
+    interrupting = true;
+    message = "正在中断 SA，并准备为当前最佳布局布线…";
+    // 丢掉尚未播放的旧 SA 帧；保留可能已经抵达的选优/routing/final 事件。
+    queue = queue.filter((event) => event.phase !== "annealing" || event.progress >= 88);
+    try {
+      const accepted = await invoke<boolean>("cancel_compute");
+      if (!accepted) {
+        message = "SA 已经结束，正在切换到布线结果…";
+      }
+    } catch (reason) {
+      interrupting = false;
+      error = `无法中断计算：${String(reason)}`;
+    }
+  }
 </script>
 
 <div class="flex h-full flex-col gap-4 overflow-auto p-6">
@@ -135,10 +158,17 @@
       <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">计算与布局过程</h2>
       <p class="mt-1 text-sm text-base-content/60">初始布局、退火优化和布线会在同一块面包板上连续显示。</p>
     </div>
-    <button class="btn btn-sm btn-primary" onclick={start} disabled={busy || !listenerReady}>
-      {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
-      {phase === "done" || phase === "error" ? "重新计算" : busy ? "计算中" : "开始计算"}
-    </button>
+    {#if phase === "annealing"}
+      <button class="btn btn-sm btn-warning" onclick={interruptAndRoute} disabled={interrupting}>
+        {#if interrupting}<span class="loading loading-spinner loading-xs"></span>{/if}
+        {interrupting ? "正在中断" : "中断并布线"}
+      </button>
+    {:else}
+      <button class="btn btn-sm btn-primary" onclick={start} disabled={busy || !listenerReady}>
+        {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
+        {phase === "done" || phase === "error" ? "重新计算" : busy ? "计算中" : "开始计算"}
+      </button>
+    {/if}
   </div>
 
   <div class="card border border-base-300 bg-base-200 shadow-sm">

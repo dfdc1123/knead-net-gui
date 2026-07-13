@@ -607,6 +607,48 @@ fn place_sa_progress_does_not_change_result() {
 }
 
 #[test]
+fn sa_cancelled_from_progress_callback_returns_a_valid_best_so_far_layout() {
+    use std::sync::Mutex;
+
+    let board = board();
+    let cancellation = CancellationToken::new();
+    let events = Mutex::new(Vec::new());
+    let mut layout = Layout::new(two_component_fixture());
+
+    layout
+        .place_sa_with_progress_and_cancellation(
+            &board,
+            &SAConfig {
+                max_iters: 1_000_000,
+                n_seeds: 4,
+                use_spectral: true,
+                ..SAConfig::default()
+            },
+            ProgressOptions {
+                display_seed: 0,
+                sample_every: 1,
+            },
+            &cancellation,
+            |event| {
+                if matches!(event, LayoutProgress::Annealing { .. }) {
+                    cancellation.cancel();
+                }
+                events.lock().unwrap().push(event);
+            },
+        )
+        .unwrap();
+
+    assert!(layout.placements().iter().all(Option::is_some));
+    assert!(matches!(
+        events.into_inner().unwrap().last(),
+        Some(LayoutProgress::PlacementComplete {
+            cancelled: true,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn route_with_progress_replaces_wires_and_reports_final_snapshot() {
     use std::cell::RefCell;
 

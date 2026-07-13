@@ -735,6 +735,11 @@ pub(super) struct SimulationObserver<'a> {
     pub callback: &'a (dyn Fn(SimulationProgress) + Sync),
 }
 
+pub(super) struct SimulationControl<'a> {
+    pub observer: Option<SimulationObserver<'a>>,
+    pub cancellation: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
 /// 跑模拟退火, 返回最佳 [`SAState`]。
 ///
 /// 初始状态按 [`SAConfig::use_spectral`] 选 [`SAState::from_spectral`] 或
@@ -747,7 +752,7 @@ pub(super) fn simulate(
     config: &SAConfig,
     bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
     preprocess: &crate::layout::preprocess::PreprocessResult,
-    observer: Option<SimulationObserver<'_>>,
+    control: Option<SimulationControl<'_>>,
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
@@ -771,8 +776,11 @@ pub(super) fn simulate(
             }
         }
     }
+    let observer = control
+        .as_ref()
+        .and_then(|control| control.observer.as_ref());
     if config.use_spectral
-        && let Some(observer) = &observer
+        && let Some(observer) = observer
     {
         (observer.callback)(SimulationProgress::Initial(state.clone()));
     }
@@ -813,7 +821,14 @@ pub(super) fn simulate(
     let mut t = config.t0;
 
     for iteration in 0..config.max_iters {
-        if let Some(observer) = &observer
+        if control.as_ref().is_some_and(|control| {
+            control
+                .cancellation
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        }) {
+            break;
+        }
+        if let Some(observer) = observer
             && iteration % observer.sample_every.max(1) == 0
         {
             (observer.callback)(SimulationProgress::Annealing {

@@ -7,7 +7,7 @@ use crate::layout::placement::{Placement, Rotation};
 
 use super::debug::{diagnose_expensive_seeds, print_seed_cost_report};
 use super::routing::Wire;
-use super::{LayoutProgress, LayoutSnapshot, ProgressOptions};
+use super::{CancellationToken, LayoutProgress, LayoutSnapshot, ProgressOptions};
 
 impl<'c> super::Layout<'c> {
     pub fn new(circuit: &'c Circuit) -> Self {
@@ -90,7 +90,7 @@ impl<'c> super::Layout<'c> {
         board: &Breadboard,
         config: &SAConfig,
     ) -> Result<(), Vec<LayoutError>> {
-        self.place_sa_impl(board, config, None)
+        self.place_sa_impl(board, config, None, None)
     }
 
     /// 与 [`Self::place_sa`] 相同，但额外报告 UI 可消费的进度快照。
@@ -107,7 +107,27 @@ impl<'c> super::Layout<'c> {
     where
         F: Fn(LayoutProgress) + Sync,
     {
-        self.place_sa_impl(board, config, Some((&progress, options)))
+        self.place_sa_impl(board, config, Some((&progress, options)), None)
+    }
+
+    /// 可取消的进度版本。取消后使用所有 seed 的 best-so-far 完成 placement。
+    pub fn place_sa_with_progress_and_cancellation<F>(
+        &mut self,
+        board: &Breadboard,
+        config: &SAConfig,
+        options: ProgressOptions,
+        cancellation: &CancellationToken,
+        progress: F,
+    ) -> Result<(), Vec<LayoutError>>
+    where
+        F: Fn(LayoutProgress) + Sync,
+    {
+        self.place_sa_impl(
+            board,
+            config,
+            Some((&progress, options)),
+            Some(cancellation),
+        )
     }
 
     fn place_sa_impl(
@@ -115,6 +135,7 @@ impl<'c> super::Layout<'c> {
         board: &Breadboard,
         config: &SAConfig,
         progress: Option<(&(dyn Fn(LayoutProgress) + Sync), ProgressOptions)>,
+        cancellation: Option<&CancellationToken>,
     ) -> Result<(), Vec<LayoutError>> {
         use crate::layout::cost::SAState;
         use crate::layout::sa;
@@ -169,9 +190,19 @@ impl<'c> super::Layout<'c> {
         }
         use rayon::prelude::*;
         let base_placements = self.placements.clone();
+        let display_seed = progress
+            .map_or(0, |(_, options)| options.display_seed)
+            .min(n_seeds - 1);
         let results: Vec<(f64, u64, SAState)> = (0..n_seeds as u64)
             .into_par_iter()
-            .map(|s| {
+            .filter_map(|s| {
+                // 取消后尚未开始的非观察 seed 无需再做 spectral/bridge 初始化。
+                // 观察 seed 始终完成 best-so-far，保证结果集非空且可继续 routing。
+                if s as usize != display_seed
+                    && cancellation.is_some_and(CancellationToken::is_cancelled)
+                {
+                    return None;
+                }
                 let cfg_s = SAConfig {
                     seed: config.seed.wrapping_add(s),
                     n_seeds: 1,
@@ -209,11 +240,18 @@ impl<'c> super::Layout<'c> {
                     }
                 };
                 let observer = progress.and_then(|(_, options)| {
-                    (s as usize == options.display_seed).then_some(sa::SimulationObserver {
+                    (s as usize == display_seed).then_some(sa::SimulationObserver {
                         sample_every: options.sample_every,
                         callback: &observer_callback,
                     })
                 });
+                let cancellation_flag = cancellation.map(CancellationToken::flag);
+                let control = (observer.is_some() || cancellation_flag.is_some()).then_some(
+                    sa::SimulationControl {
+                        observer,
+                        cancellation: cancellation_flag,
+                    },
+                );
                 let state_s = sa::simulate(
                     placeable.clone(),
                     self.circuit,
@@ -221,7 +259,7 @@ impl<'c> super::Layout<'c> {
                     &cfg_s,
                     &bridged_pins,
                     &preprocess,
-                    observer,
+                    control,
                 );
                 let cost_s = crate::layout::cost::cost(
                     &state_s,
@@ -230,7 +268,7 @@ impl<'c> super::Layout<'c> {
                     &bridged_pins,
                     &config.weights,
                 );
-                (cost_s, cfg_s.seed, state_s)
+                Some((cost_s, cfg_s.seed, state_s))
             })
             .collect();
         let per_seed_costs: Vec<f64> = results.iter().map(|(c, _, _)| *c).collect();
@@ -257,6 +295,7 @@ impl<'c> super::Layout<'c> {
             callback(LayoutProgress::PlacementComplete {
                 seed: best_seed,
                 cost: best_cost,
+                cancelled: cancellation.is_some_and(CancellationToken::is_cancelled),
                 snapshot: snapshot_from_state(&base_placements, &best),
             });
         }

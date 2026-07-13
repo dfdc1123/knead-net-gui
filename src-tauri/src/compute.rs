@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
-    Breadboard, Circuit, HoleId, Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter,
-    ProgressOptions, Region, SAConfig,
+    Breadboard, CancellationToken, Circuit, HoleId, Layout, LayoutProgress, LayoutSnapshot,
+    PathFinderRouter, ProgressOptions, Region, SAConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -113,8 +113,24 @@ struct RunningGuard<'a>(&'a AppState);
 
 impl Drop for RunningGuard<'_> {
     fn drop(&mut self) {
+        if let Ok(mut cancellation) = self.0.compute_cancellation.lock() {
+            *cancellation = None;
+        }
         self.0.compute_running.store(false, Ordering::Release);
     }
+}
+
+#[tauri::command]
+pub fn cancel_compute(state: State<'_, AppState>) -> Result<bool, String> {
+    let cancellation = state
+        .compute_cancellation
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let Some(cancellation) = cancellation.as_ref() else {
+        return Ok(false);
+    };
+    cancellation.cancel();
+    Ok(true)
 }
 
 #[tauri::command]
@@ -145,20 +161,27 @@ pub async fn start_compute(
         .clone()
         .ok_or_else(|| "请先在 Step 2 选择面包板".to_string())?;
     let run_id = state.next_run_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let cancellation = CancellationToken::new();
+    *state
+        .compute_cancellation
+        .lock()
+        .map_err(|e| e.to_string())? = Some(cancellation.clone());
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        run_compute(app.clone(), run_id, &pcb_path, board, request).inspect_err(|error| {
-            let _ = app.emit(
-                PROGRESS_EVENT,
-                ComputeEvent {
-                    run_id,
-                    phase: "error",
-                    progress: 0.0,
-                    message: error.clone(),
-                    frame: None,
-                },
-            );
-        })
+        run_compute(app.clone(), run_id, &pcb_path, board, request, cancellation).inspect_err(
+            |error| {
+                let _ = app.emit(
+                    PROGRESS_EVENT,
+                    ComputeEvent {
+                        run_id,
+                        phase: "error",
+                        progress: 0.0,
+                        message: error.clone(),
+                        frame: None,
+                    },
+                );
+            },
+        )
     })
     .await
     .map_err(|e| format!("布局任务异常退出: {e}"))?;
@@ -172,6 +195,7 @@ fn run_compute(
     pcb_path: &str,
     board: Breadboard,
     request: ComputeRequest,
+    cancellation: CancellationToken,
 ) -> Result<(), String> {
     let started = Instant::now();
     let text = fs::read_to_string(pcb_path).map_err(|e| format!("读取 PCB 失败: {e}"))?;
@@ -213,18 +237,36 @@ fn run_compute(
 
     let callback_sender = sender.clone();
     layout
-        .place_sa_with_progress(&board, &config, options, |progress| {
-            let event = progress_event(run_id, progress, &circuit, &board, &started);
-            let _ = callback_sender.send(event);
-        })
+        .place_sa_with_progress_and_cancellation(
+            &board,
+            &config,
+            options,
+            &cancellation,
+            |progress| {
+                let event = progress_event(
+                    run_id,
+                    progress,
+                    &circuit,
+                    &board,
+                    &started,
+                    cancellation.is_cancelled(),
+                );
+                let _ = callback_sender.send(event);
+            },
+        )
         .map_err(|errors| format_layout_errors("布局失败", &errors))?;
 
+    let cancelled = cancellation.is_cancelled();
     sender
         .send(ComputeEvent {
             run_id,
             phase: "routing",
             progress: 90.0,
-            message: "全局最佳布局已选出，正在生成跳线".into(),
+            message: if cancelled {
+                "SA 已中断，正在为当前最佳布局生成跳线".into()
+            } else {
+                "全局最佳布局已选出，正在生成跳线".into()
+            },
             frame: Some(snapshot_frame(
                 &LayoutSnapshot {
                     placements: layout.placements().to_vec(),
@@ -241,7 +283,9 @@ fn run_compute(
     let route_sender = sender.clone();
     layout
         .route_with_progress(&board, &PathFinderRouter::default(), |progress| {
-            let _ = route_sender.send(progress_event(run_id, progress, &circuit, &board, &started));
+            let _ = route_sender.send(progress_event(
+                run_id, progress, &circuit, &board, &started, cancelled,
+            ));
         })
         .map_err(|errors| format_layout_errors("布线失败", &errors))?;
 
@@ -260,6 +304,7 @@ fn progress_event(
     circuit: &Circuit,
     board: &Breadboard,
     started: &Instant,
+    cancelled: bool,
 ) -> ComputeEvent {
     match progress {
         LayoutProgress::SpectralInitial { seed, snapshot } => ComputeEvent {
@@ -292,12 +337,17 @@ fn progress_event(
         LayoutProgress::PlacementComplete {
             seed,
             cost,
+            cancelled,
             snapshot,
         } => ComputeEvent {
             run_id,
             phase: "annealing",
             progress: 88.0,
-            message: format!("全部种子完成 · 最佳 seed {seed}"),
+            message: if cancelled {
+                format!("SA 已中断 · 当前最佳 seed {seed}")
+            } else {
+                format!("全部种子完成 · 最佳 seed {seed}")
+            },
             frame: Some(snapshot_frame(&snapshot, circuit, board, None, Some(cost))),
         },
         LayoutProgress::RoutingComplete { snapshot } => ComputeEvent {
@@ -305,7 +355,12 @@ fn progress_event(
             phase: "done",
             progress: 100.0,
             message: format!(
-                "布局与布线完成 · 用时 {:.2}s",
+                "{} · 用时 {:.2}s",
+                if cancelled {
+                    "中断后的布局与布线完成"
+                } else {
+                    "布局与布线完成"
+                },
                 started.elapsed().as_secs_f64()
             ),
             frame: Some(snapshot_frame(&snapshot, circuit, board, None, None)),

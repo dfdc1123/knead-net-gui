@@ -3,7 +3,35 @@
 //! 回调可能从 Rayon worker 线程触发；GUI 适配层应把事件送入 channel，
 //! 再由自己的主线程/异步任务发布，而不是在回调里直接操作窗口。
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::{Placement, Wire};
+
+/// 可跨线程共享的协作式取消标记。
+///
+/// 取消不会丢弃已有结果：每个 SA seed 会返回自己的 best-so-far，布局层仍从中
+/// 选全局最低 cost，调用方随后可以照常 routing。
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn flag(&self) -> &AtomicBool {
+        &self.0
+    }
+}
 
 /// 一帧可直接用于渲染的布局，不暴露 SA 的内部缓存。
 #[derive(Debug, Clone)]
@@ -30,6 +58,7 @@ pub enum LayoutProgress {
     PlacementComplete {
         seed: u64,
         cost: f64,
+        cancelled: bool,
         snapshot: LayoutSnapshot,
     },
     /// 路由完成后的最终布局。
