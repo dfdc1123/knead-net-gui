@@ -1,7 +1,16 @@
 <script lang="ts">
-  type Preset = "hole170" | "hole400" | "hole800";
+  import type {
+    BreadboardHole,
+    BreadboardPreset,
+    LayoutFrame,
+    LayoutPart,
+  } from "$lib/layout";
 
-  let { preset, cols }: { preset: Preset; cols: number } = $props();
+  let {
+    preset,
+    cols,
+    frame,
+  }: { preset: BreadboardPreset; cols: number; frame?: LayoutFrame | null } = $props();
 
   const pitch = 12;
   const mainRows = [0, 1, 2, 3, 4];
@@ -10,7 +19,7 @@
     return Array.from({ length }, (_, index) => index);
   }
 
-  function railColumns(kind: Preset, columnCount: number) {
+  function railColumns(kind: BreadboardPreset, columnCount: number) {
     const margin = kind === "hole800" ? 2 : 0;
     const result: number[] = [];
     for (let start = margin; start < columnCount - margin; start += 6) {
@@ -40,6 +49,52 @@
   let boardHeight = $derived(isMini ? 168.2 : 252);
   let displayWidth = $derived(Math.max(isMini ? 420 : 440, boardWidth));
   let displayHeight = $derived((displayWidth / boardWidth) * boardHeight);
+
+  function holePosition(hole: BreadboardHole) {
+    const x = xInset + hole.col * pitch + (hole.region.startsWith("rail") ? railOffset : 0);
+    if (isMini) {
+      return {
+        x,
+        y: (hole.region === "main-bottom" ? 102.1 : 18.1) + hole.row * pitch,
+      };
+    }
+
+    const bases: Record<BreadboardHole["region"], number> = {
+      "rail-top": 12,
+      "main-top": 60,
+      "main-bottom": 144,
+      "rail-bottom": 228,
+    };
+    return { x, y: bases[hole.region] + hole.row * pitch };
+  }
+
+  function partBounds(part: LayoutPart) {
+    const points = part.pins.map((pin) => holePosition(pin.hole));
+    if (points.length === 0) {
+      return {
+        x: boardWidth / 2 - 10,
+        y: boardHeight / 2 - 6,
+        width: 20,
+        height: 12,
+        cx: boardWidth / 2,
+        cy: boardHeight / 2,
+      };
+    }
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    return {
+      x: minX - 5,
+      y: minY - 5,
+      width: Math.max(10, maxX - minX + 10),
+      height: Math.max(10, maxY - minY + 10),
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2,
+    };
+  }
 </script>
 
 <div class="flex min-w-full justify-center p-3">
@@ -122,6 +177,74 @@
         <text x="7" y="26.5" fill="#dc2626">+</text>
         <text x="7" y="230.5" fill="#2563eb">−</text>
         <text x="7" y="242.5" fill="#dc2626">+</text>
+      </g>
+    {/if}
+
+    {#if frame}
+      <g aria-label="布局连线">
+        {#each frame.wires ?? [] as wire (wire.id)}
+          {@const from = holePosition(wire.from)}
+          {@const to = holePosition(wire.to)}
+          <path
+            d="M {from.x} {from.y} C {from.x} {(from.y + to.y) / 2}, {to.x} {(from.y + to.y) / 2}, {to.x} {to.y}"
+            fill="none"
+            stroke={wire.color ?? (wire.kind === "routed" ? "#2563eb" : "#64748b")}
+            stroke-width={wire.kind === "routed" ? 2.5 : 1.2}
+            stroke-dasharray={wire.kind === "routed" ? undefined : "4 3"}
+            stroke-linecap="round"
+            opacity={wire.kind === "routed" ? 0.9 : 0.65}
+          />
+        {/each}
+      </g>
+
+      <g aria-label="布局元件">
+        {#each frame.parts as part (part.id)}
+          {@const bounds = partBounds(part)}
+          {#if part.kind === "axial" && part.pins.length >= 2}
+            {@const first = holePosition(part.pins[0].hole)}
+            {@const last = holePosition(part.pins[part.pins.length - 1].hole)}
+            <line x1={first.x} y1={first.y} x2={last.x} y2={last.y} stroke="#52525b" stroke-width="1.4" />
+            <rect
+              x={bounds.cx - Math.min(14, Math.max(7, bounds.width / 4))}
+              y={bounds.cy - 4.5}
+              width={Math.min(28, Math.max(14, bounds.width / 2))}
+              height="9"
+              rx="3"
+              fill={part.color ?? "#d6b27a"}
+              stroke="#713f12"
+              stroke-width="1"
+            />
+          {:else}
+            <rect
+              x={bounds.x}
+              y={bounds.y}
+              width={bounds.width}
+              height={bounds.height}
+              rx={part.kind === "ic" ? 2 : 4}
+              fill={part.color ?? (part.kind === "ic" ? "#27272a" : "#e4e4e7")}
+              stroke={part.kind === "ic" ? "#09090b" : "#52525b"}
+              stroke-width="1.2"
+            />
+          {/if}
+
+          {#each part.pins as pin}
+            {@const point = holePosition(pin.hole)}
+            <circle cx={point.x} cy={point.y} r="2.4" fill="#d4d4d8" stroke="#3f3f46" stroke-width="0.8">
+              <title>{part.reference} pin {pin.number ?? "?"}{pin.name ? ` · ${pin.name}` : ""}</title>
+            </circle>
+          {/each}
+          <text
+            x={bounds.cx}
+            y={bounds.cy + 2.3}
+            text-anchor="middle"
+            font-family="ui-sans-serif, system-ui, sans-serif"
+            font-size="6.5"
+            font-weight="700"
+            fill={part.kind === "ic" ? "#fafafa" : "#18181b"}
+            pointer-events="none"
+          >{part.reference}</text>
+          <title>{part.reference}{part.value ? ` · ${part.value}` : ""}</title>
+        {/each}
       </g>
     {/if}
   </svg>

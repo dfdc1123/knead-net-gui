@@ -1,25 +1,31 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
 
-  let { onStatusChange = () => {} }: { onStatusChange?: (ready: boolean) => void } = $props();
+  let {
+    onStatusChange = () => {},
+    onBoardChange = () => {},
+  }: {
+    onStatusChange?: (ready: boolean) => void;
+    onBoardChange?: (board: BreadboardSelection | null) => void;
+  } = $props();
 
-  type Preset = "hole170" | "hole400" | "hole800";
   type Info = { preset: string; cols: number; holes: number; has_power_rails: boolean };
 
-  const PRESETS: { id: Preset; name: string; desc: string; defaultCols: number; rail: boolean }[] = [
+  const PRESETS: { id: BreadboardPreset; name: string; desc: string; defaultCols: number; rail: boolean }[] = [
     { id: "hole170", name: "170 孔", desc: "迷你 17×10 main", defaultCols: 17, rail: false },
     { id: "hole400", name: "400 孔", desc: "标准 30×10 main + 电源轨", defaultCols: 30, rail: true },
     { id: "hole800", name: "800 孔", desc: "加宽 63×10 main + 宽电源轨", defaultCols: 63, rail: true },
   ];
 
-  let preset = $state<Preset>("hole400");
+  let preset = $state<BreadboardPreset>("hole400");
   let cols = $state(30);
   let info = $state<Info | null>(null);
   let busy = $state(false);
   let error = $state("");
 
-  function pick(p: Preset) {
+  function pick(p: BreadboardPreset) {
     if (busy) return;
     preset = p;
     cols = PRESETS.find((x) => x.id === p)!.defaultCols;
@@ -33,15 +39,17 @@
     timer = setTimeout(() => submit(preset, cols), 250);
   });
 
-  async function submit(p: Preset, c: number) {
+  async function submit(p: BreadboardPreset, c: number) {
     busy = true;
     error = "";
     onStatusChange(false);
     try {
       info = await invoke<Info>("set_breadboard", { preset: p, cols: c });
+      onBoardChange({ preset: p, cols: info.cols });
       onStatusChange(true);
     } catch (e) {
       info = null;
+      onBoardChange(null);
       error = String(e);
     } finally {
       busy = false;

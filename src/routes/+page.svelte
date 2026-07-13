@@ -4,11 +4,13 @@
   import Step2SelectBoard from "$lib/components/Step2SelectBoard.svelte";
   import Step3Compute from "$lib/components/Step3Compute.svelte";
   import Step4Result from "$lib/components/Step4Result.svelte";
+  import type { BreadboardSelection } from "$lib/layout";
 
   let step = $state(0);
   let sourceReady = $state(false);
   let boardReady = $state(false);
   let resultReady = $state(false);
+  let board = $state<BreadboardSelection | null>(null);
 
   const enabledSteps = $derived([
     true,
@@ -20,12 +22,21 @@
   function handleSourceStatus(ready: boolean) {
     sourceReady = ready;
     boardReady = false;
+    board = null;
     resultReady = false;
   }
 
   function handleBoardStatus(ready: boolean) {
     boardReady = ready;
     resultReady = false;
+  }
+
+  function handleBoardChange(selection: BreadboardSelection | null) {
+    board = selection;
+  }
+
+  function handleComputeComplete() {
+    resultReady = true;
   }
 </script>
 
@@ -36,12 +47,12 @@
     </div>
     {#if sourceReady}
       <div class:hidden={step !== 1} class="h-full">
-        <Step2SelectBoard onStatusChange={handleBoardStatus} />
+        <Step2SelectBoard onStatusChange={handleBoardStatus} onBoardChange={handleBoardChange} />
       </div>
     {/if}
-    {#if sourceReady && boardReady}
+    {#if sourceReady && boardReady && board}
       <div class:hidden={step !== 2} class="h-full">
-        <Step3Compute />
+        <Step3Compute preset={board.preset} cols={board.cols} onComplete={handleComputeComplete} />
       </div>
     {/if}
     {#if resultReady}

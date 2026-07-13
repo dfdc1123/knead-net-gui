@@ -2,7 +2,8 @@
 
 把 KiCad PCB 文件 (`.kicad_pcb`) 投影到面包板上, 自动摆位 + 布线, 输出 SVG 调试图。
 
-数据流: `.kicad_pcb` → [`Circuit`] → 模拟退火摆位 → A\* 风格布线 → SVG。
+数据流: `.kicad_pcb` → [`Circuit`] → Spectral 初排 → 多 seed 模拟退火 →
+PathFinder/MST 跳线生成 → 面包板渲染。
 
 ## 快速开始
 
@@ -21,8 +22,13 @@ pnpm install
 pnpm tauri dev
 ```
 
-会弹出一个 800×600 的桌面窗口。目前 GUI 已支持选择 KiCad 工程目录、预览原理图，
-以及选择和配置面包板；计算流程和最终布线结果页面仍在开发中。
+GUI 已支持选择 KiCad 工程目录、预览原理图、配置面包板，并在 Step 3 连续展示
+Spectral 初排、固定观察 seed 的 SA 过程以及全局最佳布局的最终布线。
+
+Step 3 有三档计算强度：开发环境默认使用“快速”（8 seeds × 5,000 次），生产构建
+默认使用“标准”（32 seeds × 200,000 次）。“完整”会运行 100 seeds × 1,000,000 次，
+建议配合 release 构建使用。过程动画只观察一个固定 seed，最终结果仍从全部 seed 中
+选择成本最低者；进度采样不参与算法决策。
 
 ## 输入格式
 
@@ -58,16 +64,18 @@ knead-net-gui/
 │   ├── Cargo.toml      # depends on knead-net (path = "..")
 │   └── src/
 │       ├── main.rs
-│       ├── lib.rs      # use knead_net::xxx; #[tauri::command]
+│       ├── lib.rs      # Tauri 状态与 commands
+│       ├── compute.rs  # 核心布局进度 → GUI 事件适配
 │       └── sch.rs      # KiCad 原理图解析与 SVG 渲染
 └── package.json
 ```
 
 ## 状态
 
-实验性项目。Rust 核心算法（模拟退火摆位 + 路由）和 CLI 已可运行，并已有单元测试与集成测试覆盖；
-GUI 的 Step 1（选择工程、原理图预览）和 Step 2（面包板配置）已可用，Step 3（计算）与
-Step 4（结果展示）仍在开发中。仓库已配置基础 CI，完整 CLI 参数框架仍是后续工作。
+实验性项目。Rust 核心算法（Spectral + 模拟退火摆位 + 路由）和 CLI 已可运行，并已有
+单元测试与集成测试覆盖。GUI 的 Step 1（选择工程、原理图预览）、Step 2（面包板配置）
+和 Step 3（计算过程与最终布线）已可用；Step 4 的结果整理与导出仍在开发中。仓库已配置
+基础 CI，完整 CLI 参数框架仍是后续工作。
 
 ## License
 
