@@ -14,7 +14,9 @@ pub mod breadboard;
 pub mod cost;
 pub mod occupancy;
 pub mod placement;
+pub mod prepare;
 pub mod preprocess;
+pub mod progress;
 pub mod routing;
 pub mod sa;
 
@@ -25,6 +27,8 @@ pub use breadboard::{
 pub use cost::Weights;
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{BBox, PinHole, PlacedFootprint, Placement, Rotation};
+pub use prepare::{LayoutPreparation, PowerRailMatch, prepare_for_layout};
+pub use progress::{LayoutProgress, LayoutSnapshot, ProgressOptions};
 pub use routing::{PathFinderRouter, Router, Wire, WireId};
 pub use sa::SAConfig;
 

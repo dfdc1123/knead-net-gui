@@ -720,6 +720,21 @@ fn can_shift_left_one(state: &SAState, board: &Breadboard, i: usize) -> bool {
 //  SA 主循环
 // ============================================================
 
+pub(super) enum SimulationProgress {
+    Initial(SAState),
+    Annealing {
+        iteration: usize,
+        current_cost: f64,
+        best_cost: f64,
+        state: SAState,
+    },
+}
+
+pub(super) struct SimulationObserver<'a> {
+    pub sample_every: usize,
+    pub callback: &'a (dyn Fn(SimulationProgress) + Sync),
+}
+
 /// 跑模拟退火, 返回最佳 [`SAState`]。
 ///
 /// 初始状态按 [`SAConfig::use_spectral`] 选 [`SAState::from_spectral`] 或
@@ -732,6 +747,7 @@ pub(super) fn simulate(
     config: &SAConfig,
     bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
     preprocess: &crate::layout::preprocess::PreprocessResult,
+    observer: Option<SimulationObserver<'_>>,
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
@@ -754,6 +770,11 @@ pub(super) fn simulate(
                 state.y_locked[i] = Some(ly);
             }
         }
+    }
+    if config.use_spectral
+        && let Some(observer) = &observer
+    {
+        (observer.callback)(SimulationProgress::Initial(state.clone()));
     }
     // 从 board 抽 power net ids (绑定的正 / 负极), 然后填桥接字段。
     // 无绑定时 power_net_ids 为空, `populate_bridgeable_info` 内调用的
@@ -791,7 +812,17 @@ pub(super) fn simulate(
     let mut best_cost = current_cost;
     let mut t = config.t0;
 
-    for _ in 0..config.max_iters {
+    for iteration in 0..config.max_iters {
+        if let Some(observer) = &observer
+            && iteration % observer.sample_every.max(1) == 0
+        {
+            (observer.callback)(SimulationProgress::Annealing {
+                iteration,
+                current_cost,
+                best_cost,
+                state: state.clone(),
+            });
+        }
         prof_iter_inc!();
         #[cfg(profile_sa)]
         let _t_move_start = std::time::Instant::now();
@@ -1623,6 +1654,7 @@ mod tests {
                 r90_only: std::collections::HashSet::new(),
                 y_locked: std::collections::HashMap::new(),
             },
+            None,
         );
         let best_cost = cost(&best, &circuit, &board(), &[], &Weights::default());
         assert!(
@@ -1649,6 +1681,7 @@ mod tests {
                 r90_only: std::collections::HashSet::new(),
                 y_locked: std::collections::HashMap::new(),
             },
+            None,
         );
         // SA 输出本身就是 final 位置 (compact 删了, cost 里的 compactness 替代)
         let xs = best.x.clone();

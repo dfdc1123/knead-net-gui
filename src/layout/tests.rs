@@ -560,6 +560,83 @@ fn place_sa_is_deterministic_with_seed() {
     }
 }
 
+/// 进度观测只能复制状态，不能改变 RNG 消费或最终选优。
+#[test]
+fn place_sa_progress_does_not_change_result() {
+    use std::sync::Mutex;
+
+    let board = board();
+    let config = SAConfig {
+        max_iters: 600,
+        n_seeds: 3,
+        seed: 1234,
+        use_spectral: true,
+        ..SAConfig::default()
+    };
+    let mut plain = Layout::new(two_component_fixture());
+    let mut observed = Layout::new(two_component_fixture());
+    plain.place_sa(&board, &config).unwrap();
+
+    let events = Mutex::new(Vec::new());
+    observed
+        .place_sa_with_progress(
+            &board,
+            &config,
+            crate::layout::ProgressOptions {
+                display_seed: 0,
+                sample_every: 100,
+            },
+            |event| events.lock().unwrap().push(event),
+        )
+        .unwrap();
+
+    assert_eq!(plain.placements(), observed.placements());
+    let events = events.into_inner().unwrap();
+    assert!(matches!(
+        events.first(),
+        Some(crate::layout::LayoutProgress::SpectralInitial { seed: 1234, .. })
+    ));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        crate::layout::LayoutProgress::Annealing { seed: 1234, .. }
+    )));
+    assert!(matches!(
+        events.last(),
+        Some(crate::layout::LayoutProgress::PlacementComplete { .. })
+    ));
+}
+
+#[test]
+fn route_with_progress_replaces_wires_and_reports_final_snapshot() {
+    use std::cell::RefCell;
+
+    let board = board();
+    let mut layout = Layout::new(two_component_fixture());
+    layout
+        .place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 500,
+                seed: 17,
+                ..SAConfig::default()
+            },
+        )
+        .unwrap();
+    let event = RefCell::new(None);
+    layout
+        .route_with_progress(&board, &PathFinderRouter::default(), |progress| {
+            *event.borrow_mut() = Some(progress);
+        })
+        .unwrap();
+
+    let event = event.into_inner().expect("应报告 routing 完成");
+    let crate::layout::LayoutProgress::RoutingComplete { snapshot } = event else {
+        panic!("最后事件应是 RoutingComplete");
+    };
+    assert_eq!(snapshot.wires.len(), layout.wires().len());
+    assert_eq!(snapshot.placements, layout.placements());
+}
+
 /// 不同 seed 都应能跑出有效布局 (不强求不同——MST 在 1D 顺序布局下是
 /// permutation-invariant, swap 沿 MST 是平的, 不同 seed 可能收敛到同解)。
 /// 这个测试主要确保"没因为换个 seed 就崩"。

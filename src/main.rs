@@ -2,8 +2,8 @@ use std::fs;
 
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
-    Layout, Occupant, PathFinderRouter, Placement, PowerRailBinding, Preset, Router, SAConfig,
-    spectral_debug_positions,
+    Layout, Occupant, PathFinderRouter, Placement, PowerRailMatch, Preset, Router, SAConfig,
+    prepare_for_layout, spectral_debug_positions,
 };
 
 // profile helpers live in sa.rs (pub(super) gated). We re-import via a small
@@ -44,7 +44,7 @@ fn main() {
     // ============================================================
     const BOARD_PRESET: Preset = Preset::Hole800;
     const BOARD_COLS: usize = 40;
-    let mut board = BOARD_PRESET.make(BOARD_COLS);
+    let board = BOARD_PRESET.make(BOARD_COLS);
     let main_holes = board.cols() * 10; // 12 rows − 2 blocked = 10 main rows
     let rail_holes = board.len() - main_holes;
     eprintln!(
@@ -57,38 +57,20 @@ fn main() {
         board.len()
     );
 
-    // 3b. 自动标记可桥接元件: 2 pin + 一腿 power 一腿 signal
-    // 名字从 board 自己拿, 不再单独造 power_rails_cfg。
-    let power_names: Vec<String> = board
-        .positive_names()
-        .iter()
-        .chain(board.negative_names().iter())
-        .cloned()
-        .collect();
-    let power_names_ref: Vec<&str> = power_names.iter().map(|s| s.as_str()).collect();
-    knead_net::input::pcb::auto_mark_bridgeable(&mut circuit, &power_names_ref);
-    for c in circuit.components() {
-        if c.bridgeable {
-            eprintln!("  bridgeable: {} (kind={})", c.ref_(), c.kind());
-        }
+    let preparation = prepare_for_layout(&mut circuit, board);
+    let board = preparation.board;
+    for component_id in preparation.bridgeable_components {
+        let component = &circuit.components()[component_id.raw()];
+        eprintln!(
+            "  bridgeable: {} (kind={})",
+            component.ref_(),
+            component.kind()
+        );
     }
-
-    // 4b. 把电源轨绑到具体 net (让 SA/路由把 rail 强制接进电路)
-    // 名字列表直接从 board 里拿; 170 没电源轨, pos/neg 都查不到, 走 (None, None) 分支。
-    let pos_net = board
-        .positive_names()
-        .iter()
-        .find_map(|name| circuit.nets().iter().find(|n| n.name() == name.as_str()));
-    let neg_net = board
-        .negative_names()
-        .iter()
-        .find_map(|name| circuit.nets().iter().find(|n| n.name() == name.as_str()));
-    match (pos_net, neg_net) {
-        (Some(pos), Some(neg)) => {
-            board = board.with_power_rail_binding(PowerRailBinding {
-                positive: pos.id(),
-                negative: neg.id(),
-            });
+    match preparation.power_rails {
+        PowerRailMatch::Bound(binding) => {
+            let pos = &circuit.nets()[binding.positive.raw()];
+            let neg = &circuit.nets()[binding.negative.raw()];
             eprintln!(
                 "Power rail binding: - -> {} ({:?}), + -> {} ({:?})",
                 neg.name(),
@@ -97,30 +79,31 @@ fn main() {
                 pos.id()
             );
         }
-        (Some(pos), None) => {
+        PowerRailMatch::PositiveOnly(id) => {
+            let pos = &circuit.nets()[id.raw()];
             eprintln!(
                 "Power rail: only positive {} matched, negative not found ({:?})",
                 pos.name(),
                 board.negative_names()
             );
         }
-        (None, Some(neg)) => {
+        PowerRailMatch::NegativeOnly(id) => {
+            let neg = &circuit.nets()[id.raw()];
             eprintln!(
                 "Power rail: only negative {} matched, positive not found ({:?})",
                 neg.name(),
                 board.positive_names()
             );
         }
-        (None, None) => {
-            if board.power_rails().is_some() {
-                eprintln!(
-                    "Power rail: no match (positive={:?}, negative={:?})",
-                    board.positive_names(),
-                    board.negative_names()
-                );
-            } else {
-                eprintln!("Power rail: 板子没电源轨 (preset={})", BOARD_PRESET.name());
-            }
+        PowerRailMatch::Unmatched => {
+            eprintln!(
+                "Power rail: no match (positive={:?}, negative={:?})",
+                board.positive_names(),
+                board.negative_names()
+            );
+        }
+        PowerRailMatch::NotPresent => {
+            eprintln!("Power rail: 板子没电源轨 (preset={})", BOARD_PRESET.name());
         }
     }
     let mut layout = Layout::new(&circuit);

@@ -7,6 +7,7 @@ use crate::layout::placement::{Placement, Rotation};
 
 use super::debug::{diagnose_expensive_seeds, print_seed_cost_report};
 use super::routing::Wire;
+use super::{LayoutProgress, LayoutSnapshot, ProgressOptions};
 
 impl<'c> super::Layout<'c> {
     pub fn new(circuit: &'c Circuit) -> Self {
@@ -89,6 +90,32 @@ impl<'c> super::Layout<'c> {
         board: &Breadboard,
         config: &SAConfig,
     ) -> Result<(), Vec<LayoutError>> {
+        self.place_sa_impl(board, config, None)
+    }
+
+    /// 与 [`Self::place_sa`] 相同，但额外报告 UI 可消费的进度快照。
+    ///
+    /// 只对一个 seed 抽样展示；所有 seed 仍照常并行运行，最终事件一定是全局
+    /// 最低 cost 的结果。回调可能运行在 Rayon worker 上，详见 [`LayoutProgress`]。
+    pub fn place_sa_with_progress<F>(
+        &mut self,
+        board: &Breadboard,
+        config: &SAConfig,
+        options: ProgressOptions,
+        progress: F,
+    ) -> Result<(), Vec<LayoutError>>
+    where
+        F: Fn(LayoutProgress) + Sync,
+    {
+        self.place_sa_impl(board, config, Some((&progress, options)))
+    }
+
+    fn place_sa_impl(
+        &mut self,
+        board: &Breadboard,
+        config: &SAConfig,
+        progress: Option<(&(dyn Fn(LayoutProgress) + Sync), ProgressOptions)>,
+    ) -> Result<(), Vec<LayoutError>> {
         use crate::layout::cost::SAState;
         use crate::layout::sa;
 
@@ -141,7 +168,8 @@ impl<'c> super::Layout<'c> {
             }
         }
         use rayon::prelude::*;
-        let results: Vec<(f64, SAState)> = (0..n_seeds as u64)
+        let base_placements = self.placements.clone();
+        let results: Vec<(f64, u64, SAState)> = (0..n_seeds as u64)
             .into_par_iter()
             .map(|s| {
                 let cfg_s = SAConfig {
@@ -149,6 +177,43 @@ impl<'c> super::Layout<'c> {
                     n_seeds: 1,
                     ..*config
                 };
+                let observer_callback = |event| {
+                    let Some((callback, _)) = progress else {
+                        return;
+                    };
+                    let (kind, state) = match event {
+                        sa::SimulationProgress::Initial(state) => (None, state),
+                        sa::SimulationProgress::Annealing {
+                            iteration,
+                            current_cost,
+                            best_cost,
+                            state,
+                        } => (Some((iteration, current_cost, best_cost)), state),
+                    };
+                    let snapshot = snapshot_from_state(&base_placements, &state);
+                    match kind {
+                        None => callback(LayoutProgress::SpectralInitial {
+                            seed: cfg_s.seed,
+                            snapshot,
+                        }),
+                        Some((iteration, current_cost, best_cost)) => {
+                            callback(LayoutProgress::Annealing {
+                                seed: cfg_s.seed,
+                                iteration,
+                                total_iterations: cfg_s.max_iters,
+                                current_cost,
+                                best_cost,
+                                snapshot,
+                            })
+                        }
+                    }
+                };
+                let observer = progress.and_then(|(_, options)| {
+                    (s as usize == options.display_seed).then_some(sa::SimulationObserver {
+                        sample_every: options.sample_every,
+                        callback: &observer_callback,
+                    })
+                });
                 let state_s = sa::simulate(
                     placeable.clone(),
                     self.circuit,
@@ -156,6 +221,7 @@ impl<'c> super::Layout<'c> {
                     &cfg_s,
                     &bridged_pins,
                     &preprocess,
+                    observer,
                 );
                 let cost_s = crate::layout::cost::cost(
                     &state_s,
@@ -164,12 +230,12 @@ impl<'c> super::Layout<'c> {
                     &bridged_pins,
                     &config.weights,
                 );
-                (cost_s, state_s)
+                (cost_s, cfg_s.seed, state_s)
             })
             .collect();
-        let per_seed_costs: Vec<f64> = results.iter().map(|(c, _)| *c).collect();
-        let per_seed_states: Vec<SAState> = results.iter().map(|(_, s)| s.clone()).collect();
-        let (best_cost, best) = results
+        let per_seed_costs: Vec<f64> = results.iter().map(|(c, _, _)| *c).collect();
+        let per_seed_states: Vec<SAState> = results.iter().map(|(_, _, s)| s.clone()).collect();
+        let (best_cost, best_seed, best) = results
             .into_iter()
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
             .expect("至少跑过一次");
@@ -186,6 +252,14 @@ impl<'c> super::Layout<'c> {
             &config.weights,
             config.seed,
         );
+
+        if let Some((callback, _)) = progress {
+            callback(LayoutProgress::PlacementComplete {
+                seed: best_seed,
+                cost: best_cost,
+                snapshot: snapshot_from_state(&base_placements, &best),
+            });
+        }
 
         for (idx, &comp_id) in best.placeable.iter().enumerate() {
             // Toggle 在 SA 中可能拾到 Bridged 模式, 这里分流写回:
@@ -210,6 +284,30 @@ impl<'c> super::Layout<'c> {
             }
         }
 
+        self.validate(board)
+    }
+
+    /// 在当前合法 placement 上路由、替换已有 wires，并报告最终快照。
+    pub fn route_with_progress<R, F>(
+        &mut self,
+        board: &Breadboard,
+        router: &R,
+        progress: F,
+    ) -> Result<(), Vec<LayoutError>>
+    where
+        R: super::Router,
+        F: Fn(LayoutProgress),
+    {
+        // 路由输入只包含元件占用；旧 wires 不应影响一次全新的 routing。
+        self.wires.clear();
+        let occupancy = self.occupancy(board)?;
+        self.wires = router.route(self.circuit, board, &occupancy, &self.bridged_pins());
+        progress(LayoutProgress::RoutingComplete {
+            snapshot: LayoutSnapshot {
+                placements: self.placements.clone(),
+                wires: self.wires.clone(),
+            },
+        });
         self.validate(board)
     }
 
@@ -246,6 +344,32 @@ impl<'c> super::Layout<'c> {
     /// 调用方必须拿到 `Ok` 之后才能使用 `Occupancy`。
     pub fn occupancy(&self, board: &Breadboard) -> Result<Occupancy, Vec<LayoutError>> {
         Occupancy::from_layout(self, board)
+    }
+}
+
+fn snapshot_from_state(
+    base: &[Option<Placement>],
+    state: &crate::layout::cost::SAState,
+) -> LayoutSnapshot {
+    let mut placements = base.to_vec();
+    for (idx, &component) in state.placeable.iter().enumerate() {
+        placements[component.raw()] = if state.bridged[idx] {
+            state
+                .active_bridge_pair(idx)
+                .map(|pin_holes| Placement::Bridged { pin_holes })
+        } else {
+            Some(Placement::OnBoard {
+                position: Position {
+                    x: state.x[idx],
+                    y: state.y[idx],
+                },
+                rotation: state.rotation[idx],
+            })
+        };
+    }
+    LayoutSnapshot {
+        placements,
+        wires: Vec::new(),
     }
 }
 

@@ -268,6 +268,10 @@ impl Component {
         &self.kind
     }
 
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+
     pub fn footprint(&self) -> Option<FootprintId> {
         self.footprint
     }
