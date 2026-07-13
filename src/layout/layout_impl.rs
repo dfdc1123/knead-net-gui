@@ -189,7 +189,9 @@ impl<'c> super::Layout<'c> {
             }
         }
         use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let base_placements = self.placements.clone();
+        let completed_seeds = AtomicUsize::new(0);
         let display_seed = progress
             .map_or(0, |(_, options)| options.display_seed)
             .min(n_seeds - 1);
@@ -268,6 +270,13 @@ impl<'c> super::Layout<'c> {
                     &bridged_pins,
                     &config.weights,
                 );
+                let completed = completed_seeds.fetch_add(1, Ordering::AcqRel) + 1;
+                if let Some((callback, _)) = progress {
+                    callback(LayoutProgress::SeedsProgress {
+                        completed,
+                        total: n_seeds,
+                    });
+                }
                 Some((cost_s, cfg_s.seed, state_s))
             })
             .collect();

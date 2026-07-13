@@ -63,8 +63,17 @@
     if (event.run_id !== activeRunId) return;
 
     phase = event.phase;
-    progress = event.progress;
-    message = event.message;
+    const animationFrame = event.phase === "annealing" && Boolean(event.frame) && event.progress <= 10;
+    const aggregateEvent = event.phase === "annealing" && !event.frame && event.progress < 88;
+    if (animationFrame) {
+      // 动画帧只描述观察 seed，不得覆盖全部 seeds 的真实完成进度。
+      progress = Math.max(progress, event.progress);
+      if (progress <= 10) message = event.message;
+    } else if (!aggregateEvent || event.progress >= progress) {
+      // 并行 worker 的完成事件可能极短暂地乱序；总进度只允许前进。
+      progress = event.progress;
+      message = event.message;
+    }
     if (event.frame) frame = event.frame;
     if (event.phase === "error") error = event.message;
     if (event.phase === "routing" || event.phase === "done" || event.phase === "error") {
@@ -76,6 +85,15 @@
   function enqueue(event: ComputeProgressEvent) {
     if (!busy || (activeRunId !== null && event.run_id !== activeRunId)) return;
     if (interrupting && event.phase === "annealing" && event.progress < 88) return;
+    if (!event.frame) {
+      // seeds 聚合进度不参与 80ms 动画排队，否则 100 个完成事件会产生额外延迟。
+      applyEvent(event);
+      return;
+    }
+    if (event.progress >= 88 || event.phase === "routing" || event.phase === "done") {
+      // placement/routing 已经抵达时，旧的观察 seed 动画不应把结果再拖十秒。
+      queue = queue.filter((queued) => queued.progress >= 88);
+    }
     queue.push(event);
   }
 

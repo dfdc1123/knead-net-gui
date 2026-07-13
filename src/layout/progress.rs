@@ -54,6 +54,8 @@ pub enum LayoutProgress {
         best_cost: f64,
         snapshot: LayoutSnapshot,
     },
+    /// 全部并行 seed 的真实完成进度；与固定观察 seed 的动画进度分离。
+    SeedsProgress { completed: usize, total: usize },
     /// 所有 seed 完成后选出的全局最优布局。
     PlacementComplete {
         seed: u64,

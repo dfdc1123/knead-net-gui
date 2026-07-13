@@ -317,14 +317,14 @@ fn progress_event(
         LayoutProgress::Annealing {
             seed,
             iteration,
-            total_iterations,
             best_cost,
             snapshot,
             ..
         } => ComputeEvent {
             run_id,
             phase: "annealing",
-            progress: 10.0 + 75.0 * iteration as f64 / total_iterations.max(1) as f64,
+            // 观察 seed 的帧不代表所有并行 seed 的总进度。
+            progress: 10.0,
             message: format!("SA 优化中 · 固定观察 seed {seed}"),
             frame: Some(snapshot_frame(
                 &snapshot,
@@ -333,6 +333,13 @@ fn progress_event(
                 Some(iteration),
                 Some(best_cost),
             )),
+        },
+        LayoutProgress::SeedsProgress { completed, total } => ComputeEvent {
+            run_id,
+            phase: "annealing",
+            progress: 10.0 + 75.0 * completed as f64 / total.max(1) as f64,
+            message: format!("SA 优化中 · 已完成 {completed}/{total} seeds"),
+            frame: None,
         },
         LayoutProgress::PlacementComplete {
             seed,

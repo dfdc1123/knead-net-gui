@@ -600,6 +600,13 @@ fn place_sa_progress_does_not_change_result() {
         event,
         crate::layout::LayoutProgress::Annealing { seed: 1234, .. }
     )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        crate::layout::LayoutProgress::SeedsProgress {
+            completed: 3,
+            total: 3
+        }
+    )));
     assert!(matches!(
         events.last(),
         Some(crate::layout::LayoutProgress::PlacementComplete { .. })
