@@ -1,8 +1,10 @@
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Mutex;
 
+mod compute;
 mod sch;
 
 /// 给 tests/sch_smoke.rs 用的入口
@@ -13,9 +15,11 @@ pub fn test_render_sch(path: &str) -> Result<String, String> {
 
 /// 全局状态:记住用户当前选中的 .kicad_pcb 路径 + 面包板配置
 #[derive(Default)]
-struct AppState {
-    pcb_path: Mutex<Option<String>>,
-    breadboard_cfg: Mutex<Option<(String, knead_net::layout::Breadboard)>>,
+pub(crate) struct AppState {
+    pub(crate) pcb_path: Mutex<Option<String>>,
+    pub(crate) breadboard_cfg: Mutex<Option<(String, knead_net::layout::Breadboard)>>,
+    pub(crate) compute_running: AtomicBool,
+    pub(crate) next_run_id: AtomicU64,
 }
 
 // ─────────────── Step 1: 选目录 + 渲染 .sch ───────────────
@@ -172,7 +176,8 @@ pub fn run() {
             clear_pcb_path,
             get_pcb_path,
             set_breadboard,
-            get_breadboard_info
+            get_breadboard_info,
+            compute::start_compute
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
