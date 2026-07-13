@@ -13,10 +13,11 @@ pub fn test_render_sch(path: &str) -> Result<String, String> {
     sch::render(path)
 }
 
-/// 全局状态:记住用户当前选中的 .kicad_pcb 路径, 供 Step 3 布局用
+/// 全局状态:记住用户当前选中的 .kicad_pcb 路径 + 面包板配置
 #[derive(Default)]
 struct AppState {
     pcb_path: Mutex<Option<String>>,
+    breadboard_cfg: Mutex<Option<(String, knead_net::layout::Breadboard)>>,
 }
 
 /// 默认的问候命令 (Tauri 模板保留)
@@ -148,6 +149,56 @@ fn get_pcb_path(state: tauri::State<AppState>) -> Result<Option<String>, String>
         .map_err(|e| e.to_string())
 }
 
+// ─────────────── Step 2: 选择面包板 ───────────────
+
+#[derive(serde::Serialize, Clone)]
+struct BreadboardInfo {
+    preset: String,
+    cols: usize,
+    holes: usize,
+    has_power_rails: bool,
+}
+
+fn preset_from_str(s: &str) -> Result<knead_net::layout::Preset, String> {
+    use knead_net::layout::Preset;
+    match s {
+        "hole170" => Ok(Preset::Hole170),
+        "hole400" => Ok(Preset::Hole400),
+        "hole800" => Ok(Preset::Hole800),
+        other => Err(format!("未知预设: {other}")),
+    }
+}
+
+#[tauri::command]
+fn set_breadboard(
+    state: tauri::State<AppState>,
+    preset: String,
+    cols: usize,
+) -> Result<BreadboardInfo, String> {
+    let p = preset_from_str(&preset)?;
+    let board = p.make(cols);
+    let info = BreadboardInfo {
+        preset: preset.clone(),
+        cols: board.cols(),
+        holes: board.len(),
+        has_power_rails: board.power_rails().is_some(),
+    };
+    *state.breadboard_cfg.lock().map_err(|e| e.to_string())? = Some((preset, board));
+    Ok(info)
+}
+
+#[tauri::command]
+fn get_breadboard_info(state: tauri::State<AppState>) -> Option<BreadboardInfo> {
+    state.breadboard_cfg.lock().ok().and_then(|g| {
+        g.as_ref().map(|(preset, b)| BreadboardInfo {
+            preset: preset.clone(),
+            cols: b.cols(),
+            holes: b.len(),
+            has_power_rails: b.power_rails().is_some(),
+        })
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -161,7 +212,9 @@ pub fn run() {
             list_folder,
             render_sch,
             set_pcb_path,
-            get_pcb_path
+            get_pcb_path,
+            set_breadboard,
+            get_breadboard_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
