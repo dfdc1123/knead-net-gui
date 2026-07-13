@@ -118,6 +118,13 @@ fn children<'a>(v: &'a Value, name: &str) -> Vec<&'a Value> {
         .collect()
 }
 
+/// `(name value)` → 跳过 name 符, 取 value 数字
+fn parse_number_child(v: &Value) -> Option<f64> {
+    let mut iter = list_items(v);
+    iter.next()?; // 跳过 'name' symbol
+    as_f64(iter.next()?)
+}
+
 /// `(at x y [rot])`
 fn parse_at(v: &Value) -> Option<(f64, f64, f64)> {
     let mut iter = list_items(v);
@@ -139,7 +146,7 @@ fn parse_xy(v: &Value) -> Option<(f64, f64)> {
 fn parse_stroke(v: &Value) -> f64 {
     child(v, "stroke")
         .and_then(|s| child(s, "width"))
-        .and_then(as_f64)
+        .and_then(parse_number_child) // (width 0.254) → 0.254
         .unwrap_or(0.0)
 }
 
@@ -207,8 +214,9 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
         let Some(cons) = item.as_cons() else { continue };
         match cons.car().as_symbol() {
             Some("polyline") => {
-                let pts: Vec<(f64, f64)> = children(item, "xy")
+                let pts: Vec<(f64, f64)> = children(item, "pts")
                     .iter()
+                    .flat_map(|pts_node| children(pts_node, "xy"))
                     .filter_map(|xy| parse_xy(xy))
                     .collect();
                 graphics.push(Graphic::Polyline {
@@ -258,7 +266,9 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
                 let at = child(item, "at")
                     .and_then(parse_at)
                     .unwrap_or((0.0, 0.0, 0.0));
-                let length = child(item, "length").and_then(as_f64).unwrap_or(0.0);
+                let length = child(item, "length")
+                    .and_then(parse_number_child)
+                    .unwrap_or(0.0);
                 let name = child(item, "name").and_then(as_str).unwrap_or_default();
                 let number = child(item, "number").and_then(as_str).unwrap_or_default();
                 pins.push(Pin {
@@ -326,7 +336,7 @@ fn extract_instances(root: &Value) -> Vec<Inst> {
                 .and_then(|v| v.list_iter().into_iter().flatten().nth(1))
                 .and_then(as_f64)
                 .map(|n| n as u32)
-                .unwrap_or(1);
+                .unwrap_or(0); // 默认 0: 单单元符号的本体在 unit=0 (如 R_0_1)
             let body_style = child(sym, "body_style")
                 .and_then(|v| v.list_iter().into_iter().flatten().nth(1))
                 .and_then(as_f64)
@@ -467,13 +477,26 @@ fn compute_bbox(
     }
     for inst in insts {
         if let Some(unit) = libs.get(&inst.lib_id) {
-            for (_style, sub) in unit.values().flat_map(|s| s.iter()) {
+            // 复用 render 时的 lookup 逻辑: 优先 (unit, style), graphics 为空时回退 unit=0
+            let sub_opt = unit
+                .get(&inst.unit)
+                .and_then(|styles| styles.get(&inst.body_style))
+                .filter(|ss| !ss.graphics.is_empty())
+                .or_else(|| unit.get(&0).and_then(|styles| styles.get(&inst.body_style)));
+
+            if let Some(sub) = sub_opt {
                 for g in &sub.graphics {
                     bbs.push(bbox_of_graphic(g, inst.at, inst.mirror_x, inst.mirror_y));
                 }
-                for p in &sub.pins {
-                    let (gx, gy) = transform(p.at.0, p.at.1, inst.at, inst.mirror_x, inst.mirror_y);
-                    bbs.push((gx, gy, gx, gy));
+            }
+            // pins: 取 unit 的所有 style
+            if let Some(styles) = unit.get(&inst.unit).or_else(|| unit.get(&0)) {
+                for sub in styles.values() {
+                    for p in &sub.pins {
+                        let (gx, gy) =
+                            transform(p.at.0, p.at.1, inst.at, inst.mirror_x, inst.mirror_y);
+                        bbs.push((gx, gy, gx, gy));
+                    }
                 }
             }
         }
@@ -644,17 +667,20 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
         return;
     };
 
-    // 本体图形:取匹配 body_style 的
+    // 本体图形:优先 (unit, style), 找到但 graphics 为空则回退 unit=0 (单单元符号的本体所在)
     let body_graphics: Vec<&Graphic> = unit
         .get(&inst.unit)
         .and_then(|styles| styles.get(&inst.body_style))
+        .filter(|ss| !ss.graphics.is_empty())
+        .or_else(|| unit.get(&0).and_then(|styles| styles.get(&inst.body_style)))
         .map(|ss| ss.graphics.iter().collect())
         .unwrap_or_default();
 
-    // 引脚:取所有 style 并按 (number, at) 去重
+    // 引脚:取所有 style 并按 (number, at) 去重 (同样回退到 unit=0)
     let mut seen = HashSet::new();
     let pins: Vec<&Pin> = unit
         .get(&inst.unit)
+        .or_else(|| unit.get(&0))
         .map(|styles| {
             styles
                 .values()
@@ -696,9 +722,9 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
         }
         let (sx, sy) = to_svg(prop.at.0, prop.at.1, ox, oy);
         svg.push_str(&format!(
-            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="10" fill="#000">{} {}</text>"##,
-            sx, sy, prop.value, prop.key
-        ));
+                    r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="10" fill="#000">{}: {}</text>"##,
+                    sx, sy, prop.key, prop.value
+                ));
     }
 }
 
@@ -721,7 +747,7 @@ pub fn render(path: &str) -> Result<String, String> {
     let h_mm = (max_y - min_y) + 2.0 * margin;
 
     let mut svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {:.2} {:.2}" style="max-width:100%;height:auto;display:block">"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {:.2} {:.2}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;display:block">"##,
         w_mm * SCALE,
         h_mm * SCALE
     );
