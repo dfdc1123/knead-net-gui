@@ -14,6 +14,16 @@ use std::fs;
 
 const SCALE: f64 = 10.0;
 
+// KiCad 默认浅色原理图主题的核心配色。将颜色集中在这里，既避免 SVG
+// 各处逐渐出现不一致的魔法值，也方便以后支持可切换主题。
+const COLOR_BACKGROUND: &str = "#ffffff";
+const COLOR_SYMBOL: &str = "#840000";
+const COLOR_SYMBOL_FILL: &str = "#ffffc2";
+const COLOR_PIN: &str = "#840000";
+const COLOR_WIRE: &str = "#009600";
+const COLOR_REFERENCE: &str = "#008484";
+const COLOR_VALUE: &str = "#0000c2";
+
 // ─────────────────────────── 数据结构 ───────────────────────────
 
 #[derive(Debug, Clone)]
@@ -583,8 +593,9 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
                 })
                 .collect();
             svg.push_str(&format!(
-                r##"<polyline points="{}" fill="none" stroke="#000" stroke-width="{:.2}"/>"##,
+                r##"<polyline points="{}" fill="none" stroke="{}" stroke-width="{:.2}"/>"##,
                 fmt_pts(&svg_pts),
+                COLOR_SYMBOL,
                 stroke_w(*stroke)
             ));
         }
@@ -602,14 +613,15 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
             ];
             let svg_pts: Vec<(f64, f64)> = pts.iter().map(|&(x, y)| to_svg(x, y, ox, oy)).collect();
             let fill_str = if *fill == Fill::Background {
-                "#fff"
+                COLOR_SYMBOL_FILL
             } else {
                 "none"
             };
             svg.push_str(&format!(
-                r##"<polygon points="{}" fill="{}" stroke="#000" stroke-width="{:.2}"/>"##,
+                r##"<polygon points="{}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
                 fmt_pts(&svg_pts),
                 fill_str,
+                COLOR_SYMBOL,
                 stroke_w(*stroke)
             ));
         }
@@ -622,16 +634,17 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
             let (cx, cy) = transform(center.0, center.1, inst.at, inst.mirror_x, inst.mirror_y);
             let (sx, sy) = to_svg(cx, cy, ox, oy);
             let fill_str = if *fill == Fill::Background {
-                "#fff"
+                COLOR_SYMBOL_FILL
             } else {
                 "none"
             };
             svg.push_str(&format!(
-                r##"<circle cx="{:.2}" cy="{:.2}" r="{:.2}" fill="{}" stroke="#000" stroke-width="{:.2}"/>"##,
+                r##"<circle cx="{:.2}" cy="{:.2}" r="{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
                 sx,
                 sy,
                 radius * SCALE,
                 fill_str,
+                COLOR_SYMBOL,
                 stroke_w(*stroke)
             ));
         }
@@ -655,13 +668,14 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
             let (sx, sy) = to_svg(s.0, s.1, ox, oy);
             let (ex, ey) = to_svg(e.0, e.1, ox, oy);
             let fill_str = if *fill == Fill::Background {
-                "#fff"
+                COLOR_SYMBOL_FILL
             } else {
                 "none"
             };
             svg.push_str(&format!(
-                r##"<path d="M {:.2},{:.2} A {:.2},{:.2} 0 {},{} {:.2},{:.2}" fill="{}" stroke="#000" stroke-width="{:.2}"/>"##,
-                sx, sy, r * SCALE, r * SCALE, large_arc, sweep, ex, ey, fill_str, stroke_w(*stroke)
+                r##"<path d="M {:.2},{:.2} A {:.2},{:.2} 0 {},{} {:.2},{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
+                sx, sy, r * SCALE, r * SCALE, large_arc, sweep, ex, ey, fill_str,
+                COLOR_SYMBOL, stroke_w(*stroke)
             ));
         }
     }
@@ -711,12 +725,8 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
         let (sx1, sy1) = to_svg(gx1, gy1, ox, oy);
         let (sx2, sy2) = to_svg(gx2, gy2, ox, oy);
         svg.push_str(&format!(
-            r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="#000" stroke-width="1"/>"##,
-            sx1, sy1, sx2, sy2
-        ));
-        svg.push_str(&format!(
-            r##"<circle cx="{:.2}" cy="{:.2}" r="2" fill="#000"/>"##,
-            sx1, sy1
+            r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+            sx1, sy1, sx2, sy2, COLOR_PIN
         ));
     }
 
@@ -726,13 +736,25 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
             continue;
         }
         let (sx, sy) = to_svg(prop.at.0, prop.at.1, ox, oy);
-        let key = escape_xml_text(&prop.key);
         let value = escape_xml_text(&prop.value);
+        let color = if prop.key == "Reference" {
+            COLOR_REFERENCE
+        } else {
+            COLOR_VALUE
+        };
         svg.push_str(&format!(
-            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="10" fill="#000">{}: {}</text>"##,
-            sx, sy, key, value
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="10" fill="{}">{}</text>"##,
+            sx, sy, color, value
         ));
     }
+}
+
+fn render_junction(svg: &mut String, x: f64, y: f64, ox: f64, oy: f64) {
+    let (sx, sy) = to_svg(x, y, ox, oy);
+    svg.push_str(&format!(
+        r##"<circle cx="{:.2}" cy="{:.2}" r="2.5" fill="{}"/>"##,
+        sx, sy, COLOR_WIRE
+    ));
 }
 
 // ─────────────────────────── 入口 ───────────────────────────
@@ -758,7 +780,10 @@ pub fn render(path: &str) -> Result<String, String> {
         w_mm * SCALE,
         h_mm * SCALE
     );
-    svg.push_str(r##"<rect width="100%" height="100%" fill="#ffffff"/>"##);
+    svg.push_str(&format!(
+        r##"<rect width="100%" height="100%" fill="{}"/>"##,
+        COLOR_BACKGROUND
+    ));
 
     // 导线
     for pts in &wires {
@@ -766,19 +791,15 @@ pub fn render(path: &str) -> Result<String, String> {
             let (x1, y1) = to_svg(w[0].0, w[0].1, ox, oy);
             let (x2, y2) = to_svg(w[1].0, w[1].1, ox, oy);
             svg.push_str(&format!(
-                r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="#000" stroke-width="1"/>"##,
-                x1, y1, x2, y2
+                r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+                x1, y1, x2, y2, COLOR_WIRE
             ));
         }
     }
 
     // 节点
     for &(x, y) in &junctions {
-        let (sx, sy) = to_svg(x, y, ox, oy);
-        svg.push_str(&format!(
-            r##"<circle cx="{:.2}" cy="{:.2}" r="2.5" fill="#000"/>"##,
-            sx, sy
-        ));
+        render_junction(&mut svg, x, y, ox, oy);
     }
 
     // 符号实例
@@ -829,9 +850,59 @@ mod tests {
 
         assert!(!svg.contains("<script>"));
         assert!(!svg.contains(malicious));
-        assert!(svg.contains(
-            "Reference: &lt;script&gt;alert(&quot;owned&quot;)&lt;/script&gt;&amp;&apos;"
-        ));
-        assert!(svg.contains("Value: R1 &gt; R2 &amp; R3"));
+        assert!(svg.contains("&lt;script&gt;alert(&quot;owned&quot;)&lt;/script&gt;&amp;&apos;"));
+        assert!(svg.contains("R1 &gt; R2 &amp; R3"));
+        assert!(svg.contains(r##"fill="#008484">&lt;script"##));
+        assert!(svg.contains(r##"fill="#0000c2">R1"##));
+    }
+
+    #[test]
+    fn pin_connection_end_has_no_junction_dot() {
+        let inst = Inst {
+            lib_id: "Connector:Test".into(),
+            at: (0.0, 0.0, 0.0),
+            mirror_x: false,
+            mirror_y: false,
+            unit: 1,
+            body_style: 1,
+            properties: vec![],
+        };
+        let pin = Pin {
+            at: (0.0, 0.0, 0.0),
+            length: 2.54,
+            name: "IN".into(),
+            number: "1".into(),
+        };
+        let libs = HashMap::from([(
+            "Connector:Test".into(),
+            HashMap::from([(
+                1,
+                HashMap::from([(
+                    1,
+                    SubSymbol {
+                        graphics: vec![],
+                        pins: vec![pin],
+                    },
+                )]),
+            )]),
+        )]);
+        let mut svg = String::new();
+
+        render_instance(&mut svg, &inst, &libs, 0.0, 0.0);
+
+        assert!(svg.contains(r##"stroke="#840000""##));
+        assert!(!svg.contains("<circle"));
+    }
+
+    #[test]
+    fn explicit_junction_is_still_rendered_in_wire_color() {
+        let mut svg = String::new();
+
+        render_junction(&mut svg, 1.0, 2.0, 0.0, 0.0);
+
+        assert_eq!(
+            svg,
+            r##"<circle cx="10.00" cy="20.00" r="2.5" fill="#009600"/>"##
+        );
     }
 }
