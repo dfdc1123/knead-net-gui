@@ -2,9 +2,11 @@
   let {
     zoom,
     onZoom,
+    onReset,
   }: {
     zoom: number;
     onZoom: (zoom: number) => void;
+    onReset: () => void;
   } = $props();
 </script>
 
@@ -20,9 +22,9 @@
   <button
     class="btn btn-xs join-item min-w-14 px-2 font-mono font-normal"
     type="button"
-    onclick={() => onZoom(1)}
-    aria-label="重置缩放"
-    title="重置为 100%"
+    onclick={onReset}
+    aria-label="重置缩放并居中"
+    title="重置为 100% 并居中"
   >{Math.round(zoom * 100)}%</button>
   <button
     class="btn btn-xs join-item px-2"

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { centerCanvas } from "$lib/actions/centerCanvas";
+  import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import ZoomControls from "./ZoomControls.svelte";
   import type {
@@ -28,6 +28,7 @@
   let completedPartIds = $state<string[]>([]);
   let completedWireIds = $state<string[]>([]);
   let schematicHost = $state<HTMLDivElement>();
+  let breadboardHost = $state<HTMLDivElement>();
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
@@ -84,6 +85,15 @@
     const after = diagram.getBoundingClientRect();
     viewport.scrollLeft += after.left + focusX * after.width - event.clientX;
     viewport.scrollTop += after.top + focusY * after.height - event.clientY;
+  }
+
+  async function resetDiagram(target: "schematic" | "breadboard") {
+    if (target === "schematic") schematicZoom = 1;
+    else breadboardZoom = 1;
+    await tick();
+
+    const viewport = target === "schematic" ? schematicHost : breadboardHost;
+    if (viewport) centerCanvasNow(viewport);
   }
 
   function startPan(event: PointerEvent) {
@@ -258,7 +268,11 @@
             <h2 class="card-title text-base">原理图</h2>
             <div class="flex items-center gap-2">
               <span class="badge badge-ghost badge-sm">SCH</span>
-              <ZoomControls zoom={schematicZoom} onZoom={(zoom) => (schematicZoom = clampZoom(zoom))} />
+              <ZoomControls
+                zoom={schematicZoom}
+                onZoom={(zoom) => (schematicZoom = clampZoom(zoom))}
+                onReset={() => resetDiagram("schematic")}
+              />
             </div>
           </div>
           {#if schematicSvg}
@@ -309,11 +323,16 @@
             <div class="flex items-center gap-3 text-xs">
               <span class="flex items-center gap-1.5"><span class="status status-success"></span>已完成（实线）</span>
               <span class="flex items-center gap-1.5 text-base-content/60"><span class="status status-neutral"></span>待连接（虚线）</span>
-              <ZoomControls zoom={breadboardZoom} onZoom={(zoom) => (breadboardZoom = clampZoom(zoom))} />
+              <ZoomControls
+                zoom={breadboardZoom}
+                onZoom={(zoom) => (breadboardZoom = clampZoom(zoom))}
+                onReset={() => resetDiagram("breadboard")}
+              />
             </div>
           </div>
           <div
             class="diagram-viewport min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
+            bind:this={breadboardHost}
             use:centerCanvas
             onwheel={(event) => handleZoomWheel(event, "breadboard")}
             onpointerdown={startPan}
