@@ -25,6 +25,8 @@ const COLOR_PIN: &str = "#840000";
 const COLOR_WIRE: &str = "#009600";
 const COLOR_REFERENCE: &str = "#008484";
 const COLOR_VALUE: &str = "#0000c2";
+const COMPONENT_HIT_PADDING: f64 = 6.0;
+const COMPONENT_HIT_MIN_SIZE: f64 = 24.0;
 
 // ─────────────────────────── 数据结构 ───────────────────────────
 
@@ -843,6 +845,65 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
         })
         .unwrap_or_default();
 
+    // SVG 分组本身没有可点击面积。先绘制覆盖本体和完整引脚范围的透明矩形，
+    // 让电阻内部、三极管线条之间等空白区域也能选中元器件。
+    if property_value(inst, "Reference").is_some() {
+        let mut bounds: Option<(f64, f64, f64, f64)> = None;
+        let mut include_bounds = |(min_x, min_y, max_x, max_y)| {
+            bounds = Some(match bounds {
+                Some((left, top, right, bottom)) => (
+                    left.min(min_x),
+                    top.min(min_y),
+                    right.max(max_x),
+                    bottom.max(max_y),
+                ),
+                None => (min_x, min_y, max_x, max_y),
+            });
+        };
+
+        for graphic in &body_graphics {
+            include_bounds(bbox_of_graphic(
+                graphic,
+                inst.at,
+                inst.mirror_x,
+                inst.mirror_y,
+            ));
+        }
+        for pin in &pins {
+            let rad = pin.at.2 * std::f64::consts::PI / 180.0;
+            let tip = (
+                pin.at.0 + pin.length * rad.cos(),
+                pin.at.1 + pin.length * rad.sin(),
+            );
+            let start = transform(pin.at.0, pin.at.1, inst.at, inst.mirror_x, inst.mirror_y);
+            let end = transform(tip.0, tip.1, inst.at, inst.mirror_x, inst.mirror_y);
+            include_bounds((
+                start.0.min(end.0),
+                start.1.min(end.1),
+                start.0.max(end.0),
+                start.1.max(end.1),
+            ));
+        }
+
+        if let Some((min_x, min_y, max_x, max_y)) = bounds {
+            let (left, top) = to_svg(min_x, min_y, ox, oy);
+            let (right, bottom) = to_svg(max_x, max_y, ox, oy);
+            let center_x = (left + right) / 2.0;
+            let center_y = (top + bottom) / 2.0;
+            let width = (right - left).abs() + COMPONENT_HIT_PADDING * 2.0;
+            let height = (bottom - top).abs() + COMPONENT_HIT_PADDING * 2.0;
+            let width = width.max(COMPONENT_HIT_MIN_SIZE);
+            let height = height.max(COMPONENT_HIT_MIN_SIZE);
+            svg.push_str(&format!(
+                r##"<rect class="sch-component-hit" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="transparent" pointer-events="all"/>"##,
+                center_x - width / 2.0,
+                center_y - height / 2.0,
+                width,
+                height
+            ));
+        }
+    }
+
     for g in &body_graphics {
         render_graphic(svg, g, inst, ox, oy);
     }
@@ -1048,6 +1109,56 @@ mod tests {
 
         assert!(svg.contains(r##"stroke="#840000""##));
         assert!(!svg.contains("<circle"));
+    }
+
+    #[test]
+    fn referenced_component_has_transparent_hit_area_before_visible_graphics() {
+        let inst = Inst {
+            lib_id: "Device:R".into(),
+            at: (0.0, 0.0, 0.0),
+            mirror_x: false,
+            mirror_y: false,
+            unit: 1,
+            body_style: 1,
+            properties: vec![Property {
+                key: "Reference".into(),
+                value: "R1".into(),
+                at: (0.0, 0.0, 0.0),
+                hide: false,
+            }],
+        };
+        let libs = HashMap::from([(
+            "Device:R".into(),
+            HashMap::from([(
+                1,
+                HashMap::from([(
+                    1,
+                    SubSymbol {
+                        graphics: vec![Graphic::Rectangle {
+                            start: (-1.0, -1.0),
+                            end: (1.0, 1.0),
+                            stroke: 0.0,
+                            fill: Fill::None,
+                        }],
+                        pins: vec![Pin {
+                            at: (-2.0, 0.0, 0.0),
+                            length: 1.0,
+                            name: "1".into(),
+                            number: "1".into(),
+                        }],
+                    },
+                )]),
+            )]),
+        )]);
+        let mut svg = String::new();
+
+        render_instance(&mut svg, &inst, &libs, 0.0, 0.0);
+
+        let hit_area = svg.find(r#"class="sch-component-hit""#).unwrap();
+        let visible_graphic = svg.find("<polygon").unwrap();
+        assert!(hit_area < visible_graphic);
+        assert!(svg.contains(r#"fill="transparent" pointer-events="all""#));
+        assert!(svg.contains(r#"width="42.00" height="32.00""#));
     }
 
     #[test]

@@ -18,5 +18,6 @@ fn render_lm741_sch_contains_step4_selection_metadata() {
     .expect("render with PCB metadata failed");
 
     assert!(svg.contains(r#"class="sch-component" data-component="#));
+    assert!(svg.contains(r#"class="sch-component-hit""#));
     assert!(svg.contains(r#"class="sch-net-line" data-net="#));
 }
