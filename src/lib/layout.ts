@@ -30,7 +30,8 @@ export type LayoutPart = {
   id: string;
   reference: string;
   value?: string;
-  kind?: "generic" | "ic" | "axial";
+  package?: "generic" | "dip" | "axial";
+  device?: "generic" | "diode" | "led";
   pins: LayoutPin[];
   color?: string;
 };

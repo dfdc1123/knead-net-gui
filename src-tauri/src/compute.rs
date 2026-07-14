@@ -81,7 +81,8 @@ struct LayoutPart {
     reference: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
-    kind: &'static str,
+    package: &'static str,
+    device: &'static str,
     pins: Vec<LayoutPin>,
 }
 
@@ -401,6 +402,8 @@ fn snapshot_frame(
         let Ok(placed) = placement.apply(component, footprint, board, circuit.pins()) else {
             continue;
         };
+        let package = classify_package(component.kind(), footprint.name(), component.pins().len());
+        let device = classify_device(component.kind());
         let pins: Vec<_> = placed
             .pin_holes
             .into_iter()
@@ -411,7 +414,7 @@ fn snapshot_frame(
                 LayoutPin {
                     hole,
                     number: pin.num().to_string(),
-                    name: pin.pinfunction().map(str::to_string),
+                    name: display_pin_name(pin.pinfunction(), pin.num()),
                     net_id: pin
                         .net()
                         .map(|net| circuit.nets()[net.raw()].name().to_string()),
@@ -421,18 +424,12 @@ fn snapshot_frame(
                 }
             })
             .collect();
-        let kind = if pins.len() == 2 {
-            "axial"
-        } else if pins.len() >= 6 {
-            "ic"
-        } else {
-            "generic"
-        };
         parts.push(LayoutPart {
             id: format!("component-{index}"),
             reference: component.ref_().to_string(),
             value: component.value().map(str::to_string),
-            kind,
+            package,
+            device,
             pins,
         });
     }
@@ -460,6 +457,132 @@ fn snapshot_frame(
         wires,
         iteration,
         cost,
+    }
+}
+
+fn classify_package(component_kind: &str, footprint_name: &str, pin_count: usize) -> &'static str {
+    let kind = component_kind.to_ascii_lowercase();
+    let footprint = footprint_name.to_ascii_lowercase();
+    if kind.contains("package_dip") || footprint.starts_with("dip-") {
+        "dip"
+    } else if pin_count == 2 {
+        "axial"
+    } else {
+        "generic"
+    }
+}
+
+fn classify_device(component_kind: &str) -> &'static str {
+    let kind = component_kind.to_ascii_lowercase();
+    if kind.contains("led") {
+        "led"
+    } else if kind.contains("diode") {
+        "diode"
+    } else {
+        "generic"
+    }
+}
+
+/// KiCad 10 may suffix pin functions with their pad number (for example
+/// `C_1`, `K_1`, or `V-_4`). That suffix helps KiCad disambiguate pins but is
+/// noise in the assembly view, where the number is already rendered separately.
+fn display_pin_name(pinfunction: Option<&str>, pin_number: &str) -> Option<String> {
+    pinfunction.and_then(|name| {
+        let name = name.trim();
+        let suffix = format!("_{pin_number}");
+        let name = name.strip_suffix(&suffix).unwrap_or(name).trim();
+        (!name.is_empty() && name != "~").then(|| name.to_string())
+    })
+}
+
+#[cfg(test)]
+mod layout_metadata_tests {
+    use super::{classify_device, classify_package, display_pin_name, parse_pcb};
+
+    #[test]
+    fn classifies_only_the_kicad_metadata_needed_for_physical_markers() {
+        assert_eq!(classify_package("Diode_THT", "D_DO-41", 2), "axial");
+        assert_eq!(classify_device("Diode_THT"), "diode");
+        assert_eq!(classify_package("Package_DIP", "DIP-8_W7.62mm", 8), "dip");
+        assert_eq!(classify_device("Package_DIP"), "generic");
+        assert_eq!(classify_device("Package_TO_SOT_THT"), "generic");
+    }
+
+    #[test]
+    fn cleans_kicad_pin_function_suffixes_without_inventing_missing_names() {
+        assert_eq!(display_pin_name(Some("C_1"), "1"), Some("C".into()));
+        assert_eq!(display_pin_name(Some("V-_4"), "4"), Some("V-".into()));
+        assert_eq!(display_pin_name(Some("-_2"), "2"), Some("-".into()));
+        assert_eq!(display_pin_name(None, "1"), None);
+    }
+
+    #[test]
+    fn example_files_expose_the_pin_definitions_used_by_the_assembly_view() {
+        let h_bridge = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/inputs/h-bridge.kicad_pcb"
+        ))
+        .unwrap();
+        let circuit = parse_pcb(&h_bridge).unwrap();
+
+        let diode = circuit
+            .components()
+            .iter()
+            .find(|component| component.ref_() == "D1")
+            .unwrap();
+        let diode_footprint = &circuit.footprints()[diode.footprint().unwrap().raw()];
+        let diode_package =
+            classify_package(diode.kind(), diode_footprint.name(), diode.pins().len());
+        let diode_device = classify_device(diode.kind());
+        let diode_pins: Vec<_> = diode
+            .pins()
+            .iter()
+            .map(|pin_id| {
+                let pin = &circuit.pins()[pin_id.raw()];
+                (pin.num(), display_pin_name(pin.pinfunction(), pin.num()))
+            })
+            .collect();
+        assert_eq!(diode_package, "axial");
+        assert_eq!(diode_device, "diode");
+        assert!(diode_pins.contains(&("1", Some("K".into()))));
+        assert!(diode_pins.contains(&("2", Some("A".into()))));
+
+        let transistor = circuit
+            .components()
+            .iter()
+            .find(|component| component.ref_() == "Q1")
+            .unwrap();
+        let transistor_names: Vec<_> = transistor
+            .pins()
+            .iter()
+            .filter_map(|pin_id| {
+                let pin = &circuit.pins()[pin_id.raw()];
+                display_pin_name(pin.pinfunction(), pin.num())
+            })
+            .collect();
+        assert_eq!(transistor_names, ["C", "B", "E"]);
+
+        let lm741 = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/inputs/lm741.kicad_pcb"
+        ))
+        .unwrap();
+        let circuit = parse_pcb(&lm741).unwrap();
+        let op_amp = circuit
+            .components()
+            .iter()
+            .find(|component| component.ref_() == "U1")
+            .unwrap();
+        let footprint = &circuit.footprints()[op_amp.footprint().unwrap().raw()];
+        assert_eq!(
+            classify_package(op_amp.kind(), footprint.name(), op_amp.pins().len()),
+            "dip"
+        );
+        assert!(op_amp.pins().iter().any(|pin_id| {
+            let pin = &circuit.pins()[pin_id.raw()];
+            pin.num() == "1"
+                && display_pin_name(pin.pinfunction(), pin.num()) == Some("NULL".into())
+        }));
     }
 }
 

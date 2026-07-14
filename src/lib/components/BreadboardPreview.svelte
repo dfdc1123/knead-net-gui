@@ -5,6 +5,7 @@
     CircuitSelection,
     LayoutFrame,
     LayoutPart,
+    LayoutPin,
     LayoutWire,
   } from "$lib/layout";
 
@@ -241,6 +242,293 @@
       cx: (minX + maxX) / 2,
       cy: (minY + maxY) / 2,
     };
+  }
+
+  function pinByNumber(part: LayoutPart, number: string) {
+    return part.pins.find((pin) => pin.number === number);
+  }
+
+  function normalizedPinName(pin: LayoutPin) {
+    return pin.name?.trim().toUpperCase();
+  }
+
+  function pinLabelText(pin: LayoutPin) {
+    const name = pin.name?.trim();
+    return `${pin.number || "?"}${name ? ` · ${name}` : ""}`;
+  }
+
+  function axialGeometry(part: LayoutPart) {
+    if (part.pins.length < 2) return null;
+    const first = holePosition(part.pins[0].hole);
+    const last = holePosition(part.pins[part.pins.length - 1].hole);
+    const dx = last.x - first.x;
+    const dy = last.y - first.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < 0.01) return null;
+    return {
+      first,
+      last,
+      cx: (first.x + last.x) / 2,
+      cy: (first.y + last.y) / 2,
+      angle: Math.atan2(dy, dx) * 180 / Math.PI,
+      bodyWidth: Math.min(28, Math.max(14, distance / 2)),
+      normalX: -dy / distance,
+      normalY: dx / distance,
+    };
+  }
+
+  function cathodeBandX(part: LayoutPart, bodyWidth: number) {
+    const cathodeIndex = part.pins.findIndex((pin) => normalizedPinName(pin) === "K");
+    if (cathodeIndex < 0) return null;
+    return (cathodeIndex === 0 ? -1 : 1) * bodyWidth * 0.3;
+  }
+
+  function polarityLabelPoint(part: LayoutPart, pin: LayoutPin) {
+    const geometry = axialGeometry(part);
+    const point = holePosition(pin.hole);
+    if (!geometry) return point;
+    return {
+      x: point.x + geometry.normalX * 7,
+      y: point.y + geometry.normalY * 7,
+    };
+  }
+
+  function pinOneDot(part: LayoutPart) {
+    const pin = pinByNumber(part, "1");
+    if (!pin) return null;
+    const point = holePosition(pin.hole);
+    const bounds = partBounds(part);
+    const dx = bounds.cx - point.x;
+    const dy = bounds.cy - point.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < 0.01) return point;
+    return {
+      x: point.x + dx / distance * 5,
+      y: point.y + dy / distance * 5,
+    };
+  }
+
+  function dipNotch(part: LayoutPart) {
+    const pin1 = pinByNumber(part, "1");
+    if (!pin1) return null;
+    const numericPins = part.pins
+      .map((pin) => ({ pin, number: Number.parseInt(pin.number ?? "", 10) }))
+      .filter(({ number }) => Number.isFinite(number));
+    const lastPin = numericPins.length > 0
+      ? numericPins.reduce(
+          (last, candidate) => candidate.number > last.number ? candidate : last,
+          numericPins[0],
+        ).pin
+      : pin1;
+    const firstPoint = holePosition(pin1.hole);
+    const lastPoint = holePosition(lastPin.hole);
+    const target = {
+      x: (firstPoint.x + lastPoint.x) / 2,
+      y: (firstPoint.y + lastPoint.y) / 2,
+    };
+    const bounds = partBounds(part);
+    const dx = target.x - bounds.cx;
+    const dy = target.y - bounds.cy;
+
+    if (Math.abs(dx) > Math.abs(dy)) {
+      return {
+        side: dx < 0 ? "left" as const : "right" as const,
+        center: target.y,
+      };
+    }
+
+    return {
+      side: dy < 0 ? "top" as const : "bottom" as const,
+      center: target.x,
+    };
+  }
+
+  function dipBodyPath(part: LayoutPart) {
+    const bounds = partBounds(part);
+    const left = bounds.x;
+    const right = bounds.x + bounds.width;
+    const top = bounds.y;
+    const bottom = bounds.y + bounds.height;
+    const corner = 2;
+    const notchRadius = 3.4;
+    const notch = dipNotch(part);
+    const horizontalCenter = Math.max(
+      left + corner + notchRadius,
+      Math.min(right - corner - notchRadius, notch?.center ?? bounds.cx),
+    );
+    const verticalCenter = Math.max(
+      top + corner + notchRadius,
+      Math.min(bottom - corner - notchRadius, notch?.center ?? bounds.cy),
+    );
+
+    const topEdge = notch?.side === "top"
+      ? `H ${horizontalCenter - notchRadius} A ${notchRadius} ${notchRadius} 0 0 0 ${horizontalCenter + notchRadius} ${top}`
+      : "";
+    const rightEdge = notch?.side === "right"
+      ? `V ${verticalCenter - notchRadius} A ${notchRadius} ${notchRadius} 0 0 0 ${right} ${verticalCenter + notchRadius}`
+      : "";
+    const bottomEdge = notch?.side === "bottom"
+      ? `H ${horizontalCenter + notchRadius} A ${notchRadius} ${notchRadius} 0 0 0 ${horizontalCenter - notchRadius} ${bottom}`
+      : "";
+    const leftEdge = notch?.side === "left"
+      ? `V ${verticalCenter + notchRadius} A ${notchRadius} ${notchRadius} 0 0 0 ${left} ${verticalCenter - notchRadius}`
+      : "";
+
+    return [
+      `M ${left + corner} ${top}`,
+      topEdge,
+      `H ${right - corner} Q ${right} ${top} ${right} ${top + corner}`,
+      rightEdge,
+      `V ${bottom - corner} Q ${right} ${bottom} ${right - corner} ${bottom}`,
+      bottomEdge,
+      `H ${left + corner} Q ${left} ${bottom} ${left} ${bottom - corner}`,
+      leftEdge,
+      `V ${top + corner} Q ${left} ${top} ${left + corner} ${top}`,
+      "Z",
+    ].join(" ");
+  }
+
+  function selectedPinLabel(part: LayoutPart, pin: LayoutPin) {
+    const point = holePosition(pin.hole);
+    const bounds = partBounds(part);
+    const points = part.pins.map((candidate) => holePosition(candidate.hole));
+    const spanX = Math.max(...points.map(({ x }) => x)) - Math.min(...points.map(({ x }) => x));
+    const spanY = Math.max(...points.map(({ y }) => y)) - Math.min(...points.map(({ y }) => y));
+    const text = pinLabelText(pin);
+    const width = Math.min(72, Math.max(14, text.length * 3.6 + 7));
+    const height = 10;
+    let x = point.x;
+    let y = point.y;
+
+    if (spanY < 0.1) {
+      const ordered = part.pins
+        .map((candidate, index) => ({ index, point: holePosition(candidate.hole) }))
+        .sort((left, right) => left.point.x - right.point.x);
+      const order = ordered.findIndex(({ index }) => part.pins[index] === pin);
+      if (order === 0) {
+        x -= width / 2 + 8;
+      } else if (order === ordered.length - 1) {
+        x += width / 2 + 8;
+      } else {
+        const direction = bounds.cy <= boardHeight / 2 ? -1 : 1;
+        y += direction * (13 + (order - 1) * 11);
+      }
+    } else if (spanX < 0.1) {
+      const ordered = part.pins
+        .map((candidate, index) => ({ index, point: holePosition(candidate.hole) }))
+        .sort((left, right) => left.point.y - right.point.y);
+      const order = ordered.findIndex(({ index }) => part.pins[index] === pin);
+      if (order === 0) {
+        y -= 13;
+      } else if (order === ordered.length - 1) {
+        y += 13;
+      } else {
+        const direction = bounds.cx <= boardWidth / 2 ? -1 : 1;
+        x += direction * (width / 2 + 8 + (order - 1) * 8);
+      }
+    } else {
+      const dx = point.x - bounds.cx;
+      const dy = point.y - bounds.cy;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        x += (dx < 0 ? -1 : 1) * (width / 2 + 8);
+      } else {
+        y += (dy < 0 ? -1 : 1) * 13;
+      }
+    }
+
+    x = Math.max(width / 2 + 2, Math.min(boardWidth - width / 2 - 2, x));
+    y = Math.max(height / 2 + 2, Math.min(boardHeight - height / 2 - 2, y));
+    return { point, text, width, height, x, y };
+  }
+
+  type PinCallout = ReturnType<typeof selectedPinLabel> & {
+    pin: LayoutPin;
+    baseX: number;
+    baseY: number;
+    lane: number;
+    stepX: number;
+    stepY: number;
+  };
+
+  function calloutsOverlap(
+    left: Pick<PinCallout, "x" | "y" | "width" | "height">,
+    right: Pick<PinCallout, "x" | "y" | "width" | "height">,
+    gap = 0,
+  ) {
+    return (
+      Math.abs(left.x - right.x) < (left.width + right.width) / 2 + gap &&
+      Math.abs(left.y - right.y) < (left.height + right.height) / 2 + gap
+    );
+  }
+
+  function calloutStep(label: ReturnType<typeof selectedPinLabel>) {
+    const dx = label.x - label.point.x;
+    const dy = label.y - label.point.y;
+    if (Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) > 0.1) {
+      return { x: Math.sign(dx) * pitch, y: 0 };
+    }
+    return { x: 0, y: (Math.sign(dy) || -1) * pitch };
+  }
+
+  function moveCalloutToLane(callout: PinCallout, lane: number) {
+    callout.lane = lane;
+    callout.x = Math.max(
+      callout.width / 2 + 2,
+      Math.min(boardWidth - callout.width / 2 - 2, callout.baseX + callout.stepX * lane),
+    );
+    callout.y = Math.max(
+      callout.height / 2 + 2,
+      Math.min(boardHeight - callout.height / 2 - 2, callout.baseY + callout.stepY * lane),
+    );
+  }
+
+  function planSelectedPinLabels(part: LayoutPart) {
+    const planned: PinCallout[] = [];
+
+    for (const pin of part.pins) {
+      const base = selectedPinLabel(part, pin);
+      const step = calloutStep(base);
+      const callout: PinCallout = {
+        ...base,
+        pin,
+        baseX: base.x,
+        baseY: base.y,
+        lane: 0,
+        stepX: step.x,
+        stepY: step.y,
+      };
+
+      // 先在初始位置上做冲突图着色。一个小的安全间距也算冲突，
+      // 这样相邻 DIP 引脚即使只剩很窄的缝，也会落到交错的通道中。
+      const conflictingLanes = new Set(
+        planned
+          .filter((other) => calloutsOverlap(
+            callout,
+            { ...other, x: other.baseX, y: other.baseY },
+            3,
+          ))
+          .map((other) => other.lane),
+      );
+      let lane = 0;
+      while (conflictingLanes.has(lane)) lane += 1;
+      moveCalloutToLane(callout, lane);
+
+      // 文本宽度不同可能让交错后的框仍然相交；继续沿注释线方向
+      // 每次外扩一个面包板孔距，直到获得实际间隙。
+      let attempts = 0;
+      while (planned.some((other) => calloutsOverlap(callout, other, 1)) && attempts < 8) {
+        lane += 1;
+        moveCalloutToLane(callout, lane);
+        attempts += 1;
+      }
+      planned.push(callout);
+    }
+
+    return planned;
+  }
+
+  function hasDarkBody(part: LayoutPart) {
+    return part.package === "dip" || part.device === "diode";
   }
 
   type LabelRect = { x: number; y: number; width: number; height: number };
@@ -486,19 +774,43 @@
               if (event.key === "Enter" || event.key === " ") selectComponent(event, part.reference);
             }}
           >
-          {#if part.kind === "axial" && part.pins.length >= 2}
-            {@const first = holePosition(part.pins[0].hole)}
-            {@const last = holePosition(part.pins[part.pins.length - 1].hole)}
-            <line x1={first.x} y1={first.y} x2={last.x} y2={last.y} stroke="var(--color-neutral)" stroke-width="1.4" />
-            <rect
-              x={bounds.cx - Math.min(14, Math.max(7, bounds.width / 4))}
-              y={bounds.cy - 4.5}
-              width={Math.min(28, Math.max(14, bounds.width / 2))}
-              height="9"
-              rx="3"
-              fill="var(--color-warning)"
-              stroke="var(--color-neutral)"
-              stroke-width="1"
+          {#if part.package === "axial" && part.pins.length >= 2}
+            {@const axial = axialGeometry(part)}
+            {#if axial}
+              <line x1={axial.first.x} y1={axial.first.y} x2={axial.last.x} y2={axial.last.y} stroke="var(--color-neutral)" stroke-width="1.4" />
+              <g transform="translate({axial.cx} {axial.cy}) rotate({axial.angle})">
+                <rect
+                  x={-axial.bodyWidth / 2}
+                  y="-4.5"
+                  width={axial.bodyWidth}
+                  height="9"
+                  rx={part.device === "diode" ? 2 : 3}
+                  fill={part.device === "diode" ? "var(--color-neutral)" : "var(--color-warning)"}
+                  stroke="var(--color-neutral)"
+                  stroke-width="1"
+                />
+                {#if part.device === "diode"}
+                  {@const bandX = cathodeBandX(part, axial.bodyWidth)}
+                  {#if bandX !== null}
+                    <rect
+                      x={bandX - 1.2}
+                      y="-4.1"
+                      width="2.4"
+                      height="8.2"
+                      rx="0.6"
+                      fill="var(--color-neutral-content)"
+                    />
+                  {/if}
+                {/if}
+              </g>
+            {/if}
+          {:else if part.package === "dip"}
+            <path
+              d={dipBodyPath(part)}
+              fill="var(--color-neutral)"
+              stroke="var(--color-base-content)"
+              stroke-width="1.2"
+              stroke-linejoin="round"
             />
           {:else}
             <rect
@@ -506,26 +818,67 @@
               y={bounds.y}
               width={bounds.width}
               height={bounds.height}
-              rx={part.kind === "ic" ? 2 : 4}
-              fill={part.kind === "ic" ? "var(--color-neutral)" : "var(--color-base-200)"}
-              stroke={part.kind === "ic" ? "var(--color-base-content)" : "var(--color-neutral)"}
+              rx="4"
+              fill="var(--color-base-200)"
+              stroke="var(--color-neutral)"
               stroke-width="1.2"
             />
           {/if}
 
           {#each part.pins as pin}
             {@const point = holePosition(pin.hole)}
-            <circle
-              cx={point.x}
-              cy={point.y}
-              r={selected?.type === "net" && selected.id === pin.net_id ? 4 : 2.4}
-              fill={selected?.type === "net" && selected.id === pin.net_id ? "var(--color-warning)" : "var(--color-base-100)"}
-              stroke="var(--color-neutral)"
-              stroke-width="0.8"
-            >
-              <title>{part.reference} pin {pin.number ?? "?"}{pin.name ? ` · ${pin.name}` : ""}</title>
-            </circle>
+            <g>
+              {#if pin.number === "1" && part.pins.length > 2}
+                <rect
+                  x={point.x - 2.1}
+                  y={point.y - 2.1}
+                  width="4.2"
+                  height="4.2"
+                  rx="0.55"
+                  fill={selected?.type === "net" && selected.id === pin.net_id ? "var(--color-warning)" : "var(--color-base-100)"}
+                  stroke="var(--color-warning-content)"
+                  stroke-width="0.8"
+                />
+              {:else}
+                <circle
+                  cx={point.x}
+                  cy={point.y}
+                  r={selected?.type === "net" && selected.id === pin.net_id ? 4 : 2.4}
+                  fill={selected?.type === "net" && selected.id === pin.net_id ? "var(--color-warning)" : "var(--color-base-100)"}
+                  stroke="var(--color-neutral)"
+                  stroke-width="0.8"
+                />
+              {/if}
+              <title>{part.reference} pin {pinLabelText(pin)}</title>
+            </g>
           {/each}
+
+          {#if part.package === "dip"}
+            {@const dot = pinOneDot(part)}
+            {#if dot}
+              <circle cx={dot.x} cy={dot.y} r="1.7" fill="var(--color-warning)" stroke="var(--color-neutral-content)" stroke-width="0.7" />
+            {/if}
+          {/if}
+
+          {#if part.device === "diode" || part.device === "led"}
+            {#each part.pins.filter((pin) => ["A", "K"].includes(normalizedPinName(pin) ?? "")) as pin}
+              {@const point = polarityLabelPoint(part, pin)}
+              <text
+                x={point.x}
+                y={point.y}
+                text-anchor="middle"
+                dominant-baseline="central"
+                font-family="ui-sans-serif, system-ui, sans-serif"
+                font-size="6.5"
+                font-weight="800"
+                fill="var(--color-base-content)"
+                stroke="var(--color-base-100)"
+                stroke-width="2.4"
+                paint-order="stroke"
+                pointer-events="none"
+              >{normalizedPinName(pin)}</text>
+            {/each}
+          {/if}
           <text
             x={label.x}
             y={label.y}
@@ -534,13 +887,50 @@
             font-family="ui-sans-serif, system-ui, sans-serif"
             font-size="6.5"
             font-weight="700"
-            fill={part.kind === "ic" ? "var(--color-neutral-content)" : "var(--color-base-content)"}
-            stroke={part.kind === "ic" ? "var(--color-neutral)" : "var(--color-base-100)"}
+            fill={hasDarkBody(part) ? "var(--color-neutral-content)" : "var(--color-base-content)"}
+            stroke={hasDarkBody(part) ? "var(--color-neutral)" : "var(--color-base-100)"}
             stroke-width="2.4"
             stroke-linejoin="round"
             paint-order="stroke"
             pointer-events="none"
           >{part.reference}</text>
+
+          {#if selected?.type === "component" && selected.id === part.reference}
+            <g aria-label="{part.reference} 引脚定义" pointer-events="none">
+              {#each planSelectedPinLabels(part) as pinLabel}
+                <line
+                  x1={pinLabel.point.x}
+                  y1={pinLabel.point.y}
+                  x2={pinLabel.x}
+                  y2={pinLabel.y}
+                  stroke="var(--color-warning-content)"
+                  stroke-width="0.9"
+                  stroke-dasharray="2 1.5"
+                  opacity="0.85"
+                />
+                <rect
+                  x={pinLabel.x - pinLabel.width / 2}
+                  y={pinLabel.y - pinLabel.height / 2}
+                  width={pinLabel.width}
+                  height={pinLabel.height}
+                  rx="2.5"
+                  fill="var(--color-base-100)"
+                  stroke="var(--color-warning-content)"
+                  stroke-width="0.9"
+                />
+                <text
+                  x={pinLabel.x}
+                  y={pinLabel.y}
+                  text-anchor="middle"
+                  dominant-baseline="central"
+                  font-family="ui-sans-serif, system-ui, sans-serif"
+                  font-size="5.8"
+                  font-weight="700"
+                  fill="var(--color-base-content)"
+                >{pinLabel.text}</text>
+              {/each}
+            </g>
+          {/if}
           <title>{part.reference}{part.value ? ` · ${part.value}` : ""}</title>
           </g>
         {/each}

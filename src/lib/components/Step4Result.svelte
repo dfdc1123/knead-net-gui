@@ -98,6 +98,11 @@
   }
 
   let allWires = $derived(frame.wires ?? []);
+  let selectedPart = $derived(
+    selected?.type === "component"
+      ? frame.parts.find((part) => part.reference === selected?.id)
+      : undefined,
+  );
   let parts = $derived([...frame.parts].sort(compareParts));
   let wires = $derived(allWires.filter((wire) => wire.kind !== "air").sort(compareWires));
   let assemblyParts = $derived([
@@ -233,10 +238,17 @@
     return `${position}${polarity}${column}`;
   }
 
-  function partKindLabel(part: LayoutPart) {
-    if (part.kind === "ic") return "IC";
-    if (part.kind === "axial") return "轴向";
-    return "元件";
+  function partPlacementSummary(part: LayoutPart) {
+    const namedPin = (name: string) => part.pins.find((pin) => pin.name?.trim().toUpperCase() === name);
+    if (part.device === "diode" || part.device === "led") {
+      const cathode = namedPin("K");
+      const anode = namedPin("A");
+      if (cathode && anode) {
+        return `${cathode.name}(${cathode.number}) ${holeLabel(cathode.hole)} · ${anode.name}(${anode.number}) ${holeLabel(anode.hole)}`;
+      }
+    }
+    const pinOne = part.pins.find((pin) => pin.number === "1");
+    return pinOne ? `1 脚 ${holeLabel(pinOne.hole)}` : "未提供 1 脚位置";
   }
 
   function selectionFromElement(element: Element | null): CircuitSelection | null {
@@ -332,6 +344,9 @@
           {selected.type === "component" ? "元件" : selected.type === "wire" ? "跳线" : "网络"}
         </span>
         <strong class="ml-1 font-mono">{selected.label}</strong>
+        {#if selectedPart}
+          <span class="ml-2 text-xs opacity-70">已展开 {selectedPart.pins.length} 个引脚定义</span>
+        {/if}
       </span>
     {:else}
       <span>点击原理图、面包板或清单中的条目，可同步查看对应关系</span>
@@ -487,8 +502,7 @@
                         <span class="badge badge-outline badge-sm row-span-2 font-mono">{part.reference}</span>
                         <span class="truncate text-sm font-medium {completed ? 'line-through opacity-60' : ''}">{part.value || "未标注值"}</span>
                         <span class="truncate text-xs text-base-content/55">
-                          {partKindLabel(part)} · {part.pins.length} 个引脚
-                          {#if part.pins[0]} · {holeLabel(part.pins[0].hole)}{/if}
+                          {part.pins.length} 个引脚 · {partPlacementSummary(part)}
                         </span>
                       </div>
                     </li>
