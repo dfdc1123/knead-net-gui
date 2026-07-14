@@ -125,7 +125,12 @@
   }
 </script>
 
-<div class="flex min-w-full justify-center p-3" role="presentation" onclick={() => onSelect(null)}>
+<div
+  class="flex min-h-full min-w-full justify-center bg-base-200 p-3 text-base-content"
+  data-theme="corporate"
+  role="presentation"
+  onclick={() => onSelect(null)}
+>
   <svg
     width={displayWidth}
     height={displayHeight}
