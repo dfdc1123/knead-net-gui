@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import ZoomControls from "./ZoomControls.svelte";
   import type {
@@ -50,12 +51,28 @@
     return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
   }
 
-  function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
-    if (!event.ctrlKey && !event.metaKey) return;
+  async function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
     event.preventDefault();
-    const step = event.deltaY < 0 ? 0.1 : -0.1;
-    if (target === "schematic") schematicZoom = clampZoom(schematicZoom + step);
-    else breadboardZoom = clampZoom(breadboardZoom + step);
+    const viewport = event.currentTarget as HTMLDivElement;
+    const diagram = viewport.querySelector("svg");
+    if (!diagram) return;
+
+    const currentZoom = target === "schematic" ? schematicZoom : breadboardZoom;
+    const nextZoom = clampZoom(currentZoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
+    if (nextZoom === currentZoom) return;
+
+    // 记录鼠标在图中的相对位置，更新尺寸后把同一点移回鼠标下方。
+    const before = diagram.getBoundingClientRect();
+    const focusX = (event.clientX - before.left) / before.width;
+    const focusY = (event.clientY - before.top) / before.height;
+
+    if (target === "schematic") schematicZoom = nextZoom;
+    else breadboardZoom = nextZoom;
+    await tick();
+
+    const after = diagram.getBoundingClientRect();
+    viewport.scrollLeft += after.left + focusX * after.width - event.clientX;
+    viewport.scrollTop += after.top + focusY * after.height - event.clientY;
   }
 
   function choosePart(part: LayoutPart) {
@@ -208,6 +225,7 @@
               bind:this={schematicHost}
               onclick={handleSchematicClick}
               onwheel={(event) => handleZoomWheel(event, "schematic")}
+              title="滚轮缩放"
               role="presentation"
             >
               <div
@@ -249,6 +267,7 @@
           <div
             class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
             onwheel={(event) => handleZoomWheel(event, "breadboard")}
+            title="滚轮缩放"
           >
             <BreadboardPreview
               {preset}
