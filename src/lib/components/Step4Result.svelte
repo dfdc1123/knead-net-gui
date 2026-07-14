@@ -100,6 +100,15 @@
   let allWires = $derived(frame.wires ?? []);
   let parts = $derived([...frame.parts].sort(compareParts));
   let wires = $derived(allWires.filter((wire) => wire.kind !== "air").sort(compareWires));
+  let assemblyParts = $derived([
+    ...parts.filter((part) => !completedPartIds.includes(part.id)),
+    ...parts.filter((part) => completedPartIds.includes(part.id)),
+  ]);
+  let assemblyWires = $derived([
+    ...wires.filter((wire) => !completedWireIds.includes(wire.id)),
+    ...wires.filter((wire) => completedWireIds.includes(wire.id)),
+  ]);
+  let wireNumbers = $derived(new Map(wires.map((wire, index) => [wire.id, index + 1])));
   let netCount = $derived(new Set(allWires.map((wire) => wire.net_id).filter(Boolean)).size);
   let completedPartCount = $derived(frame.parts.filter((part) => completedPartIds.includes(part.id)).length);
   let completedWireCount = $derived(wires.filter((wire) => completedWireIds.includes(wire.id)).length);
@@ -459,7 +468,7 @@
                   <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(false)} disabled={completedPartCount === 0}>全部重置</button>
                 </div>
                 <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
-                  {#each parts as part (part.id)}
+                  {#each assemblyParts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
                     <li class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}">
                       <button
@@ -506,8 +515,9 @@
                   <button class="btn btn-sm join-item flex-1" onclick={() => markAllWires(false)} disabled={completedWireCount === 0}>全部重置</button>
                 </div>
                 <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
-                  {#each wires as wire, index (wire.id)}
+                  {#each assemblyWires as wire (wire.id)}
                     {@const completed = completedWireIds.includes(wire.id)}
+                    {@const wireNumber = wireNumbers.get(wire.id)}
                     <li
                       class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}"
                       data-wire-id={wire.id}
@@ -515,13 +525,13 @@
                       <button
                         class="assembly-row-hit absolute inset-0 cursor-pointer"
                         onclick={() => chooseWire(wire)}
-                        aria-label="选择跳线 {index + 1}"
+                        aria-label="选择跳线 {wireNumber}"
                       ></button>
                       <input
                         class="checkbox checkbox-success checkbox-sm relative z-10 row-span-2 self-center"
                         type="checkbox"
                         checked={completed}
-                        aria-label="{completed ? '标记为待连接' : '标记为已完成'}：跳线 {index + 1}"
+                        aria-label="{completed ? '标记为待连接' : '标记为已完成'}：跳线 {wireNumber}"
                         onchange={(event) => setWireCompleted(wire.id, event.currentTarget.checked)}
                       />
                       <div class="pointer-events-none relative z-10 min-w-0">
@@ -532,7 +542,7 @@
                             aria-hidden="true"
                           ></span>
                           <span class="truncate text-sm font-medium {completed ? 'line-through opacity-60' : ''}">
-                            跳线 {index + 1} · {wire.net_name || wire.net_id || "未命名网络"}
+                            跳线 {wireNumber} · {wire.net_name || wire.net_id || "未命名网络"}
                           </span>
                         </span>
                         <span class="mt-0.5 block font-mono text-xs text-base-content/55">
