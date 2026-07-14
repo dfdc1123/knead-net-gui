@@ -31,6 +31,16 @@
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
 
+  type PanGesture = {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+  };
+
+  let panGesture: PanGesture | null = null;
+
   let allWires = $derived(frame.wires ?? []);
   let wires = $derived(allWires.filter((wire) => wire.kind !== "air"));
   let netCount = $derived(new Set(allWires.map((wire) => wire.net_id).filter(Boolean)).size);
@@ -73,6 +83,37 @@
     const after = diagram.getBoundingClientRect();
     viewport.scrollLeft += after.left + focusX * after.width - event.clientX;
     viewport.scrollTop += after.top + focusY * after.height - event.clientY;
+  }
+
+  function startPan(event: PointerEvent) {
+    if (event.button !== 2) return;
+    event.preventDefault();
+    const viewport = event.currentTarget as HTMLDivElement;
+    panGesture = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startScrollLeft: viewport.scrollLeft,
+      startScrollTop: viewport.scrollTop,
+    };
+    viewport.setPointerCapture(event.pointerId);
+    viewport.classList.add("is-panning");
+  }
+
+  function movePan(event: PointerEvent) {
+    if (!panGesture || event.pointerId !== panGesture.pointerId) return;
+    event.preventDefault();
+    const viewport = event.currentTarget as HTMLDivElement;
+    viewport.scrollLeft = panGesture.startScrollLeft - (event.clientX - panGesture.startX);
+    viewport.scrollTop = panGesture.startScrollTop - (event.clientY - panGesture.startY);
+  }
+
+  function stopPan(event: PointerEvent) {
+    if (!panGesture || event.pointerId !== panGesture.pointerId) return;
+    const viewport = event.currentTarget as HTMLDivElement;
+    panGesture = null;
+    viewport.classList.remove("is-panning");
+    if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
   }
 
   function choosePart(part: LayoutPart) {
@@ -221,11 +262,17 @@
           </div>
           {#if schematicSvg}
             <div
-              class="schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
+              class="diagram-viewport schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
               bind:this={schematicHost}
               onclick={handleSchematicClick}
               onwheel={(event) => handleZoomWheel(event, "schematic")}
-              title="滚轮缩放"
+              onpointerdown={startPan}
+              onpointermove={movePan}
+              onpointerup={stopPan}
+              onpointercancel={stopPan}
+              onlostpointercapture={stopPan}
+              oncontextmenu={(event) => event.preventDefault()}
+              title="滚轮缩放 · 按住右键拖动"
               role="presentation"
             >
               <div
@@ -265,9 +312,16 @@
             </div>
           </div>
           <div
-            class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
+            class="diagram-viewport min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
             onwheel={(event) => handleZoomWheel(event, "breadboard")}
-            title="滚轮缩放"
+            onpointerdown={startPan}
+            onpointermove={movePan}
+            onpointerup={stopPan}
+            onpointercancel={stopPan}
+            onlostpointercapture={stopPan}
+            oncontextmenu={(event) => event.preventDefault()}
+            title="滚轮缩放 · 按住右键拖动"
+            role="presentation"
           >
             <BreadboardPreview
               {preset}
@@ -414,6 +468,12 @@
 </div>
 
 <style>
+  :global(.diagram-viewport.is-panning),
+  :global(.diagram-viewport.is-panning *) {
+    cursor: grabbing !important;
+    user-select: none;
+  }
+
   .schematic-stage {
     display: grid;
     min-width: 100%;
