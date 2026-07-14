@@ -13,12 +13,14 @@
     cols,
     frame,
     selected = null,
+    completedWireIds = [],
     onSelect = () => {},
   }: {
     preset: BreadboardPreset;
     cols: number;
     frame?: LayoutFrame | null;
     selected?: CircuitSelection | null;
+    completedWireIds?: string[];
     onSelect?: (selection: CircuitSelection | null) => void;
   } = $props();
 
@@ -334,6 +336,7 @@
         {#each plannedWires as planned (planned.wire.id)}
           {@const wire = planned.wire}
           {@const path = wirePath(planned)}
+          {@const completed = completedWireIds.includes(wire.id)}
           <g
             class="cursor-pointer"
             role="button"
@@ -348,10 +351,10 @@
               d={path}
               fill="none"
               stroke={wire.kind === "routed" ? wire.color ?? "var(--color-primary)" : "var(--color-neutral)"}
-              stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : wire.kind === "routed" ? 2.5 : 1.2}
-              stroke-dasharray={wire.kind === "routed" ? undefined : "4 3"}
+              stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : completed ? 3 : wire.kind === "routed" ? 2.2 : 1.2}
+              stroke-dasharray={wire.kind !== "routed" || !completed ? "5 4" : undefined}
               stroke-linecap="round"
-              opacity={selected ? (selected.type === "net" && selected.id === wire.net_id ? 1 : 0.18) : wire.kind === "routed" ? 0.9 : 0.65}
+              opacity={selected ? (selected.type === "net" && selected.id === wire.net_id ? 1 : 0.14) : completed ? 0.95 : 0.38}
               pointer-events="none"
             />
             <!-- 用更宽的透明路径承接鼠标事件，细线仍然容易选中。 -->
