@@ -240,14 +240,19 @@
                 <ul class="list rounded-box bg-base-200">
                   {#each frame.parts as part (part.id)}
                     <li class="list-row px-3 py-2 {selected?.type === 'component' && selected.id === part.reference ? 'bg-primary/10' : ''}">
-                      <button class="grid min-w-0 flex-1 grid-cols-[auto_1fr] items-center gap-x-2 text-left" onclick={() => choosePart(part)}>
+                      <button
+                        class="absolute inset-0 cursor-pointer rounded-box transition-colors hover:bg-base-300/60 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+                        onclick={() => choosePart(part)}
+                        aria-label="选择元件 {part.reference}"
+                      ></button>
+                      <div class="pointer-events-none relative z-10 col-span-full grid min-w-0 grid-cols-[auto_1fr] items-center gap-x-2">
                         <span class="badge badge-outline badge-sm row-span-2 font-mono">{part.reference}</span>
                         <span class="truncate text-sm font-medium">{part.value || "未标注值"}</span>
                         <span class="truncate text-xs text-base-content/55">
                           {partKindLabel(part)} · {part.pins.length} 个引脚
                           {#if part.pins[0]} · {holeLabel(part.pins[0].hole)}{/if}
                         </span>
-                      </button>
+                      </div>
                     </li>
                   {/each}
                 </ul>
@@ -273,14 +278,19 @@
                   {#each wires as wire, index (wire.id)}
                     {@const completed = completedWireIds.includes(wire.id)}
                     <li class="list-row grid-cols-[auto_1fr] gap-2 px-3 py-2 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}">
+                      <button
+                        class="absolute inset-0 cursor-pointer rounded-box transition-colors hover:bg-base-300/60 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+                        onclick={() => chooseWire(wire)}
+                        aria-label="选择跳线 {index + 1}"
+                      ></button>
                       <input
-                        class="checkbox checkbox-success checkbox-sm row-span-2 self-center"
+                        class="checkbox checkbox-success checkbox-sm relative z-10 row-span-2 self-center"
                         type="checkbox"
                         checked={completed}
                         aria-label="{completed ? '标记为待连接' : '标记为已完成'}：跳线 {index + 1}"
                         onchange={(event) => setWireCompleted(wire.id, event.currentTarget.checked)}
                       />
-                      <button class="min-w-0 text-left" onclick={() => chooseWire(wire)}>
+                      <div class="pointer-events-none relative z-10 min-w-0">
                         <span class="flex items-center gap-2">
                           <span
                             class="status"
@@ -294,7 +304,7 @@
                         <span class="mt-0.5 block font-mono text-xs text-base-content/55">
                           {holeLabel(wire.from)} → {holeLabel(wire.to)}
                         </span>
-                      </button>
+                      </div>
                     </li>
                   {/each}
                 </ul>
