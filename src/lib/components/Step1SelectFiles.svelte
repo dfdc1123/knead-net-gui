@@ -132,13 +132,13 @@
   {/if}
 
   <div class="grid min-h-0 flex-1 grid-cols-[20rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
-      <div class="card-body min-h-0 gap-3 p-4">
-        <fieldset class="fieldset shrink-0">
+    <aside class="card min-h-0 min-w-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 min-w-0 gap-3 overflow-hidden p-4">
+        <fieldset class="fieldset min-w-0 shrink-0">
           <legend class="fieldset-legend">项目文件夹</legend>
           <button
             type="button"
-            class="btn btn-primary w-full"
+            class="btn btn-primary btn-sm btn-block"
             disabled={busy}
             onclick={() => void pickFolder()}
           >
@@ -147,9 +147,8 @@
           {#if busy}
             <p class="label"><span class="loading loading-spinner loading-xs"></span>扫描中</p>
           {:else if folder}
-            <div class="mt-1 flex items-center gap-2 rounded-box bg-success/10 px-3 py-2 text-success">
-              <span class="status status-success shrink-0" aria-hidden="true"></span>
-              <span class="min-w-0 truncate font-mono text-xs" title={folder}>{folder}</span>
+            <div class="alert alert-success alert-soft mt-1 min-w-0 overflow-hidden px-3 py-2" role="status">
+              <span class="block min-w-0 max-w-full truncate font-mono text-xs" title={folder}>{folder}</span>
             </div>
           {:else}
             <p class="label text-base-content/50">尚未选择项目文件夹</p>
@@ -211,8 +210,8 @@
           {#if selectedProject}<span class="badge badge-ghost badge-sm font-mono">{selectedProject}</span>{/if}
         </div>
         {#if svg}
-          <div class="mockup-window min-h-0 flex-1 border border-base-300 bg-base-200 pt-6">
-            <div class="h-full overflow-auto bg-base-100 p-3">{@html svg}</div>
+          <div class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-100 p-3">
+            {@html svg}
           </div>
         {:else}
           <div class="hero min-h-0 flex-1 rounded-box bg-base-200">
