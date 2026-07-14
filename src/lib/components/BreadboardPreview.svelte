@@ -137,28 +137,9 @@
     viewBox="0 0 {boardWidth} {boardHeight}"
     role="img"
     aria-label="面包板预览：{preset === 'hole170' ? '170 孔' : preset === 'hole400' ? '400 孔' : '800 规格（默认实际 830 孔）'}"
-    class="block max-w-none drop-shadow-md"
+    class="block max-w-none"
   >
-    <defs>
-      <linearGradient id="board-surface" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="var(--color-base-100)" />
-        <stop offset="0.48" stop-color="var(--color-base-200)" />
-        <stop offset="1" stop-color="var(--color-base-300)" />
-      </linearGradient>
-      <radialGradient id="socket-rim" cx="42%" cy="36%" r="65%">
-        <stop offset="0" stop-color="var(--color-base-100)" />
-        <stop offset="0.55" stop-color="var(--color-base-200)" />
-        <stop offset="1" stop-color="var(--color-base-300)" />
-      </radialGradient>
-      <filter id="inset-shadow" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="0.7" stdDeviation="0.45" flood-color="var(--color-base-content)" flood-opacity="0.45" />
-      </filter>
-      <filter id="selection-glow" x="-40%" y="-40%" width="180%" height="180%">
-        <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="var(--color-warning)" flood-opacity="1" />
-      </filter>
-    </defs>
-
-    <rect x="0.8" y="0.8" width={boardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="url(#board-surface)" stroke="var(--color-base-300)" stroke-width="1.6" />
+    <rect x="0.8" y="0.8" width={boardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
 
     {#if isMini}
       <rect x={xInset - 5} y="78.05" width={boardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
@@ -167,12 +148,12 @@
       {#each columns as column}
         {#each mainRows as row}
           <g transform="translate({xInset + column * pitch} {18.1 + row * pitch})">
-            <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
+            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+            <circle r="1.6" fill="var(--color-base-content)" />
           </g>
           <g transform="translate({xInset + column * pitch} {102.1 + row * pitch})">
-            <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
+            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+            <circle r="1.6" fill="var(--color-base-content)" />
           </g>
         {/each}
       {/each}
@@ -189,12 +170,12 @@
       {#each columns as column}
         {#each mainRows as row}
           <g transform="translate({xInset + column * pitch} {60 + row * pitch})">
-            <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
+            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+            <circle r="1.6" fill="var(--color-base-content)" />
           </g>
           <g transform="translate({xInset + column * pitch} {144 + row * pitch})">
-            <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
+            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+            <circle r="1.6" fill="var(--color-base-content)" />
           </g>
         {/each}
       {/each}
@@ -202,8 +183,8 @@
       {#each powerColumns as column}
         {#each [12, 24, 228, 240] as y}
           <g transform="translate({xInset + railOffset + column * pitch} {y})">
-            <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
+            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+            <circle r="1.6" fill="var(--color-base-content)" />
           </g>
         {/each}
       {/each}
@@ -250,7 +231,6 @@
             tabindex="0"
             aria-label="选择元件 {part.reference}"
             opacity={selected?.type === "component" ? (selected.id === part.reference ? 1 : 0.25) : 1}
-            filter={selected?.type === "component" && selected.id === part.reference ? "url(#selection-glow)" : undefined}
             onclick={(event) => selectComponent(event, part.reference)}
             onkeydown={(event) => {
               if (event.key === "Enter" || event.key === " ") selectComponent(event, part.reference);
