@@ -12,6 +12,7 @@
     preset,
     cols,
     frame,
+    zoom = 1,
     selected = null,
     completedWireIds = [],
     onSelect = () => {},
@@ -19,6 +20,7 @@
     preset: BreadboardPreset;
     cols: number;
     frame?: LayoutFrame | null;
+    zoom?: number;
     selected?: CircuitSelection | null;
     completedWireIds?: string[];
     onSelect?: (selection: CircuitSelection | null) => void;
@@ -270,8 +272,8 @@
   onclick={() => onSelect(null)}
 >
   <svg
-    width={displayWidth}
-    height={displayHeight}
+    width={displayWidth * zoom}
+    height={displayHeight * zoom}
     viewBox="0 0 {boardWidth} {boardHeight}"
     role="img"
     aria-label="面包板预览：{preset === 'hole170' ? '170 孔' : preset === 'hole400' ? '400 孔' : '800 规格（默认实际 830 孔）'}"

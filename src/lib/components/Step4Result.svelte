@@ -1,5 +1,6 @@
 <script lang="ts">
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import ZoomControls from "./ZoomControls.svelte";
   import type {
     BreadboardHole,
     BreadboardPreset,
@@ -26,6 +27,8 @@
   let completedWireIds = $state<string[]>([]);
   let schematicHost = $state<HTMLDivElement>();
   let activeFrame = $state<LayoutFrame | null>(null);
+  let schematicZoom = $state(1);
+  let breadboardZoom = $state(1);
 
   let allWires = $derived(frame.wires ?? []);
   let wires = $derived(allWires.filter((wire) => wire.kind !== "air"));
@@ -41,6 +44,18 @@
       next && selected?.type === next.type && selected.id === next.id
         ? null
         : next;
+  }
+
+  function clampZoom(zoom: number) {
+    return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
+  }
+
+  function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const step = event.deltaY < 0 ? 0.1 : -0.1;
+    if (target === "schematic") schematicZoom = clampZoom(schematicZoom + step);
+    else breadboardZoom = clampZoom(breadboardZoom + step);
   }
 
   function choosePart(part: LayoutPart) {
@@ -182,16 +197,33 @@
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between px-1">
             <h2 class="card-title text-base">原理图</h2>
-            <span class="badge badge-ghost badge-sm">SCH</span>
+            <div class="flex items-center gap-2">
+              <span class="badge badge-ghost badge-sm">SCH</span>
+              <ZoomControls zoom={schematicZoom} onZoom={(zoom) => (schematicZoom = clampZoom(zoom))} />
+            </div>
           </div>
           {#if schematicSvg}
             <div
               class="schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
               bind:this={schematicHost}
               onclick={handleSchematicClick}
+              onwheel={(event) => handleZoomWheel(event, "schematic")}
               role="presentation"
             >
-              {@html schematicSvg}
+              <div
+                class="schematic-stage"
+                style:width={`${Math.max(1, schematicZoom) * 100}%`}
+                style:height={`${Math.max(1, schematicZoom) * 100}%`}
+              >
+                <div
+                  class="schematic-content"
+                  style:width={`${100 / Math.max(1, schematicZoom)}%`}
+                  style:height={`${100 / Math.max(1, schematicZoom)}%`}
+                  style:transform={`scale(${schematicZoom})`}
+                >
+                  {@html schematicSvg}
+                </div>
+              </div>
             </div>
           {:else}
             <div class="hero grid min-h-0 flex-1 place-items-center rounded-box bg-base-200 p-6 text-center text-sm text-base-content/60">
@@ -211,13 +243,18 @@
             <div class="flex items-center gap-3 text-xs">
               <span class="flex items-center gap-1.5"><span class="status status-success"></span>已完成（实线）</span>
               <span class="flex items-center gap-1.5 text-base-content/60"><span class="status status-neutral"></span>待连接（虚线）</span>
+              <ZoomControls zoom={breadboardZoom} onZoom={(zoom) => (breadboardZoom = clampZoom(zoom))} />
             </div>
           </div>
-          <div class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
+          <div
+            class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
+            onwheel={(event) => handleZoomWheel(event, "breadboard")}
+          >
             <BreadboardPreview
               {preset}
               {cols}
               {frame}
+              zoom={breadboardZoom}
               {selected}
               {completedWireIds}
               onSelect={choose}
@@ -358,6 +395,23 @@
 </div>
 
 <style>
+  .schematic-stage {
+    display: grid;
+    min-width: 100%;
+    min-height: 100%;
+    place-items: center;
+  }
+
+  .schematic-content {
+    transform-origin: center;
+  }
+
+  :global(.schematic-content > svg) {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+  }
+
   .assembly-row:has(> .assembly-row-hit:focus-visible) {
     z-index: 1;
     outline: 2px solid var(--color-primary);
