@@ -288,8 +288,8 @@
 
 <div
   class="grid place-items-center bg-base-200 p-3 text-base-content"
-  style:width={`max(100%, ${displayWidth * zoom + 24}px)`}
-  style:height={`max(100%, ${displayHeight * zoom + 24}px)`}
+  style:width={`calc(100% + ${displayWidth * zoom + 24}px)`}
+  style:height={`calc(100% + ${displayHeight * zoom + 24}px)`}
   data-theme="corporate"
   role="presentation"
   onclick={() => onSelect(null)}

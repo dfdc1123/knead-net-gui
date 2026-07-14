@@ -116,6 +116,18 @@
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
   }
 
+  function centerCanvas(viewport: HTMLDivElement) {
+    const animationFrame = requestAnimationFrame(() => {
+      viewport.scrollLeft = (viewport.scrollWidth - viewport.clientWidth) / 2;
+      viewport.scrollTop = (viewport.scrollHeight - viewport.clientHeight) / 2;
+    });
+    return {
+      destroy() {
+        cancelAnimationFrame(animationFrame);
+      },
+    };
+  }
+
   function choosePart(part: LayoutPart) {
     choose({ type: "component", id: part.reference, label: part.reference });
   }
@@ -313,6 +325,7 @@
           </div>
           <div
             class="diagram-viewport min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
+            use:centerCanvas
             onwheel={(event) => handleZoomWheel(event, "breadboard")}
             onpointerdown={startPan}
             onpointermove={movePan}
