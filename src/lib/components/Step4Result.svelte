@@ -258,17 +258,17 @@
                   <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(true)} disabled={completedPartCount === frame.parts.length}>全部完成</button>
                   <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(false)} disabled={completedPartCount === 0}>全部重置</button>
                 </div>
-                <ul class="list rounded-box bg-base-200">
+                <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
                   {#each frame.parts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
-                    <li class="list-row grid-cols-[auto_1fr] gap-2 px-3 py-2 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}">
+                    <li class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}">
                       <button
-                        class="absolute inset-0 cursor-pointer rounded-box transition-colors hover:bg-base-300/60 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+                        class="assembly-row-hit absolute inset-0 cursor-pointer"
                         onclick={() => choosePart(part)}
                         aria-label="选择元件 {part.reference}"
                       ></button>
                       <input
-                        class="checkbox checkbox-success checkbox-sm relative z-10 row-span-2 self-center"
+                        class="checkbox checkbox-success checkbox-sm relative z-10 self-center"
                         type="checkbox"
                         checked={completed}
                         aria-label="{completed ? '标记为待安装' : '标记为已安装'}：元件 {part.reference}"
@@ -305,12 +305,12 @@
                   <button class="btn btn-sm join-item flex-1" onclick={() => markAllWires(true)} disabled={completedWireCount === wires.length}>全部完成</button>
                   <button class="btn btn-sm join-item flex-1" onclick={() => markAllWires(false)} disabled={completedWireCount === 0}>全部重置</button>
                 </div>
-                <ul class="list rounded-box bg-base-200">
+                <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
                   {#each wires as wire, index (wire.id)}
                     {@const completed = completedWireIds.includes(wire.id)}
-                    <li class="list-row grid-cols-[auto_1fr] gap-2 px-3 py-2 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}">
+                    <li class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}">
                       <button
-                        class="absolute inset-0 cursor-pointer rounded-box transition-colors hover:bg-base-300/60 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+                        class="assembly-row-hit absolute inset-0 cursor-pointer"
                         onclick={() => chooseWire(wire)}
                         aria-label="选择跳线 {index + 1}"
                       ></button>
@@ -358,6 +358,12 @@
 </div>
 
 <style>
+  .assembly-row:has(> .assembly-row-hit:focus-visible) {
+    z-index: 1;
+    outline: 2px solid var(--color-primary);
+    outline-offset: -2px;
+  }
+
   :global(.schematic-host .sch-component),
   :global(.schematic-host [data-net]) {
     cursor: pointer;
