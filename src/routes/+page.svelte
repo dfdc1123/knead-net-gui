@@ -45,8 +45,8 @@
   }
 </script>
 
-<div class="h-screen flex flex-col bg-base-100">
-  <main class="flex-1 overflow-auto">
+<div class="flex h-screen flex-col bg-base-200">
+  <main class="min-h-0 flex-1 pb-16">
     <div class:hidden={step !== 0} class="h-full">
       <Step1SelectFiles onStatusChange={handleSourceStatus} onSchematicChange={(svg) => (schematicSvg = svg)} />
     </div>

@@ -29,11 +29,11 @@
     { id: "standard", name: "标准", description: "32 seeds · 200,000 次" },
     { id: "full", name: "完整", description: "100 seeds · 1,000,000 次" },
   ];
-  const phases: { id: Exclude<ComputePhase, "idle" | "error">; label: string; hint: string }[] = [
-    { id: "spectral", label: "Spectral", hint: "生成初始布局" },
-    { id: "annealing", label: "SA", hint: "退火优化中" },
-    { id: "routing", label: "Routing", hint: "生成跳线" },
-    { id: "done", label: "完成", hint: "布局已就绪" },
+  const phases: { id: Exclude<ComputePhase, "idle" | "error">; label: string }[] = [
+    { id: "spectral", label: "Spectral" },
+    { id: "annealing", label: "SA" },
+    { id: "routing", label: "Routing" },
+    { id: "done", label: "完成" },
   ];
 
   let profileId = $state<ProfileId>(import.meta.env.DEV ? "quick" : "standard");
@@ -170,12 +170,9 @@
   }
 </script>
 
-<div class="flex h-full flex-col gap-4 overflow-auto p-6">
-  <div class="flex flex-wrap items-start justify-between gap-3">
-    <div>
-      <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">计算与布局过程</h2>
-      <p class="mt-1 text-sm text-base-content/60">初始布局、退火优化和布线会在同一块面包板上连续显示。</p>
-    </div>
+<div class="mx-auto flex h-full w-full max-w-screen-2xl flex-col gap-4 overflow-hidden p-6">
+  <header class="flex shrink-0 items-center justify-between gap-3">
+    <h1 class="text-2xl font-bold">计算布局</h1>
     {#if phase === "annealing"}
       <button class="btn btn-sm btn-warning" onclick={interruptAndRoute} disabled={interrupting}>
         {#if interrupting}<span class="loading loading-spinner loading-xs"></span>{/if}
@@ -187,72 +184,63 @@
         {phase === "done" || phase === "error" ? "重新计算" : busy ? "计算中" : "开始计算"}
       </button>
     {/if}
-  </div>
+  </header>
 
-  <div class="card border border-base-300 bg-base-200 shadow-sm">
-    <div class="card-body gap-4 p-4">
-      <fieldset disabled={busy} class="grid grid-cols-3 gap-2">
-        <legend class="sr-only">计算强度</legend>
-        {#each profiles as item}
-          <label class="btn h-auto min-h-12 px-3 py-2 {profileId === item.id ? 'btn-primary' : 'btn-ghost bg-base-100'}">
-            <input class="sr-only" type="radio" name="compute-profile" value={item.id} bind:group={profileId} />
-            <span class="min-w-0 text-left">
-              <span class="block text-sm font-semibold">{item.name}</span>
-              <span class="block truncate text-[10px] font-normal opacity-65">{item.description}</span>
-            </span>
-          </label>
-        {/each}
-      </fieldset>
-
-      <ul class="steps steps-horizontal w-full text-xs">
-        {#each phases as item, index}
-          <li class={stepClass(index)} data-content={phase === item.id && busy ? "●" : undefined}>
-            <span class="hidden sm:inline">{item.label}</span>
-          </li>
-        {/each}
-      </ul>
-      <div class="flex items-center justify-between gap-3 text-xs">
-        <span class="font-medium">{message}</span>
-        <span class="tabular-nums text-base-content/50">{Math.round(safeProgress)}%</span>
-      </div>
-      <progress class="progress progress-primary h-2 w-full" value={safeProgress} max="100"></progress>
-    </div>
-  </div>
-
-  {#if error}
-    <div class="alert alert-error text-sm" role="alert"><span>{error}</span></div>
-  {/if}
-
-  <div class="card min-h-0 flex-1 border border-base-300 bg-base-200 shadow-sm">
-    <div class="card-body min-h-0 gap-3 p-4">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 class="card-title text-sm">布局预览</h3>
-          <p class="text-xs text-base-content/50">
-            {phase === "annealing" ? "正在展示固定观察种子的优化轨迹；最终结果仍取所有种子中的最低成本布局。" : phases.find((item) => item.id === phase)?.hint ?? "等待开始"}
-          </p>
-        </div>
-        <div class="flex gap-2">
-          {#if frame?.iteration !== undefined}<span class="badge badge-ghost badge-sm">迭代 {frame.iteration}</span>{/if}
-          {#if frame?.cost !== undefined}<span class="badge badge-secondary badge-sm">Cost {frame.cost.toFixed(2)}</span>{/if}
-        </div>
-      </div>
-
-      <div class="relative min-h-72 flex-1 overflow-auto rounded-box bg-base-100">
-        <BreadboardPreview {preset} {cols} {frame} />
-        {#if !frame}
-          <div class="pointer-events-none absolute inset-0 grid place-items-center bg-base-100/65">
-            <div class="text-center text-base-content/45">
-              {#if busy}
-                <span class="loading loading-spinner loading-lg text-primary"></span>
-                <p class="mt-2 text-sm">等待第一个布局快照…</p>
-              {:else}
-                <p class="text-sm">点击“开始计算”查看布局过程</p>
-              {/if}
-            </div>
+  <div class="grid min-h-0 flex-1 grid-cols-[23rem_minmax(0,1fr)] gap-4">
+    <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 gap-4 overflow-auto p-4">
+        <fieldset class="fieldset shrink-0" disabled={busy}>
+          <legend class="fieldset-legend">计算强度</legend>
+          <div class="join join-vertical w-full">
+            {#each profiles as item}
+              <label class="join-item flex cursor-pointer items-center gap-3 border border-base-300 px-4 py-3 hover:bg-base-200" class:bg-base-200={profileId === item.id}>
+                <input class="radio radio-primary radio-sm" type="radio" name="compute-profile" value={item.id} bind:group={profileId} />
+                <span class="flex-1 font-semibold">{item.name}</span>
+                <span class="text-xs text-base-content/60">{item.description}</span>
+              </label>
+            {/each}
           </div>
+        </fieldset>
+
+        <ul class="steps steps-vertical text-sm" aria-label="计算阶段">
+          {#each phases as item, index}
+            <li class={stepClass(index)} data-content={phase === item.id && busy ? "●" : undefined}>{item.label}</li>
+          {/each}
+        </ul>
+
+        <div class="mt-auto space-y-2">
+          <div class="flex items-center justify-between gap-3 text-sm">
+            <span class="flex min-w-0 items-center gap-2 truncate font-medium"><span class="status {busy ? 'status-info' : phase === 'error' ? 'status-error' : phase === 'done' ? 'status-success' : 'status-neutral'}"></span>{message}</span>
+            <span class="tabular-nums text-base-content/50">{Math.round(safeProgress)}%</span>
+          </div>
+          <progress class="progress progress-primary w-full" value={safeProgress} max="100"></progress>
+        </div>
+
+        {#if error}
+          <div class="alert alert-error text-sm" role="alert"><span>{error}</span></div>
         {/if}
       </div>
-    </div>
+    </aside>
+
+    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 gap-3 p-4">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="card-title text-sm">预览</h2>
+          <div class="flex gap-2">
+            {#if frame?.iteration !== undefined}<span class="badge badge-ghost badge-sm">#{frame.iteration}</span>{/if}
+            {#if frame?.cost !== undefined}<span class="badge badge-secondary badge-sm">{frame.cost.toFixed(2)}</span>{/if}
+          </div>
+        </div>
+
+        <div class="relative min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
+          <BreadboardPreview {preset} {cols} {frame} />
+          {#if !frame}
+            <div class="pointer-events-none absolute inset-0 grid place-items-center bg-base-200/75">
+              {#if busy}<span class="loading loading-spinner loading-lg text-primary"></span>{:else}<span class="text-sm text-base-content/50">等待开始</span>{/if}
+            </div>
+          {/if}
+        </div>
+      </div>
+    </section>
   </div>
 </div>

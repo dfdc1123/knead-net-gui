@@ -65,12 +65,9 @@
   });
 </script>
 
-<div class="flex h-full min-h-0 flex-col gap-3 overflow-hidden p-4 lg:p-6">
-  <div class="flex shrink-0 flex-wrap items-center justify-between gap-3">
-    <div>
-      <h2 class="text-lg font-bold">交互式装配视图</h2>
-      <p class="text-xs text-base-content/55">点击任一侧的元器件或网络，另一侧会同步高亮。</p>
-    </div>
+<div class="mx-auto flex h-full min-h-0 w-full max-w-screen-2xl flex-col gap-4 overflow-hidden p-6">
+  <header class="flex shrink-0 items-center justify-between gap-3">
+    <h1 class="text-2xl font-bold">装配视图</h1>
 
     <div class="flex items-center gap-2">
       <div class="join">
@@ -81,30 +78,28 @@
         <button class="btn btn-sm btn-ghost" onclick={() => (selected = null)} aria-label="清除高亮">清除</button>
       {/if}
     </div>
-  </div>
+  </header>
 
-  <div class="alert min-h-11 shrink-0 py-2 text-sm {selected ? 'alert-warning' : 'alert-info'}">
-    <span class="text-lg" aria-hidden="true">{selected?.type === "component" ? "◆" : selected?.type === "net" ? "━" : "↔"}</span>
-    {#if selected}
+  {#if selected}
+    <div class="alert alert-warning min-h-10 shrink-0 py-2 text-sm">
+      <span class="status status-warning" aria-hidden="true"></span>
       <span>
-        已选中 <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : 'badge-secondary'}">{selected.type === "component" ? "元件" : "网络"}</span>
+        <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : 'badge-secondary'}">{selected.type === "component" ? "元件" : "网络"}</span>
         <strong class="ml-1 font-mono">{selected.label}</strong>
       </span>
-    {:else}
-      <span>在原理图或面包板上点击开始查看对应关系</span>
-    {/if}
-  </div>
+    </div>
+  {/if}
 
-  <div class="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-2">
-    <section class="card min-h-80 overflow-hidden border border-base-300 bg-base-200 shadow-sm">
+  <div class="grid min-h-0 flex-1 grid-cols-2 gap-4">
+    <section class="card min-h-80 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 gap-2 p-3">
         <div class="flex shrink-0 items-center justify-between px-1">
-          <h3 class="card-title text-sm">原理图</h3>
+          <h2 class="card-title text-base">原理图</h2>
           <span class="badge badge-ghost badge-sm">SCH</span>
         </div>
         {#if schematicSvg}
           <div
-            class="schematic-host min-h-0 flex-1 overflow-auto rounded-box bg-white p-2"
+            class="schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
             bind:this={schematicHost}
             onclick={handleSchematicClick}
             role="presentation"
@@ -112,20 +107,20 @@
             {@html schematicSvg}
           </div>
         {:else}
-          <div class="grid min-h-0 flex-1 place-items-center rounded-box bg-base-100 p-6 text-center text-sm text-base-content/50">
-            当前项目没有可显示的原理图；仍可查看右侧最终布局。
+          <div class="hero grid min-h-0 flex-1 place-items-center rounded-box bg-base-200 p-6 text-center text-sm text-base-content/60">
+            无原理图
           </div>
         {/if}
       </div>
     </section>
 
-    <section class="card min-h-80 overflow-hidden border border-base-300 bg-base-200 shadow-sm">
+    <section class="card min-h-80 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 gap-2 p-3">
         <div class="flex shrink-0 items-center justify-between px-1">
-          <h3 class="card-title text-sm">面包板</h3>
+          <h2 class="card-title text-base">面包板</h2>
           <span class="badge badge-ghost badge-sm">{cols} 列</span>
         </div>
-        <div class="min-h-0 flex-1 overflow-auto rounded-box bg-base-100">
+        <div class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
           <BreadboardPreview
             {preset}
             {cols}
@@ -151,12 +146,12 @@
   }
 
   :global(.schematic-host .sch-component.is-selected) {
-    filter: drop-shadow(0 0 5px #f59e0b) drop-shadow(0 0 2px #f59e0b);
+    filter: drop-shadow(0 0 5px var(--color-warning)) drop-shadow(0 0 2px var(--color-warning));
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {
-    stroke: #f59e0b;
+    stroke: var(--color-warning);
     stroke-width: 4;
-    filter: drop-shadow(0 0 2px #f59e0b);
+    filter: drop-shadow(0 0 2px var(--color-warning));
   }
 </style>

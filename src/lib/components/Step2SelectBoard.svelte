@@ -13,10 +13,10 @@
 
   type Info = { preset: string; cols: number; holes: number; has_power_rails: boolean };
 
-  const PRESETS: { id: BreadboardPreset; name: string; desc: string; defaultCols: number; rail: boolean }[] = [
-    { id: "hole170", name: "170 孔", desc: "迷你 17×10 main", defaultCols: 17, rail: false },
-    { id: "hole400", name: "400 孔", desc: "标准 30×10 main + 电源轨", defaultCols: 30, rail: true },
-    { id: "hole800", name: "800 孔", desc: "加宽 63×10 main + 宽电源轨", defaultCols: 63, rail: true },
+  const PRESETS: { id: BreadboardPreset; name: string; defaultCols: number }[] = [
+    { id: "hole170", name: "170 孔", defaultCols: 17 },
+    { id: "hole400", name: "400 孔", defaultCols: 30 },
+    { id: "hole800", name: "800 孔", defaultCols: 63 },
   ];
 
   let preset = $state<BreadboardPreset>("hole400");
@@ -57,60 +57,69 @@
   }
 </script>
 
-<div class="h-full flex flex-col gap-4 p-6 overflow-auto">
-  <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">选择面包板</h2>
+<div class="mx-auto flex h-full w-full max-w-screen-2xl flex-col gap-4 overflow-hidden p-6">
+  <header class="shrink-0">
+    <h1 class="text-2xl font-bold">选择面包板</h1>
+  </header>
 
-  <div class="grid grid-cols-3 gap-3">
-    {#each PRESETS as p}
-      <button
-        class="card bg-base-200 hover:bg-base-300 transition-colors text-left p-4 cursor-pointer
-               {preset === p.id ? 'ring-2 ring-primary' : ''}"
-        onclick={() => pick(p.id)}
-        disabled={busy}
-      >
-        <div class="text-2xl font-bold">{p.name}</div>
-        <div class="text-xs text-base-content/60 mt-1">{p.desc}</div>
-        <div class="text-[10px] text-base-content/40 mt-2">默认 {p.defaultCols} 列</div>
-      </button>
-    {/each}
-  </div>
+  <div class="grid min-h-0 flex-1 grid-cols-[22rem_minmax(0,1fr)] gap-4">
+    <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body gap-4 p-4">
+        <fieldset class="fieldset" disabled={busy}>
+          <legend class="fieldset-legend">板型</legend>
+          <div class="join join-vertical w-full">
+            {#each PRESETS as p}
+              <label class="join-item flex cursor-pointer items-center gap-3 border border-base-300 px-4 py-3 hover:bg-base-200" class:bg-base-200={preset === p.id}>
+                <input
+                  type="radio"
+                  class="radio radio-primary radio-sm"
+                  name="breadboard-preset"
+                  checked={preset === p.id}
+                  onchange={() => pick(p.id)}
+                  aria-label={`选择 ${p.name}`}
+                />
+                <span class="flex-1 font-semibold">{p.name}</span>
+                <span class="badge badge-ghost badge-sm">{p.defaultCols} 列</span>
+              </label>
+            {/each}
+          </div>
+        </fieldset>
 
-  <div class="flex items-center gap-3 bg-base-200 rounded p-3">
-    <span class="text-sm">列数 (cols)</span>
-    <input
-      type="number"
-      class="input input-sm input-bordered w-24"
-      min="3"
-      max="120"
-      bind:value={cols}
-    />
-    {#if info}
-      <div class="flex gap-2 ml-auto">
-        <span class="badge badge-primary badge-sm">{info.holes} 孔</span>
-        {#if info.has_power_rails}
-          <span class="badge badge-secondary badge-sm">含电源轨</span>
-        {:else}
-          <span class="badge badge-ghost badge-sm">无电源轨</span>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">列数</legend>
+          <label class="input w-full">
+            <input type="number" min="3" max="120" bind:value={cols} aria-label="面包板可用列数" />
+            <span class="label">3–120</span>
+          </label>
+        </fieldset>
+
+        {#if info}
+          <div class="flex flex-wrap gap-2">
+            <span class="badge badge-primary">{info.holes} 孔</span>
+            <span class="badge badge-outline">{info.has_power_rails ? "含电源轨" : "无电源轨"}</span>
+          </div>
+        {/if}
+
+        {#if error}
+          <div class="alert alert-error text-sm" role="alert"><span>{error}</span></div>
         {/if}
       </div>
-    {/if}
+    </aside>
+
+    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 gap-3 p-4">
+        <div class="flex shrink-0 items-center justify-between">
+          <h2 class="card-title text-sm">预览</h2>
+          {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × 10</span>{/if}
+        </div>
+        <div class="relative min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
+          {#if info}
+            <BreadboardPreview {preset} cols={info.cols} />
+          {:else}
+            <div class="absolute inset-0 grid place-items-center"><span class="loading loading-spinner loading-md text-primary"></span></div>
+          {/if}
+        </div>
+      </div>
+    </section>
   </div>
-
-  {#if error}
-    <div class="alert alert-error text-sm">{error}</div>
-  {/if}
-
-  {#if info}
-    <div class="card bg-base-200 p-4">
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
-          预览 · 主区 {info.cols} × 10
-        </h3>
-        <span class="text-[10px] text-base-content/40">视觉比例参考真实板型</span>
-      </div>
-      <div class="overflow-auto rounded-box bg-base-100">
-        <BreadboardPreview {preset} cols={info.cols} />
-      </div>
-    </div>
-  {/if}
 </div>

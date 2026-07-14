@@ -8,24 +8,26 @@
   } = $props();
 
   const tabs = [
-    { label: "源文件", icon: "📁" },
-    { label: "面包板", icon: "🍞" },
-    { label: "计算", icon: "⚙️" },
-    { label: "结果", icon: "✨" },
+    { label: "工程" },
+    { label: "面包板" },
+    { label: "计算" },
+    { label: "结果" },
   ];
 </script>
 
-<div class="dock bg-base-200 border-t border-base-300">
+<nav class="dock dock-sm z-50 border-t border-base-300 bg-base-100" aria-label="布局流程">
   {#each tabs as tab, i}
     <button
-      class={current === i ? "dock-active" : ""}
+      class:dock-active={current === i}
+      class:text-primary={current === i}
       onclick={() => (current = i)}
       disabled={!enabled[i]}
+      aria-current={current === i ? "step" : undefined}
       aria-label={enabled[i] ? tab.label : `${tab.label}（请先完成前置步骤）`}
       title={enabled[i] ? tab.label : "请先完成前置步骤"}
     >
-      <span class="text-xl">{tab.icon}</span>
+      <span class="font-mono text-base font-bold">{i + 1}</span>
       <span class="dock-label">{tab.label}</span>
     </button>
   {/each}
-</div>
+</nav>

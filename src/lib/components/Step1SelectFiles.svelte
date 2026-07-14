@@ -34,6 +34,11 @@
     }
   }
 
+  function chooseFolder(event: MouseEvent) {
+    event.preventDefault();
+    void pickFolder();
+  }
+
   async function loadFolder(path: string) {
     busy = true;
     error = "";
@@ -121,100 +126,95 @@
   }
 </script>
 
-<div class="h-full flex flex-col gap-4 p-6 overflow-hidden">
-  <div class="flex items-center gap-3 shrink-0">
-    <button class="btn btn-primary" onclick={pickFolder} disabled={busy}>
-      {busy ? "加载中…" : "选择 KiCad 文件夹"}
-    </button>
-    {#if folder}
-      <span class="text-sm text-base-content/60 font-mono truncate flex-1">{folder}</span>
-    {:else}
-      <span class="text-sm text-base-content/40">未选择</span>
-    {/if}
-  </div>
+<div class="mx-auto flex h-full w-full max-w-screen-2xl flex-col gap-4 overflow-hidden p-6">
+  <header class="shrink-0">
+    <h1 class="text-2xl font-bold">导入工程</h1>
+    <p class="text-sm text-base-content/60">自动配对同名的 KiCad 原理图与 PCB。</p>
+  </header>
 
   {#if error}
-    <div class="alert alert-error text-sm shrink-0">{error}</div>
+    <div class="alert alert-error shrink-0 text-sm" role="alert"><span>{error}</span></div>
   {/if}
 
-  {#if entries.length > 0}
-    <div class="grid grid-cols-[280px_1fr] gap-4 flex-1 min-h-0">
-      <div class="card bg-base-200 overflow-auto">
-        <div class="card-body p-3">
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pb-2">
-            KiCad 工程 ({projects.length})
-          </h3>
+  <div class="grid min-h-0 flex-1 grid-cols-[20rem_minmax(0,1fr)] gap-4">
+    <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 gap-3 p-4">
+        <fieldset class="fieldset shrink-0">
+          <legend class="fieldset-legend">项目文件夹</legend>
+          <input type="file" class="file-input file-input-primary w-full" disabled={busy} onclick={chooseFolder} />
+          {#if busy}
+            <p class="label"><span class="loading loading-spinner loading-xs"></span>扫描中</p>
+          {:else if folder}
+            <p class="label block truncate font-mono text-xs" title={folder}>{folder}</p>
+          {/if}
+        </fieldset>
+
+        <div class="divider my-0"></div>
+
+        <div class="flex min-h-0 flex-1 flex-col gap-2">
+          <div class="flex items-center justify-between">
+            <h2 class="card-title text-sm">工程</h2>
+            {#if projects.length}<span class="badge badge-neutral badge-sm">{projects.length}</span>{/if}
+          </div>
           {#if projects.length > 0}
-            <ul class="menu menu-sm w-full p-0">
+            <ul class="menu menu-sm min-h-0 w-full flex-1 overflow-auto rounded-box bg-base-200 p-2">
               {#each projects as project}
                 <li>
-                  <button
-                    class:menu-active={selectedProject === project.name}
-                    onclick={() => selectProject(project)}
-                    disabled={busy}
-                  >
-                    <span class="truncate font-mono text-xs">{project.name}</span>
-                    {#if project.pcb && project.sch}
-                      <span class="badge badge-success badge-sm shrink-0">已配对</span>
-                    {:else if project.pcb}
-                      <span class="badge badge-info badge-sm shrink-0">仅 PCB</span>
-                    {:else}
-                      <span class="badge badge-warning badge-sm shrink-0">缺 PCB</span>
+                  <button class:menu-active={selectedProject === project.name} onclick={() => selectProject(project)} disabled={busy}>
+                    <span class="min-w-0 flex-1 truncate font-mono text-xs">{project.name}</span>
+                    {#if !project.pcb}
+                      <span class="badge badge-error badge-xs">缺 PCB</span>
+                    {:else if !project.sch}
+                      <span class="badge badge-ghost badge-xs">PCB</span>
                     {/if}
                   </button>
                 </li>
               {/each}
             </ul>
           {:else}
-            <p class="px-1 text-sm text-base-content/50">没有 KiCad 原理图或 PCB 文件</p>
-          {/if}
-
-          <div class="divider my-2"></div>
-          <details>
-            <summary class="cursor-pointer px-1 text-xs text-base-content/50">全部文件 ({entries.length})</summary>
-            <ul class="menu menu-sm w-full p-0 mt-2">
-              {#each entries as e}
-              <li>
-                <div class="flex justify-between items-center gap-2">
-                  <span class="truncate font-mono text-xs">{e.name}</span>
-                  <span class="badge badge-ghost badge-sm shrink-0">{formatBytes(e.bytes)}</span>
-                </div>
-              </li>
-              {/each}
-            </ul>
-          </details>
-        </div>
-      </div>
-
-      <div class="card bg-base-200 overflow-hidden">
-        <div class="card-body p-3 h-full">
-          <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 px-1 pb-2 shrink-0">
-            原理图预览
-          </h3>
-          {#if svg}
-            <!-- SVG 用 width/height:100% 撑满容器, preserveAspectRatio 自动按比例缩放并居中 -->
-            <div class="flex-1 min-h-0 bg-white rounded p-2">
-              {@html svg}
-            </div>
-          {:else if selectedProject && selectedHasSchematic}
-            <div class="flex-1 flex items-center justify-center text-base-content/40 text-sm">
-              原理图加载失败
-            </div>
-          {:else if selectedProject}
-            <div class="flex-1 flex items-center justify-center text-base-content/40 text-sm">
-              该工程没有同名的 .kicad_sch，仍可使用 PCB 继续
-            </div>
-          {:else}
-            <div class="flex-1 flex items-center justify-center text-base-content/40 text-sm">
-              请选择一个 KiCad 工程
+            <div class="hero min-h-28 flex-1 rounded-box bg-base-200">
+              <span class="text-sm text-base-content/50">尚未选择文件夹</span>
             </div>
           {/if}
         </div>
+
+        {#if entries.length > 0}
+          <div class="collapse collapse-arrow shrink-0 border border-base-300 bg-base-200">
+            <input type="checkbox" />
+            <div class="collapse-title min-h-0 py-3 text-sm font-medium">文件 · {entries.length}</div>
+            <div class="collapse-content max-h-40 overflow-auto">
+              <ul class="list">
+                {#each entries as e}
+                  <li class="flex items-center justify-between gap-2 py-1">
+                    <span class="min-w-0 truncate font-mono text-xs">{e.name}</span>
+                    <span class="badge badge-ghost badge-xs shrink-0">{formatBytes(e.bytes)}</span>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          </div>
+        {/if}
       </div>
-    </div>
-  {:else}
-    <div class="flex-1 flex items-center justify-center text-base-content/40 text-sm">
-      选择一个包含 KiCad 项目的文件夹开始
-    </div>
-  {/if}
+    </aside>
+
+    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 gap-3 p-4">
+        <div class="flex shrink-0 items-center justify-between">
+          <h2 class="card-title text-sm">原理图</h2>
+          {#if selectedProject}<span class="badge badge-ghost badge-sm font-mono">{selectedProject}</span>{/if}
+        </div>
+        {#if svg}
+          <div class="mockup-window min-h-0 flex-1 border border-base-300 bg-base-200 pt-6">
+            <div class="h-full overflow-auto bg-base-100 p-3">{@html svg}</div>
+          </div>
+        {:else}
+          <div class="hero min-h-0 flex-1 rounded-box bg-base-200">
+            <span class="text-sm text-base-content/50">
+              {selectedProject && selectedHasSchematic ? "加载失败" : selectedProject ? "无原理图" : "暂无预览"}
+            </span>
+          </div>
+        {/if}
+      </div>
+    </section>
+  </div>
 </div>

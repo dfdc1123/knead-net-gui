@@ -136,60 +136,60 @@
   >
     <defs>
       <linearGradient id="board-surface" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#fafafa" />
-        <stop offset="0.48" stop-color="#e8e8e6" />
-        <stop offset="1" stop-color="#d4d4d1" />
+        <stop offset="0" stop-color="var(--color-base-100)" />
+        <stop offset="0.48" stop-color="var(--color-base-200)" />
+        <stop offset="1" stop-color="var(--color-base-300)" />
       </linearGradient>
       <radialGradient id="socket-rim" cx="42%" cy="36%" r="65%">
-        <stop offset="0" stop-color="#ffffff" />
-        <stop offset="0.55" stop-color="#d5d5d2" />
-        <stop offset="1" stop-color="#a8a8a5" />
+        <stop offset="0" stop-color="var(--color-base-100)" />
+        <stop offset="0.55" stop-color="var(--color-base-200)" />
+        <stop offset="1" stop-color="var(--color-base-300)" />
       </radialGradient>
       <filter id="inset-shadow" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="0.7" stdDeviation="0.45" flood-color="#000" flood-opacity="0.45" />
+        <feDropShadow dx="0" dy="0.7" stdDeviation="0.45" flood-color="var(--color-base-content)" flood-opacity="0.45" />
       </filter>
       <filter id="selection-glow" x="-40%" y="-40%" width="180%" height="180%">
-        <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="#f59e0b" flood-opacity="1" />
+        <feDropShadow dx="0" dy="0" stdDeviation="2.5" flood-color="var(--color-warning)" flood-opacity="1" />
       </filter>
     </defs>
 
-    <rect x="0.8" y="0.8" width={boardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="url(#board-surface)" stroke="#b8b8b5" stroke-width="1.6" />
+    <rect x="0.8" y="0.8" width={boardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="url(#board-surface)" stroke="var(--color-base-300)" stroke-width="1.6" />
 
     {#if isMini}
-      <rect x={xInset - 5} y="78.05" width={boardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="#c8c8c5" />
-      <path d="M {xInset - 5} 78.6 H {boardWidth - xInset + 5}" stroke="#b4b4b1" stroke-width="1" />
+      <rect x={xInset - 5} y="78.05" width={boardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
+      <path d="M {xInset - 5} 78.6 H {boardWidth - xInset + 5}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
 
       {#each columns as column}
         {#each mainRows as row}
           <g transform="translate({xInset + column * pitch} {18.1 + row * pitch})">
             <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="#343434" filter="url(#inset-shadow)" />
+            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
           </g>
           <g transform="translate({xInset + column * pitch} {102.1 + row * pitch})">
             <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="#343434" filter="url(#inset-shadow)" />
+            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
           </g>
         {/each}
       {/each}
     {:else}
-      <path d="M 1 4 H {boardWidth - 1}" stroke="#2563eb" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 32 H {boardWidth - 1}" stroke="#dc2626" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 220 H {boardWidth - 1}" stroke="#2563eb" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 248 H {boardWidth - 1}" stroke="#dc2626" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 35 H {boardWidth - 1} M 1 217 H {boardWidth - 1}" stroke="#aaa" stroke-width="1" />
+      <path d="M 1 4 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
+      <path d="M 1 32 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
+      <path d="M 1 220 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
+      <path d="M 1 248 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
+      <path d="M 1 35 H {boardWidth - 1} M 1 217 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
 
-      <rect x="1" y="118.7" width={boardWidth - 2} height="12" fill="#c8c8c5" />
-      <path d="M 1 119.2 H {boardWidth - 1} M 1 130.2 H {boardWidth - 1}" stroke="#b0b0ad" stroke-width="1" />
+      <rect x="1" y="118.7" width={boardWidth - 2} height="12" fill="var(--color-base-300)" />
+      <path d="M 1 119.2 H {boardWidth - 1} M 1 130.2 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
 
       {#each columns as column}
         {#each mainRows as row}
           <g transform="translate({xInset + column * pitch} {60 + row * pitch})">
             <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="#343434" filter="url(#inset-shadow)" />
+            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
           </g>
           <g transform="translate({xInset + column * pitch} {144 + row * pitch})">
             <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="#343434" filter="url(#inset-shadow)" />
+            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
           </g>
         {/each}
       {/each}
@@ -198,16 +198,16 @@
         {#each [12, 24, 228, 240] as y}
           <g transform="translate({xInset + railOffset + column * pitch} {y})">
             <circle r="4" fill="url(#socket-rim)" />
-            <circle r="1.8" fill="#343434" filter="url(#inset-shadow)" />
+            <circle r="1.8" fill="var(--color-base-content)" filter="url(#inset-shadow)" />
           </g>
         {/each}
       {/each}
 
       <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="7" font-weight="700" text-anchor="middle">
-        <text x="7" y="14.5" fill="#2563eb">−</text>
-        <text x="7" y="26.5" fill="#dc2626">+</text>
-        <text x="7" y="230.5" fill="#2563eb">−</text>
-        <text x="7" y="242.5" fill="#dc2626">+</text>
+        <text x="7" y="14.5" fill="var(--color-primary)">−</text>
+        <text x="7" y="26.5" fill="var(--color-error)">+</text>
+        <text x="7" y="230.5" fill="var(--color-primary)">−</text>
+        <text x="7" y="242.5" fill="var(--color-error)">+</text>
       </g>
     {/if}
 
@@ -219,7 +219,7 @@
           <path
             d="M {from.x} {from.y} C {from.x} {(from.y + to.y) / 2}, {to.x} {(from.y + to.y) / 2}, {to.x} {to.y}"
             fill="none"
-            stroke={wire.color ?? (wire.kind === "routed" ? "#2563eb" : "#64748b")}
+            stroke={wire.kind === "routed" ? "var(--color-primary)" : "var(--color-neutral)"}
             stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : wire.kind === "routed" ? 2.5 : 1.2}
             stroke-dasharray={wire.kind === "routed" ? undefined : "4 3"}
             stroke-linecap="round"
@@ -254,15 +254,15 @@
           {#if part.kind === "axial" && part.pins.length >= 2}
             {@const first = holePosition(part.pins[0].hole)}
             {@const last = holePosition(part.pins[part.pins.length - 1].hole)}
-            <line x1={first.x} y1={first.y} x2={last.x} y2={last.y} stroke="#52525b" stroke-width="1.4" />
+            <line x1={first.x} y1={first.y} x2={last.x} y2={last.y} stroke="var(--color-neutral)" stroke-width="1.4" />
             <rect
               x={bounds.cx - Math.min(14, Math.max(7, bounds.width / 4))}
               y={bounds.cy - 4.5}
               width={Math.min(28, Math.max(14, bounds.width / 2))}
               height="9"
               rx="3"
-              fill={part.color ?? "#d6b27a"}
-              stroke="#713f12"
+              fill="var(--color-warning)"
+              stroke="var(--color-neutral)"
               stroke-width="1"
             />
           {:else}
@@ -272,8 +272,8 @@
               width={bounds.width}
               height={bounds.height}
               rx={part.kind === "ic" ? 2 : 4}
-              fill={part.color ?? (part.kind === "ic" ? "#27272a" : "#e4e4e7")}
-              stroke={part.kind === "ic" ? "#09090b" : "#52525b"}
+              fill={part.kind === "ic" ? "var(--color-neutral)" : "var(--color-base-200)"}
+              stroke={part.kind === "ic" ? "var(--color-base-content)" : "var(--color-neutral)"}
               stroke-width="1.2"
             />
           {/if}
@@ -284,8 +284,8 @@
               cx={point.x}
               cy={point.y}
               r={selected?.type === "net" && selected.id === pin.net_id ? 4 : 2.4}
-              fill={selected?.type === "net" && selected.id === pin.net_id ? "#f59e0b" : "#d4d4d8"}
-              stroke="#3f3f46"
+              fill={selected?.type === "net" && selected.id === pin.net_id ? "var(--color-warning)" : "var(--color-base-100)"}
+              stroke="var(--color-neutral)"
               stroke-width="0.8"
             >
               <title>{part.reference} pin {pin.number ?? "?"}{pin.name ? ` · ${pin.name}` : ""}</title>
@@ -298,7 +298,7 @@
             font-family="ui-sans-serif, system-ui, sans-serif"
             font-size="6.5"
             font-weight="700"
-            fill={part.kind === "ic" ? "#fafafa" : "#18181b"}
+            fill={part.kind === "ic" ? "var(--color-neutral-content)" : "var(--color-base-content)"}
             pointer-events="none"
           >{part.reference}</text>
           <title>{part.reference}{part.value ? ` · ${part.value}` : ""}</title>
