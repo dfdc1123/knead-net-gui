@@ -233,10 +233,12 @@
           </div>
         </div>
 
-        <div use:centerCanvas class="relative min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
-          <BreadboardPreview {preset} {cols} {frame} />
+        <div class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
+          <div use:centerCanvas class="h-full overflow-auto">
+            <BreadboardPreview {preset} {cols} {frame} />
+          </div>
           {#if !frame}
-            <div class="pointer-events-none absolute inset-0 grid place-items-center bg-base-200/75">
+            <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-base-200/75">
               {#if busy}<span class="loading loading-spinner loading-lg text-primary"></span>{:else}<span class="text-sm text-base-content/50">等待开始</span>{/if}
             </div>
           {/if}
