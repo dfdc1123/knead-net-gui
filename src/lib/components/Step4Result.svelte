@@ -80,15 +80,20 @@
     </div>
   </header>
 
-  {#if selected}
-    <div class="alert alert-warning min-h-10 shrink-0 py-2 text-sm">
-      <span class="status status-warning" aria-hidden="true"></span>
+  <div
+    class="alert h-10 shrink-0 overflow-hidden py-2 text-sm {selected ? 'alert-warning' : 'border border-base-300 bg-base-100 text-base-content/60'}"
+    aria-live="polite"
+  >
+    <span class="status {selected ? 'status-warning' : 'status-neutral'}" aria-hidden="true"></span>
+    {#if selected}
       <span>
         <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : 'badge-secondary'}">{selected.type === "component" ? "元件" : "网络"}</span>
         <strong class="ml-1 font-mono">{selected.label}</strong>
       </span>
-    </div>
-  {/if}
+    {:else}
+      <span>选择原理图或面包板中的元件与网络，可查看两侧的对应关系</span>
+    {/if}
+  </div>
 
   <div class="grid min-h-0 flex-1 grid-cols-2 gap-4">
     <section class="card min-h-80 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
