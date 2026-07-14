@@ -276,6 +276,7 @@
             <div
               class="diagram-viewport schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
               bind:this={schematicHost}
+              use:centerCanvas
               onclick={handleSchematicClick}
               onwheel={(event) => handleZoomWheel(event, "schematic")}
               onpointerdown={startPan}
@@ -289,14 +290,13 @@
             >
               <div
                 class="schematic-stage"
-                style:width={`${Math.max(1, schematicZoom) * 100}%`}
-                style:height={`${Math.max(1, schematicZoom) * 100}%`}
+                style:width={`${(schematicZoom + 1) * 100}%`}
+                style:height={`${(schematicZoom + 1) * 100}%`}
               >
                 <div
                   class="schematic-content"
-                  style:width={`${100 / Math.max(1, schematicZoom)}%`}
-                  style:height={`${100 / Math.max(1, schematicZoom)}%`}
-                  style:transform={`scale(${schematicZoom})`}
+                  style:width={`${(schematicZoom / (schematicZoom + 1)) * 100}%`}
+                  style:height={`${(schematicZoom / (schematicZoom + 1)) * 100}%`}
                 >
                   {@html schematicSvg}
                 </div>
@@ -492,10 +492,6 @@
     min-width: 100%;
     min-height: 100%;
     place-items: center;
-  }
-
-  .schematic-content {
-    transform-origin: center;
   }
 
   :global(.schematic-content > svg) {
