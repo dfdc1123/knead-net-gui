@@ -224,7 +224,7 @@
   });
 </script>
 
-<div class="mx-auto flex h-full min-h-0 w-full max-w-screen-2xl flex-col gap-3 overflow-hidden p-4">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-3 overflow-hidden p-4">
   <header class="flex shrink-0 items-center justify-between gap-3">
     <div>
       <h1 class="text-2xl font-bold">装配视图</h1>

@@ -121,7 +121,7 @@
   }
 </script>
 
-<div class="mx-auto flex h-full w-full max-w-screen-2xl flex-col gap-4 overflow-hidden p-6">
+<div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="shrink-0">
     <h1 class="text-2xl font-bold">导入工程</h1>
     <p class="text-sm text-base-content/60">自动配对同名的 KiCad 原理图与 PCB。</p>
