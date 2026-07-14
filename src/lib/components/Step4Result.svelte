@@ -43,8 +43,61 @@
 
   let panGesture: PanGesture | null = null;
 
+  const breadboardRegionOrder: Record<BreadboardHole["region"], number> = {
+    "rail-top": 0,
+    "main-top": 1,
+    "main-bottom": 2,
+    "rail-bottom": 3,
+  };
+
+  function compareHoles(left: BreadboardHole, right: BreadboardHole) {
+    return (
+      left.col - right.col ||
+      breadboardRegionOrder[left.region] - breadboardRegionOrder[right.region] ||
+      left.row - right.row
+    );
+  }
+
+  function firstHole(holes: BreadboardHole[]) {
+    return holes.reduce<BreadboardHole | undefined>(
+      (first, hole) => (!first || compareHoles(hole, first) < 0 ? hole : first),
+      undefined,
+    );
+  }
+
+  function compareParts(left: LayoutPart, right: LayoutPart) {
+    const leftHole = firstHole(left.pins.map((pin) => pin.hole));
+    const rightHole = firstHole(right.pins.map((pin) => pin.hole));
+    if (leftHole && rightHole) {
+      const positionOrder = compareHoles(leftHole, rightHole);
+      if (positionOrder !== 0) return positionOrder;
+    } else if (leftHole) {
+      return -1;
+    } else if (rightHole) {
+      return 1;
+    }
+    return left.reference.localeCompare(right.reference) || left.id.localeCompare(right.id);
+  }
+
+  function orderedWireHoles(wire: LayoutWire) {
+    return compareHoles(wire.from, wire.to) <= 0
+      ? [wire.from, wire.to]
+      : [wire.to, wire.from];
+  }
+
+  function compareWires(left: LayoutWire, right: LayoutWire) {
+    const [leftStart, leftEnd] = orderedWireHoles(left);
+    const [rightStart, rightEnd] = orderedWireHoles(right);
+    return (
+      compareHoles(leftStart, rightStart) ||
+      compareHoles(leftEnd, rightEnd) ||
+      left.id.localeCompare(right.id)
+    );
+  }
+
   let allWires = $derived(frame.wires ?? []);
-  let wires = $derived(allWires.filter((wire) => wire.kind !== "air"));
+  let parts = $derived([...frame.parts].sort(compareParts));
+  let wires = $derived(allWires.filter((wire) => wire.kind !== "air").sort(compareWires));
   let netCount = $derived(new Set(allWires.map((wire) => wire.net_id).filter(Boolean)).size);
   let completedPartCount = $derived(frame.parts.filter((part) => completedPartIds.includes(part.id)).length);
   let completedWireCount = $derived(wires.filter((wire) => completedWireIds.includes(wire.id)).length);
@@ -390,7 +443,7 @@
                   <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(false)} disabled={completedPartCount === 0}>全部重置</button>
                 </div>
                 <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
-                  {#each frame.parts as part (part.id)}
+                  {#each parts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
                     <li class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}">
                       <button
