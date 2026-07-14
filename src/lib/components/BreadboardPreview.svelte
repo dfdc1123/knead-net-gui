@@ -5,6 +5,7 @@
     CircuitSelection,
     LayoutFrame,
     LayoutPart,
+    LayoutWire,
   } from "$lib/layout";
 
   let {
@@ -23,6 +24,21 @@
 
   const pitch = 12;
   const mainRows = [0, 1, 2, 3, 4];
+
+  type Point = { x: number; y: number };
+
+  type PlannedWire = {
+    wire: LayoutWire;
+    from: Point;
+    to: Point;
+    horizontal: boolean;
+    groupId: string | null;
+    level: number;
+    maxLevel: number;
+    direction: -1 | 1;
+  };
+
+  let hoveredWireGroup = $state<string | null>(null);
 
   function range(length: number) {
     return Array.from({ length }, (_, index) => index);
@@ -75,6 +91,136 @@
       "rail-bottom": 228,
     };
     return { x, y: bases[hole.region] + hole.row * pitch };
+  }
+
+  function intervalsOverlap(left: PlannedWire, right: PlannedWire) {
+    const leftStart = Math.min(left.from.x, left.to.x);
+    const leftEnd = Math.max(left.from.x, left.to.x);
+    const rightStart = Math.min(right.from.x, right.to.x);
+    const rightEnd = Math.max(right.from.x, right.to.x);
+    // 只在内部相交时算冲突；仅仅共用一个端点不需要把整条线抬高。
+    return Math.max(leftStart, rightStart) < Math.min(leftEnd, rightEnd) - 0.01;
+  }
+
+  function planWires(wires: LayoutWire[]): PlannedWire[] {
+    const plans = wires.map<PlannedWire>((wire) => {
+      const from = holePosition(wire.from);
+      const to = holePosition(wire.to);
+      return {
+        wire,
+        from,
+        to,
+        horizontal: Math.abs(from.y - to.y) < 0.01 && Math.abs(from.x - to.x) > 0.01,
+        groupId: null,
+        level: 0,
+        maxLevel: 0,
+        // 上下区域都朝面包板中央弯，整体保持镜像关系。
+        direction: (from.y + to.y) / 2 < boardHeight / 2 ? 1 : -1,
+      };
+    });
+
+    const rows = new Map<string, number[]>();
+    for (const [index, plan] of plans.entries()) {
+      if (!plan.horizontal) continue;
+      const row = plan.from.y.toFixed(2);
+      const indices = rows.get(row) ?? [];
+      indices.push(index);
+      rows.set(row, indices);
+    }
+
+    for (const [row, indices] of rows) {
+      const sorted = [...indices].sort((leftIndex, rightIndex) => {
+        const left = plans[leftIndex];
+        const right = plans[rightIndex];
+        return (
+          Math.min(left.from.x, left.to.x) - Math.min(right.from.x, right.to.x) ||
+          Math.max(left.from.x, left.to.x) - Math.max(right.from.x, right.to.x)
+        );
+      });
+
+      // 先找出传递相交的区间组。悬停任意一根时，整组一起展开。
+      const components: number[][] = [];
+      let component: number[] = [];
+      let componentEnd = Number.NEGATIVE_INFINITY;
+      for (const index of sorted) {
+        const start = Math.min(plans[index].from.x, plans[index].to.x);
+        const end = Math.max(plans[index].from.x, plans[index].to.x);
+        if (component.length > 0 && start >= componentEnd - 0.01) {
+          components.push(component);
+          component = [];
+          componentEnd = Number.NEGATIVE_INFINITY;
+        }
+        component.push(index);
+        componentEnd = Math.max(componentEnd, end);
+      }
+      if (component.length > 0) components.push(component);
+
+      for (const [componentIndex, members] of components.entries()) {
+        if (members.length < 2) continue;
+
+        // 短线优先使用靠近板面的层；更长的包含线会占用更高的层。
+        const byLength = [...members].sort((leftIndex, rightIndex) => {
+          const left = plans[leftIndex];
+          const right = plans[rightIndex];
+          const leftLength = Math.abs(left.to.x - left.from.x);
+          const rightLength = Math.abs(right.to.x - right.from.x);
+          return leftLength - rightLength || Math.min(left.from.x, left.to.x) - Math.min(right.from.x, right.to.x);
+        });
+        const levels: number[][] = [];
+        for (const index of byLength) {
+          let level = levels.findIndex((membersAtLevel) =>
+            membersAtLevel.every((otherIndex) => !intervalsOverlap(plans[index], plans[otherIndex])),
+          );
+          if (level === -1) {
+            level = levels.length;
+            levels.push([]);
+          }
+          levels[level].push(index);
+          plans[index].level = level;
+        }
+
+        const groupId = `${row}:${componentIndex}`;
+        const maxLevel = Math.max(0, levels.length - 1);
+        for (const index of members) {
+          plans[index].groupId = groupId;
+          plans[index].maxLevel = maxLevel;
+        }
+      }
+    }
+
+    return plans;
+  }
+
+  let plannedWires = $derived(planWires(frame?.wires ?? []));
+
+  function wirePath(plan: PlannedWire, expanded: boolean) {
+    const { from, to } = plan;
+    if (!plan.horizontal) {
+      const middleY = (from.y + to.y) / 2;
+      return `M ${from.x} ${from.y} C ${from.x} ${middleY}, ${to.x} ${middleY}, ${to.x} ${to.y}`;
+    }
+
+    const span = Math.abs(to.x - from.x);
+    const baseHeight = Math.min(26, 4 + Math.sqrt(span) * 1.35);
+    const availableSpread = expanded ? 34 : 16;
+    const maximumStep = expanded ? 6.5 : 3;
+    const levelStep = plan.maxLevel > 0
+      ? Math.min(maximumStep, availableSpread / plan.maxLevel)
+      : 0;
+    const height = baseHeight + plan.level * levelStep;
+    const controlY = from.y + plan.direction * height;
+    const deltaX = to.x - from.x;
+
+    // 两个控制点保持同高，得到比半圆更扁、更接近真实跳线的拱形。
+    return `M ${from.x} ${from.y} C ${from.x + deltaX * 0.22} ${controlY}, ${to.x - deltaX * 0.22} ${controlY}, ${to.x} ${to.y}`;
+  }
+
+  function beginWireHover(groupId: string | null) {
+    if (groupId) hoveredWireGroup = groupId;
+  }
+
+  function endWireHover(groupId: string | null) {
+    if (hoveredWireGroup === groupId) hoveredWireGroup = null;
   }
 
   function partBounds(part: LayoutPart) {
@@ -199,26 +345,44 @@
 
     {#if frame}
       <g aria-label="布局连线">
-        {#each frame.wires ?? [] as wire (wire.id)}
-          {@const from = holePosition(wire.from)}
-          {@const to = holePosition(wire.to)}
-          <path
-            d="M {from.x} {from.y} C {from.x} {(from.y + to.y) / 2}, {to.x} {(from.y + to.y) / 2}, {to.x} {to.y}"
-            fill="none"
-            stroke={wire.kind === "routed" ? "var(--color-primary)" : "var(--color-neutral)"}
-            stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : wire.kind === "routed" ? 2.5 : 1.2}
-            stroke-dasharray={wire.kind === "routed" ? undefined : "4 3"}
-            stroke-linecap="round"
-            opacity={selected ? (selected.type === "net" && selected.id === wire.net_id ? 1 : 0.18) : wire.kind === "routed" ? 0.9 : 0.65}
-            class="cursor-pointer transition-all"
+        {#each plannedWires as planned (planned.wire.id)}
+          {@const wire = planned.wire}
+          {@const compactPath = wirePath(planned, false)}
+          {@const expandedPath = wirePath(planned, hoveredWireGroup === planned.groupId)}
+          <g
+            class="cursor-pointer"
             role="button"
             tabindex="0"
             aria-label="选择网络 {wire.net_name ?? wire.net_id ?? wire.id}"
             onclick={(event) => selectNet(event, wire.net_id, wire.net_name)}
+            onmouseenter={() => beginWireHover(planned.groupId)}
+            onmouseleave={() => endWireHover(planned.groupId)}
+            onfocus={() => beginWireHover(planned.groupId)}
+            onblur={() => endWireHover(planned.groupId)}
             onkeydown={(event) => {
               if (event.key === "Enter" || event.key === " ") selectNet(event, wire.net_id, wire.net_name);
             }}
-          />
+          >
+            <path
+              d={expandedPath}
+              fill="none"
+              stroke={wire.kind === "routed" ? wire.color ?? "var(--color-primary)" : "var(--color-neutral)"}
+              stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : wire.kind === "routed" ? 2.5 : 1.2}
+              stroke-dasharray={wire.kind === "routed" ? undefined : "4 3"}
+              stroke-linecap="round"
+              opacity={selected ? (selected.type === "net" && selected.id === wire.net_id ? 1 : 0.18) : wire.kind === "routed" ? 0.9 : 0.65}
+              pointer-events="none"
+            />
+            <!-- 命中路径保持在紧凑位置，视觉曲线展开时鼠标不会突然失去目标。 -->
+            <path
+              d={compactPath}
+              fill="none"
+              stroke="transparent"
+              stroke-width="10"
+              stroke-linecap="round"
+              pointer-events="stroke"
+            />
+          </g>
         {/each}
       </g>
 
