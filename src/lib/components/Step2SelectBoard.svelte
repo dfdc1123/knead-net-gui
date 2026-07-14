@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
+  import { centerCanvas } from "$lib/actions/centerCanvas";
   import BreadboardPreview from "./BreadboardPreview.svelte";
 
   let {
@@ -112,7 +113,7 @@
           <h2 class="card-title text-sm">预览</h2>
           {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × 10</span>{/if}
         </div>
-        <div class="relative min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
+        <div use:centerCanvas class="relative min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
           {#if info}
             <BreadboardPreview {preset} cols={info.cols} />
           {:else}

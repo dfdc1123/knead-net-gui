@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
+  import { centerCanvas } from "$lib/actions/centerCanvas";
   import type {
     BreadboardPreset,
     ComputePhase,
@@ -232,7 +233,7 @@
           </div>
         </div>
 
-        <div class="relative min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
+        <div use:centerCanvas class="relative min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200">
           <BreadboardPreview {preset} {cols} {frame} />
           {#if !frame}
             <div class="pointer-events-none absolute inset-0 grid place-items-center bg-base-200/75">

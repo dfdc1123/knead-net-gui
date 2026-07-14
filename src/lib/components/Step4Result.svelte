@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { centerCanvas } from "$lib/actions/centerCanvas";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import ZoomControls from "./ZoomControls.svelte";
   import type {
@@ -114,35 +115,6 @@
     panGesture = null;
     viewport.classList.remove("is-panning");
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
-  }
-
-  function centerCanvas(viewport: HTMLDivElement) {
-    let centered = false;
-    let animationFrame = 0;
-
-    const centerWhenVisible = () => {
-      cancelAnimationFrame(animationFrame);
-      animationFrame = requestAnimationFrame(() => {
-        if (centered || viewport.clientWidth === 0 || viewport.clientHeight === 0) return;
-        viewport.scrollLeft = (viewport.scrollWidth - viewport.clientWidth) / 2;
-        viewport.scrollTop = (viewport.scrollHeight - viewport.clientHeight) / 2;
-        centered = true;
-        observer.disconnect();
-      });
-    };
-
-    // 结果视图通常先在隐藏的步骤页中挂载，此时尺寸为 0。等用户切换到
-    // 结果页、画布真正获得尺寸后再执行一次默认居中。
-    const observer = new ResizeObserver(centerWhenVisible);
-    observer.observe(viewport);
-    centerWhenVisible();
-
-    return {
-      destroy() {
-        cancelAnimationFrame(animationFrame);
-        observer.disconnect();
-      },
-    };
   }
 
   function choosePart(part: LayoutPart) {
