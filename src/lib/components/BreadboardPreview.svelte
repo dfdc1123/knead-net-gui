@@ -241,6 +241,27 @@
     };
   }
 
+  function partLabelPosition(part: LayoutPart, bounds: ReturnType<typeof partBounds>) {
+    const labelHalfWidth = Math.max(5, part.reference.length * 2.1);
+    const overlapsPin = part.pins.some((pin) => {
+      const point = holePosition(pin.hole);
+      return (
+        Math.abs(point.x - bounds.cx) < labelHalfWidth + 2.4 &&
+        Math.abs(point.y - bounds.cy) < 5.7
+      );
+    });
+
+    if (!overlapsPin) return { x: bounds.cx, y: bounds.cy };
+
+    // 三极管等奇数引脚元件常在本体正中央还有一个孔。把位号移到
+    // 元件外侧，并优先远离面包板中央，避免文字与中间孔叠在一起。
+    const above = bounds.y - 4;
+    const below = bounds.y + bounds.height + 4;
+    if (bounds.cy <= boardHeight / 2 && above >= 4) return { x: bounds.cx, y: above };
+    if (bounds.cy > boardHeight / 2 && below <= boardHeight - 4) return { x: bounds.cx, y: below };
+    return { x: bounds.cx, y: above >= 4 ? above : below };
+  }
+
   function selectComponent(event: Event, reference: string) {
     event.stopPropagation();
     onSelect(
@@ -381,6 +402,7 @@
       <g aria-label="布局元件">
         {#each frame.parts as part (part.id)}
           {@const bounds = partBounds(part)}
+          {@const label = partLabelPosition(part, bounds)}
           <g
             class="cursor-pointer transition-opacity"
             role="button"
@@ -433,13 +455,18 @@
             </circle>
           {/each}
           <text
-            x={bounds.cx}
-            y={bounds.cy + 2.3}
+            x={label.x}
+            y={label.y}
             text-anchor="middle"
+            dominant-baseline="central"
             font-family="ui-sans-serif, system-ui, sans-serif"
             font-size="6.5"
             font-weight="700"
             fill={part.kind === "ic" ? "var(--color-neutral-content)" : "var(--color-base-content)"}
+            stroke={part.kind === "ic" ? "var(--color-neutral)" : "var(--color-base-100)"}
+            stroke-width="2.4"
+            stroke-linejoin="round"
+            paint-order="stroke"
             pointer-events="none"
           >{part.reference}</text>
           <title>{part.reference}{part.value ? ` · ${part.value}` : ""}</title>
