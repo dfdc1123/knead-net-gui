@@ -243,26 +243,96 @@
     };
   }
 
-  function partLabelPosition(part: LayoutPart, bounds: ReturnType<typeof partBounds>) {
-    const labelHalfWidth = Math.max(5, part.reference.length * 2.1);
-    const overlapsPin = part.pins.some((pin) => {
-      const point = holePosition(pin.hole);
-      return (
-        Math.abs(point.x - bounds.cx) < labelHalfWidth + 2.4 &&
-        Math.abs(point.y - bounds.cy) < 5.7
-      );
-    });
+  type LabelRect = { x: number; y: number; width: number; height: number };
 
-    if (!overlapsPin) return { x: bounds.cx, y: bounds.cy };
-
-    // 三极管等奇数引脚元件常在本体正中央还有一个孔。把位号移到
-    // 元件外侧，并优先远离面包板中央，避免文字与中间孔叠在一起。
-    const above = bounds.y - 4;
-    const below = bounds.y + bounds.height + 4;
-    if (bounds.cy <= boardHeight / 2 && above >= 4) return { x: bounds.cx, y: above };
-    if (bounds.cy > boardHeight / 2 && below <= boardHeight - 4) return { x: bounds.cx, y: below };
-    return { x: bounds.cx, y: above >= 4 ? above : below };
+  function labelRect(part: LayoutPart, point: Point): LabelRect {
+    const width = Math.max(10, part.reference.length * 4.2 + 2);
+    const height = 8;
+    return {
+      x: point.x - width / 2,
+      y: point.y - height / 2,
+      width,
+      height,
+    };
   }
+
+  function overlapArea(left: LabelRect, right: LabelRect) {
+    const width = Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x));
+    const height = Math.max(0, Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y));
+    return width * height;
+  }
+
+  function planPartLabels(parts: LayoutPart[]) {
+    const bounds = parts.map(partBounds);
+    const pins = parts.flatMap((part) => part.pins.map((pin) => holePosition(pin.hole)));
+    const placedLabels: LabelRect[] = [];
+    const result = new Map<string, Point>();
+
+    for (const [partIndex, part] of parts.entries()) {
+      const ownBounds = bounds[partIndex];
+      const horizontalOffset = Math.max(8, part.reference.length * 2.1 + 4);
+      const above: Point = { x: ownBounds.cx, y: ownBounds.y - 6 };
+      const below: Point = { x: ownBounds.cx, y: ownBounds.y + ownBounds.height + 6 };
+      const left: Point = { x: ownBounds.x - horizontalOffset, y: ownBounds.cy };
+      const right: Point = { x: ownBounds.x + ownBounds.width + horizontalOffset, y: ownBounds.cy };
+      const outwardFirst = ownBounds.cy <= boardHeight / 2 ? [above, below] : [below, above];
+      const candidates: Point[] = [
+        { x: ownBounds.cx, y: ownBounds.cy },
+        ...outwardFirst,
+        left,
+        right,
+        { x: left.x, y: outwardFirst[0].y },
+        { x: right.x, y: outwardFirst[0].y },
+        { x: left.x, y: outwardFirst[1].y },
+        { x: right.x, y: outwardFirst[1].y },
+      ];
+
+      let bestPoint = candidates[0];
+      let bestRect = labelRect(part, bestPoint);
+      let bestPenalty = Number.POSITIVE_INFINITY;
+
+      for (const [candidateIndex, candidate] of candidates.entries()) {
+        const rect = labelRect(part, candidate);
+        let penalty = candidateIndex * 0.01;
+
+        const overflowLeft = Math.max(0, 2 - rect.x);
+        const overflowTop = Math.max(0, 2 - rect.y);
+        const overflowRight = Math.max(0, rect.x + rect.width - (boardWidth - 2));
+        const overflowBottom = Math.max(0, rect.y + rect.height - (boardHeight - 2));
+        penalty += (overflowLeft + overflowTop + overflowRight + overflowBottom) * 1000;
+
+        for (const pin of pins) {
+          if (
+            pin.x >= rect.x - 3 &&
+            pin.x <= rect.x + rect.width + 3 &&
+            pin.y >= rect.y - 3 &&
+            pin.y <= rect.y + rect.height + 3
+          ) penalty += 1000;
+        }
+
+        for (const [otherIndex, otherBounds] of bounds.entries()) {
+          if (otherIndex === partIndex) continue;
+          penalty += overlapArea(rect, otherBounds) * 50;
+        }
+        for (const placed of placedLabels) {
+          penalty += overlapArea(rect, placed) * 100;
+        }
+
+        if (penalty < bestPenalty) {
+          bestPoint = candidate;
+          bestRect = rect;
+          bestPenalty = penalty;
+        }
+      }
+
+      result.set(part.id, bestPoint);
+      placedLabels.push(bestRect);
+    }
+
+    return result;
+  }
+
+  let plannedPartLabels = $derived(planPartLabels(frame?.parts ?? []));
 
   function selectComponent(event: Event, reference: string) {
     event.stopPropagation();
@@ -404,7 +474,7 @@
       <g aria-label="布局元件">
         {#each frame.parts as part (part.id)}
           {@const bounds = partBounds(part)}
-          {@const label = partLabelPosition(part, bounds)}
+          {@const label = plannedPartLabels.get(part.id) ?? { x: bounds.cx, y: bounds.cy }}
           <g
             class="cursor-pointer transition-opacity"
             role="button"
