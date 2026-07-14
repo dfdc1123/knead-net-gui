@@ -22,6 +22,7 @@
   } = $props();
 
   let selected = $state<CircuitSelection | null>(null);
+  let completedPartIds = $state<string[]>([]);
   let completedWireIds = $state<string[]>([]);
   let schematicHost = $state<HTMLDivElement>();
   let activeFrame = $state<LayoutFrame | null>(null);
@@ -29,8 +30,11 @@
   let allWires = $derived(frame.wires ?? []);
   let wires = $derived(allWires.filter((wire) => wire.kind !== "air"));
   let netCount = $derived(new Set(allWires.map((wire) => wire.net_id).filter(Boolean)).size);
+  let completedPartCount = $derived(frame.parts.filter((part) => completedPartIds.includes(part.id)).length);
   let completedWireCount = $derived(wires.filter((wire) => completedWireIds.includes(wire.id)).length);
-  let wireProgress = $derived(wires.length === 0 ? 0 : Math.round((completedWireCount / wires.length) * 100));
+  let taskCount = $derived(frame.parts.length + wires.length);
+  let completedTaskCount = $derived(completedPartCount + completedWireCount);
+  let assemblyProgress = $derived(taskCount === 0 ? 0 : Math.round((completedTaskCount / taskCount) * 100));
 
   function choose(next: CircuitSelection | null) {
     selected =
@@ -50,6 +54,16 @@
       label: wire.net_name || wire.net_id || wire.id,
       netId: wire.net_id,
     });
+  }
+
+  function setPartCompleted(id: string, completed: boolean) {
+    completedPartIds = completed
+      ? [...new Set([...completedPartIds, id])]
+      : completedPartIds.filter((partId) => partId !== id);
+  }
+
+  function markAllParts(completed: boolean) {
+    completedPartIds = completed ? frame.parts.map((part) => part.id) : [];
   }
 
   function setWireCompleted(id: string, completed: boolean) {
@@ -119,6 +133,7 @@
     }
     if (frame !== activeFrame) {
       activeFrame = frame;
+      completedPartIds = [];
       completedWireIds = [];
       selected = null;
     }
@@ -129,7 +144,7 @@
   <header class="flex shrink-0 items-center justify-between gap-3">
     <div>
       <h1 class="text-2xl font-bold">装配视图</h1>
-      <p class="text-sm text-base-content/60">按右侧清单逐根接线，面包板会同步显示装配状态</p>
+      <p class="text-sm text-base-content/60">按右侧清单逐项装配，面包板会同步显示接线状态</p>
     </div>
 
     <div class="flex items-center gap-2">
@@ -217,14 +232,14 @@
         <div class="shrink-0 px-1">
           <div class="flex items-center justify-between gap-2">
             <h2 class="card-title text-base">装配清单</h2>
-            <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-primary'} badge-sm">
-              {completedWireCount} / {wires.length}
+            <span class="badge {completedTaskCount === taskCount && taskCount > 0 ? 'badge-success' : 'badge-primary'} badge-sm">
+              {completedTaskCount} / {taskCount}
             </span>
           </div>
-          <progress class="progress progress-primary mt-2 w-full" value={wireProgress} max="100" aria-label="跳线完成进度 {wireProgress}%"></progress>
+          <progress class="progress progress-primary mt-2 w-full" value={assemblyProgress} max="100" aria-label="装配完成进度 {assemblyProgress}%"></progress>
           <div class="mt-1 flex items-center justify-between text-xs text-base-content/60">
-            <span>跳线完成进度</span>
-            <span>{wireProgress}%</span>
+            <span>总装配进度</span>
+            <span>{assemblyProgress}%</span>
           </div>
         </div>
 
@@ -233,21 +248,35 @@
             <input type="checkbox" checked aria-label="展开或收起元器件列表" />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               元器件
-              <span class="badge badge-neutral badge-sm">{frame.parts.length}</span>
+              <span class="badge {completedPartCount === frame.parts.length && frame.parts.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
+                {completedPartCount} / {frame.parts.length}
+              </span>
             </div>
             <div class="collapse-content px-2 pb-2">
               {#if frame.parts.length > 0}
+                <div class="join mb-2 flex w-full">
+                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(true)} disabled={completedPartCount === frame.parts.length}>全部完成</button>
+                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(false)} disabled={completedPartCount === 0}>全部重置</button>
+                </div>
                 <ul class="list rounded-box bg-base-200">
                   {#each frame.parts as part (part.id)}
-                    <li class="list-row px-3 py-2 {selected?.type === 'component' && selected.id === part.reference ? 'bg-primary/10' : ''}">
+                    {@const completed = completedPartIds.includes(part.id)}
+                    <li class="list-row grid-cols-[auto_1fr] gap-2 px-3 py-2 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}">
                       <button
                         class="absolute inset-0 cursor-pointer rounded-box transition-colors hover:bg-base-300/60 focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
                         onclick={() => choosePart(part)}
                         aria-label="选择元件 {part.reference}"
                       ></button>
-                      <div class="pointer-events-none relative z-10 col-span-full grid min-w-0 grid-cols-[auto_1fr] items-center gap-x-2">
+                      <input
+                        class="checkbox checkbox-success checkbox-sm relative z-10 row-span-2 self-center"
+                        type="checkbox"
+                        checked={completed}
+                        aria-label="{completed ? '标记为待安装' : '标记为已安装'}：元件 {part.reference}"
+                        onchange={(event) => setPartCompleted(part.id, event.currentTarget.checked)}
+                      />
+                      <div class="pointer-events-none relative z-10 grid min-w-0 grid-cols-[auto_1fr] items-center gap-x-2">
                         <span class="badge badge-outline badge-sm row-span-2 font-mono">{part.reference}</span>
-                        <span class="truncate text-sm font-medium">{part.value || "未标注值"}</span>
+                        <span class="truncate text-sm font-medium {completed ? 'line-through opacity-60' : ''}">{part.value || "未标注值"}</span>
                         <span class="truncate text-xs text-base-content/55">
                           {partKindLabel(part)} · {part.pins.length} 个引脚
                           {#if part.pins[0]} · {holeLabel(part.pins[0].hole)}{/if}
@@ -266,7 +295,9 @@
             <input type="checkbox" checked aria-label="展开或收起跳线列表" />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               跳线
-              <span class="badge badge-neutral badge-sm">{wires.length}</span>
+              <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
+                {completedWireCount} / {wires.length}
+              </span>
             </div>
             <div class="collapse-content px-2 pb-2">
               {#if wires.length > 0}
@@ -315,10 +346,10 @@
           </div>
         </div>
 
-        {#if wires.length > 0 && completedWireCount === wires.length}
+        {#if taskCount > 0 && completedTaskCount === taskCount}
           <div class="alert alert-success shrink-0 py-2 text-sm" role="status">
             <span class="status status-success"></span>
-            <span>所有跳线均已完成</span>
+            <span>所有元器件与跳线均已完成</span>
           </div>
         {/if}
       </div>
