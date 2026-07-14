@@ -29,6 +29,8 @@
   let completedWireIds = $state<string[]>([]);
   let schematicHost = $state<HTMLDivElement>();
   let breadboardHost = $state<HTMLDivElement>();
+  let assemblyListHost = $state<HTMLDivElement>();
+  let wireListOpen = $state(true);
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
@@ -257,10 +259,24 @@
     }
   }
 
+  async function revealWireInAssemblyList(wireId: string) {
+    await tick();
+    const row = [...(assemblyListHost?.querySelectorAll<HTMLElement>("[data-wire-id]") ?? [])]
+      .find((candidate) => candidate.dataset.wireId === wireId);
+    row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
   $effect(() => {
     selected;
     schematicSvg;
     queueMicrotask(syncSchematicHighlight);
+  });
+
+  $effect(() => {
+    const wireId = selected?.type === "wire" ? selected.id : null;
+    if (!wireId || !assemblyListHost) return;
+    wireListOpen = true;
+    void revealWireInAssemblyList(wireId);
   });
 
   $effect(() => {
@@ -427,7 +443,7 @@
           </div>
         </div>
 
-        <div class="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+        <div class="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" bind:this={assemblyListHost}>
           <div class="collapse-arrow collapse border border-base-300 bg-base-100">
             <input type="checkbox" checked aria-label="展开或收起元器件列表" />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
@@ -476,7 +492,7 @@
           </div>
 
           <div class="collapse-arrow collapse border border-base-300 bg-base-100">
-            <input type="checkbox" checked aria-label="展开或收起跳线列表" />
+            <input type="checkbox" bind:checked={wireListOpen} aria-label="展开或收起跳线列表" />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               跳线
               <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
@@ -492,7 +508,10 @@
                 <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
                   {#each wires as wire, index (wire.id)}
                     {@const completed = completedWireIds.includes(wire.id)}
-                    <li class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}">
+                    <li
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}"
+                      data-wire-id={wire.id}
+                    >
                       <button
                         class="assembly-row-hit absolute inset-0 cursor-pointer"
                         onclick={() => chooseWire(wire)}
