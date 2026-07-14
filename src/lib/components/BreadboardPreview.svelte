@@ -32,13 +32,10 @@
     from: Point;
     to: Point;
     horizontal: boolean;
-    groupId: string | null;
     level: number;
     maxLevel: number;
     direction: -1 | 1;
   };
-
-  let hoveredWireGroup = $state<string | null>(null);
 
   function range(length: number) {
     return Array.from({ length }, (_, index) => index);
@@ -111,7 +108,6 @@
         from,
         to,
         horizontal: Math.abs(from.y - to.y) < 0.01 && Math.abs(from.x - to.x) > 0.01,
-        groupId: null,
         level: 0,
         maxLevel: 0,
         // 上下区域都朝面包板中央弯，整体保持镜像关系。
@@ -128,7 +124,7 @@
       rows.set(row, indices);
     }
 
-    for (const [row, indices] of rows) {
+    for (const indices of rows.values()) {
       const sorted = [...indices].sort((leftIndex, rightIndex) => {
         const left = plans[leftIndex];
         const right = plans[rightIndex];
@@ -138,7 +134,7 @@
         );
       });
 
-      // 先找出传递相交的区间组。悬停任意一根时，整组一起展开。
+      // 先找出传递相交的区间组，再在组内分配可复用的拱形高度层。
       const components: number[][] = [];
       let component: number[] = [];
       let componentEnd = Number.NEGATIVE_INFINITY;
@@ -155,7 +151,7 @@
       }
       if (component.length > 0) components.push(component);
 
-      for (const [componentIndex, members] of components.entries()) {
+      for (const members of components) {
         if (members.length < 2) continue;
 
         // 短线优先使用靠近板面的层；更长的包含线会占用更高的层。
@@ -179,10 +175,8 @@
           plans[index].level = level;
         }
 
-        const groupId = `${row}:${componentIndex}`;
         const maxLevel = Math.max(0, levels.length - 1);
         for (const index of members) {
-          plans[index].groupId = groupId;
           plans[index].maxLevel = maxLevel;
         }
       }
@@ -193,7 +187,7 @@
 
   let plannedWires = $derived(planWires(frame?.wires ?? []));
 
-  function wirePath(plan: PlannedWire, expanded: boolean) {
+  function wirePath(plan: PlannedWire) {
     const { from, to } = plan;
     if (!plan.horizontal) {
       const middleY = (from.y + to.y) / 2;
@@ -202,8 +196,8 @@
 
     const span = Math.abs(to.x - from.x);
     const baseHeight = Math.min(26, 4 + Math.sqrt(span) * 1.35);
-    const availableSpread = expanded ? 34 : 16;
-    const maximumStep = expanded ? 6.5 : 3;
+    const availableSpread = 16;
+    const maximumStep = 3;
     const levelStep = plan.maxLevel > 0
       ? Math.min(maximumStep, availableSpread / plan.maxLevel)
       : 0;
@@ -213,14 +207,6 @@
 
     // 两个控制点保持同高，得到比半圆更扁、更接近真实跳线的拱形。
     return `M ${from.x} ${from.y} C ${from.x + deltaX * 0.22} ${controlY}, ${to.x - deltaX * 0.22} ${controlY}, ${to.x} ${to.y}`;
-  }
-
-  function beginWireHover(groupId: string | null) {
-    if (groupId) hoveredWireGroup = groupId;
-  }
-
-  function endWireHover(groupId: string | null) {
-    if (hoveredWireGroup === groupId) hoveredWireGroup = null;
   }
 
   function partBounds(part: LayoutPart) {
@@ -347,24 +333,19 @@
       <g aria-label="布局连线">
         {#each plannedWires as planned (planned.wire.id)}
           {@const wire = planned.wire}
-          {@const compactPath = wirePath(planned, false)}
-          {@const expandedPath = wirePath(planned, hoveredWireGroup === planned.groupId)}
+          {@const path = wirePath(planned)}
           <g
             class="cursor-pointer"
             role="button"
             tabindex="0"
             aria-label="选择网络 {wire.net_name ?? wire.net_id ?? wire.id}"
             onclick={(event) => selectNet(event, wire.net_id, wire.net_name)}
-            onmouseenter={() => beginWireHover(planned.groupId)}
-            onmouseleave={() => endWireHover(planned.groupId)}
-            onfocus={() => beginWireHover(planned.groupId)}
-            onblur={() => endWireHover(planned.groupId)}
             onkeydown={(event) => {
               if (event.key === "Enter" || event.key === " ") selectNet(event, wire.net_id, wire.net_name);
             }}
           >
             <path
-              d={expandedPath}
+              d={path}
               fill="none"
               stroke={wire.kind === "routed" ? wire.color ?? "var(--color-primary)" : "var(--color-neutral)"}
               stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : wire.kind === "routed" ? 2.5 : 1.2}
@@ -373,9 +354,9 @@
               opacity={selected ? (selected.type === "net" && selected.id === wire.net_id ? 1 : 0.18) : wire.kind === "routed" ? 0.9 : 0.65}
               pointer-events="none"
             />
-            <!-- 命中路径保持在紧凑位置，视觉曲线展开时鼠标不会突然失去目标。 -->
+            <!-- 用更宽的透明路径承接鼠标事件，细线仍然容易选中。 -->
             <path
-              d={compactPath}
+              d={path}
               fill="none"
               stroke="transparent"
               stroke-width="10"
