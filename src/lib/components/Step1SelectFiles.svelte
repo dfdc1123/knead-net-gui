@@ -34,11 +34,6 @@
     }
   }
 
-  function chooseFolder(event: MouseEvent) {
-    event.preventDefault();
-    void pickFolder();
-  }
-
   async function loadFolder(path: string) {
     busy = true;
     error = "";
@@ -141,11 +136,23 @@
       <div class="card-body min-h-0 gap-3 p-4">
         <fieldset class="fieldset shrink-0">
           <legend class="fieldset-legend">项目文件夹</legend>
-          <input type="file" class="file-input file-input-primary w-full" disabled={busy} onclick={chooseFolder} />
+          <button
+            type="button"
+            class="btn btn-primary w-full"
+            disabled={busy}
+            onclick={() => void pickFolder()}
+          >
+            {folder ? "更换项目文件夹" : "选择项目文件夹"}
+          </button>
           {#if busy}
             <p class="label"><span class="loading loading-spinner loading-xs"></span>扫描中</p>
           {:else if folder}
-            <p class="label block truncate font-mono text-xs" title={folder}>{folder}</p>
+            <div class="mt-1 flex items-center gap-2 rounded-box bg-success/10 px-3 py-2 text-success">
+              <span class="status status-success shrink-0" aria-hidden="true"></span>
+              <span class="min-w-0 truncate font-mono text-xs" title={folder}>{folder}</span>
+            </div>
+          {:else}
+            <p class="label text-base-content/50">尚未选择项目文件夹</p>
           {/if}
         </fieldset>
 
