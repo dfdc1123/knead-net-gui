@@ -48,7 +48,8 @@ export type LayoutWire = {
 
 export type CircuitSelection =
   | { type: "component"; id: string; label: string }
-  | { type: "net"; id: string; label: string };
+  | { type: "net"; id: string; label: string }
+  | { type: "wire"; id: string; label: string; netId?: string };
 
 export type LayoutFrame = {
   parts: LayoutPart[];

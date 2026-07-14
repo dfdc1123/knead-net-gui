@@ -44,8 +44,12 @@
   }
 
   function chooseWire(wire: LayoutWire) {
-    if (!wire.net_id) return;
-    choose({ type: "net", id: wire.net_id, label: wire.net_name || wire.net_id });
+    choose({
+      type: "wire",
+      id: wire.id,
+      label: wire.net_name || wire.net_id || wire.id,
+      netId: wire.net_id,
+    });
   }
 
   function setWireCompleted(id: string, completed: boolean) {
@@ -95,9 +99,10 @@
       element.classList.toggle("is-muted", selected?.type === "component" && !active);
     }
     for (const element of schematicHost.querySelectorAll<SVGElement>(".sch-net-line")) {
-      const active = selected?.type === "net" && element.dataset.net === selected.id;
+      const selectedNet = selected?.type === "net" ? selected.id : selected?.type === "wire" ? selected.netId : undefined;
+      const active = selectedNet !== undefined && element.dataset.net === selectedNet;
       element.classList.toggle("is-selected", active);
-      element.classList.toggle("is-muted", selected?.type === "net" && !active);
+      element.classList.toggle("is-muted", selectedNet !== undefined && !active);
     }
   }
 
@@ -146,7 +151,9 @@
     <span class="status {selected ? 'status-warning' : 'status-neutral'}" aria-hidden="true"></span>
     {#if selected}
       <span>
-        <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : 'badge-secondary'}">{selected.type === "component" ? "元件" : "网络"}</span>
+        <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : selected.type === 'wire' ? 'badge-accent' : 'badge-secondary'}">
+          {selected.type === "component" ? "元件" : selected.type === "wire" ? "跳线" : "网络"}
+        </span>
         <strong class="ml-1 font-mono">{selected.label}</strong>
       </span>
     {:else}
@@ -265,7 +272,7 @@
                 <ul class="list rounded-box bg-base-200">
                   {#each wires as wire, index (wire.id)}
                     {@const completed = completedWireIds.includes(wire.id)}
-                    <li class="list-row grid-cols-[auto_1fr] gap-2 px-3 py-2 {completed ? 'bg-success/10' : ''} {selected?.type === 'net' && selected.id === wire.net_id ? 'ring-1 ring-warning ring-inset' : ''}">
+                    <li class="list-row grid-cols-[auto_1fr] gap-2 px-3 py-2 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}">
                       <input
                         class="checkbox checkbox-success checkbox-sm row-span-2 self-center"
                         type="checkbox"

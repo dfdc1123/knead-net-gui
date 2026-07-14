@@ -248,13 +248,17 @@
     );
   }
 
-  function selectNet(event: Event, id?: string, label?: string) {
+  function selectWire(event: Event, wire: LayoutWire) {
     event.stopPropagation();
-    if (!id) return;
     onSelect(
-      selected?.type === "net" && selected.id === id
+      selected?.type === "wire" && selected.id === wire.id
         ? null
-        : { type: "net", id, label: label || id },
+        : {
+            type: "wire",
+            id: wire.id,
+            label: wire.net_name || wire.net_id || wire.id,
+            netId: wire.net_id,
+          },
     );
   }
 </script>
@@ -341,20 +345,20 @@
             class="cursor-pointer"
             role="button"
             tabindex="0"
-            aria-label="选择网络 {wire.net_name ?? wire.net_id ?? wire.id}"
-            onclick={(event) => selectNet(event, wire.net_id, wire.net_name)}
+            aria-label="选择跳线 {wire.net_name ?? wire.net_id ?? wire.id}"
+            onclick={(event) => selectWire(event, wire)}
             onkeydown={(event) => {
-              if (event.key === "Enter" || event.key === " ") selectNet(event, wire.net_id, wire.net_name);
+              if (event.key === "Enter" || event.key === " ") selectWire(event, wire);
             }}
           >
             <path
               d={path}
               fill="none"
               stroke={wire.kind === "routed" ? wire.color ?? "var(--color-primary)" : "var(--color-neutral)"}
-              stroke-width={selected?.type === "net" && selected.id === wire.net_id ? 5 : completed ? 3 : wire.kind === "routed" ? 2.2 : 1.2}
+              stroke-width={(selected?.type === "wire" && selected.id === wire.id) || (selected?.type === "net" && selected.id === wire.net_id) ? 5 : completed ? 3 : wire.kind === "routed" ? 2.2 : 1.2}
               stroke-dasharray={wire.kind !== "routed" || !completed ? "5 4" : undefined}
               stroke-linecap="round"
-              opacity={selected ? (selected.type === "net" && selected.id === wire.net_id ? 1 : 0.14) : completed ? 0.95 : 0.38}
+              opacity={selected ? ((selected.type === "wire" && selected.id === wire.id) || (selected.type === "net" && selected.id === wire.net_id) ? 1 : 0.14) : completed ? 0.95 : 0.38}
               pointer-events="none"
             />
             <!-- 用更宽的透明路径承接鼠标事件，细线仍然容易选中。 -->
