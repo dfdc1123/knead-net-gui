@@ -13,6 +13,7 @@
     cols,
     frame,
     zoom = 1,
+    panCanvas = true,
     selected = null,
     completedWireIds = [],
     onSelect = () => {},
@@ -21,6 +22,7 @@
     cols: number;
     frame?: LayoutFrame | null;
     zoom?: number;
+    panCanvas?: boolean;
     selected?: CircuitSelection | null;
     completedWireIds?: string[];
     onSelect?: (selection: CircuitSelection | null) => void;
@@ -288,8 +290,8 @@
 
 <div
   class="grid place-items-center bg-base-200 p-3 text-base-content"
-  style:width={`calc(100% + ${displayWidth * zoom + 24}px)`}
-  style:height={`calc(100% + ${displayHeight * zoom + 24}px)`}
+  style:width={panCanvas ? `calc(100% + ${displayWidth * zoom + 24}px)` : `max(100%, ${displayWidth * zoom + 24}px)`}
+  style:height={panCanvas ? `calc(100% + ${displayHeight * zoom + 24}px)` : `max(100%, ${displayHeight * zoom + 24}px)`}
   data-theme="corporate"
   role="presentation"
   onclick={() => onSelect(null)}
