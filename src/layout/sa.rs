@@ -1152,6 +1152,48 @@ mod tests {
         }
     }
 
+    fn three_single_pin_circuit() -> Circuit {
+        let footprint = Footprint {
+            id: FootprintId(0),
+            name: "single".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        };
+        let components = (0..3)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("P{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            })
+            .collect();
+        let pins = (0..3)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: Some(NetId(0)),
+            })
+            .collect();
+        Circuit {
+            components,
+            pins,
+            nets: vec![Net {
+                id: NetId(0),
+                name: "shared".into(),
+                pins: (0..3).map(PinId).collect(),
+            }],
+            footprints: vec![footprint],
+        }
+    }
+
     fn board() -> Breadboard {
         Breadboard::new(30, 5)
     }
@@ -2069,6 +2111,25 @@ mod tests {
                 "from_greedy 把元件放到了 blocked row y={y}"
             );
         }
+    }
+
+    #[test]
+    fn spectral_initialization_uses_the_leftmost_legal_column() {
+        let circuit = three_single_pin_circuit();
+        let state = SAState::from_spectral(
+            vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+            &circuit,
+            &board(),
+            17,
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+            &crate::layout::problem::AnnealProblem::default(),
+        )
+        .unwrap();
+
+        assert_eq!(state.x.iter().copied().min(), Some(0));
     }
 
     #[test]

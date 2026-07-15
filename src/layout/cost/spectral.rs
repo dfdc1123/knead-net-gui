@@ -140,7 +140,7 @@ pub(super) fn grid_fill_2d(
     let mut target_x = vec![0i32; n];
     for i in 0..n {
         let frac = (v2[i] - v2_min) / v2_range;
-        target_x[i] = (1.0 + frac * effective_width as f64) as i32;
+        target_x[i] = (frac * effective_width as f64) as i32;
         target_x[i] = target_x[i].clamp(0, cols - 1);
     }
 
