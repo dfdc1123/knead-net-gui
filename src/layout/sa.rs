@@ -974,7 +974,10 @@ pub(super) fn simulate(
     let max_stall_iters = stagnation_limit(config);
 
     for iteration in 0..config.max_iters {
-        if max_stall_iters > 0 && attempts_since_best >= max_stall_iters {
+        if max_stall_iters > 0
+            && iteration >= config.max_iters / 2
+            && attempts_since_best >= max_stall_iters
+        {
             break;
         }
         if control.as_ref().is_some_and(|control| {
@@ -2040,8 +2043,8 @@ mod tests {
             }),
             5_000
         );
-        assert_eq!(outcome.metrics.attempted, 5_000);
-        assert_eq!(outcome.metrics.no_candidate, 5_000);
+        assert_eq!(outcome.metrics.attempted, 10_000);
+        assert_eq!(outcome.metrics.no_candidate, 10_000);
     }
 
     /// 验证 SAState::from_greedy 在标准板上不会试着把元件放中间 blocked row。

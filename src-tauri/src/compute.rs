@@ -53,7 +53,7 @@ impl ComputeProfile {
                 initial: BridgeInitial::BestOfBoth,
             },
             t_start: 40.0,
-            t_end: 0.01,
+            t_end: 0.1,
             ..SAConfig::default()
         }
     }
@@ -952,7 +952,7 @@ mod tests {
         assert_eq!((full.n_seeds, full.max_iters), (128, 40_000));
         for config in [quick, standard, full] {
             assert_eq!(config.t_start, 40.0);
-            assert_eq!(config.t_end, 0.01);
+            assert_eq!(config.t_end, 0.1);
             assert!(config.use_spectral);
             assert_eq!(
                 config.bridge_policy,
