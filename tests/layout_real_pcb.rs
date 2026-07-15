@@ -6,7 +6,7 @@ use knead_net::{
     SAConfig, prepare_for_layout,
 };
 
-const SA_ALGORITHM_VERSION: &str = "spectral-variants-v1";
+const SA_ALGORITHM_VERSION: &str = "initializer-families-v1";
 const FIXED_SEED: u64 = 0x14_2026_0715;
 
 #[derive(Debug, PartialEq, Eq)]

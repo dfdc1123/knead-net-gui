@@ -1097,7 +1097,7 @@ fn place_sa_initialization_avoids_existing_wire_endpoints() {
     );
     for event in events.into_inner().unwrap() {
         let snapshot = match event {
-            LayoutProgress::SpectralInitial { snapshot, .. }
+            LayoutProgress::InitialPlacement { snapshot, .. }
             | LayoutProgress::Annealing { snapshot, .. }
             | LayoutProgress::PlacementComplete { snapshot, .. } => Some(snapshot),
             LayoutProgress::SeedsProgress { .. } | LayoutProgress::RoutingComplete { .. } => None,
@@ -1159,7 +1159,7 @@ fn place_sa_progress_does_not_change_result() {
     assert_eq!(plain.placements(), observed.placements());
     let events = events.into_inner().unwrap();
     let initial_cost = match events.first() {
-        Some(crate::layout::LayoutProgress::SpectralInitial { cost, .. }) => *cost,
+        Some(crate::layout::LayoutProgress::InitialPlacement { cost, .. }) => *cost,
         other => panic!("first event should be the initial state, got {other:?}"),
     };
     let iteration_zero_cost = events
@@ -1176,7 +1176,11 @@ fn place_sa_progress_does_not_change_result() {
     assert_eq!(initial_cost, iteration_zero_cost);
     assert!(matches!(
         events.first(),
-        Some(crate::layout::LayoutProgress::SpectralInitial { seed: 1234, .. })
+        Some(crate::layout::LayoutProgress::InitialPlacement {
+            seed: 1234,
+            initializer: crate::layout::InitializerFamily::ForceDirected,
+            ..
+        })
     ));
     assert!(events.iter().any(|event| matches!(
         event,

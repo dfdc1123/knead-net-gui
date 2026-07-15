@@ -192,7 +192,7 @@ impl<'c> super::Layout<'c> {
         let base_placements = self.placements.clone();
         let base_wires = self.wires.clone();
         let completed_seeds = AtomicUsize::new(0);
-        let initial_progress_reported = AtomicBool::new(!config.use_spectral);
+        let initial_progress_reported = AtomicBool::new(false);
         let display_seed = progress
             .map_or(0, |(_, options)| options.display_seed)
             .min(n_seeds - 1);
@@ -212,31 +212,37 @@ impl<'c> super::Layout<'c> {
                     n_seeds: 1,
                     ..*config
                 };
+                let initializer =
+                    sa::initializer_family_for_seed(config.use_spectral, s as usize, n_seeds);
                 let observer_callback = |event| {
                     let Some((callback, _)) = progress else {
                         return;
                     };
-                    let (kind, current_cost, state) = match event {
-                        sa::SimulationProgress::Initial { state, cost } => (None, cost, state),
+                    match event {
+                        sa::SimulationProgress::Initial {
+                            initializer,
+                            state,
+                            cost,
+                        } => {
+                            let snapshot =
+                                snapshot_from_state(&base_placements, &base_wires, &state);
+                            callback(LayoutProgress::InitialPlacement {
+                                seed: cfg_s.seed,
+                                initializer,
+                                cost,
+                                snapshot,
+                            });
+                            initial_progress_reported.store(true, Ordering::Release);
+                        }
                         sa::SimulationProgress::Annealing {
                             iteration,
                             current_cost,
                             best_cost,
                             metrics,
                             state,
-                        } => (Some((iteration, best_cost, metrics)), current_cost, state),
-                    };
-                    let snapshot = snapshot_from_state(&base_placements, &base_wires, &state);
-                    match kind {
-                        None => {
-                            callback(LayoutProgress::SpectralInitial {
-                                seed: cfg_s.seed,
-                                cost: current_cost,
-                                snapshot,
-                            });
-                            initial_progress_reported.store(true, Ordering::Release);
-                        }
-                        Some((iteration, best_cost, metrics)) => {
+                        } => {
+                            let snapshot =
+                                snapshot_from_state(&base_placements, &base_wires, &state);
                             callback(LayoutProgress::Annealing {
                                 seed: cfg_s.seed,
                                 iteration,
@@ -262,14 +268,17 @@ impl<'c> super::Layout<'c> {
                         cancellation: cancellation_flag,
                     },
                 );
-                let outcome = match sa::simulate(
+                let outcome = match sa::simulate_with_initializer(
                     placeable.clone(),
                     self.circuit,
                     board,
                     &cfg_s,
                     &problem,
                     &preprocess,
-                    control,
+                    sa::SimulationRun {
+                        initializer,
+                        control,
+                    },
                 ) {
                     Ok(outcome) => outcome,
                     Err(error) => return Some(Err(error)),

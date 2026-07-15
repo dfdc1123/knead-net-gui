@@ -33,7 +33,7 @@
     { id: "full", name: ui.step3.profiles.full, description: ui.step3.profileDescriptions.full },
   ];
   const phases: { id: Exclude<ComputePhase, "idle" | "error">; label: string }[] = [
-    { id: "spectral", label: "Spectral" },
+    { id: "spectral", label: "Initial" },
     { id: "annealing", label: "SA" },
     { id: "routing", label: "Routing" },
     { id: "done", label: ui.step3.done },

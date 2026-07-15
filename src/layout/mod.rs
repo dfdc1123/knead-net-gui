@@ -34,7 +34,8 @@ pub use prepare::{
     prepare_for_layout_with_individual_power_nets, prepare_for_layout_with_power_nets,
 };
 pub use progress::{
-    AnnealMetrics, CancellationToken, LayoutProgress, LayoutSnapshot, ProgressOptions,
+    AnnealMetrics, CancellationToken, InitializerFamily, LayoutProgress, LayoutSnapshot,
+    ProgressOptions,
 };
 pub use routing::{PathFinderRouter, Router, Wire, WireId};
 pub use sa::SAConfig;

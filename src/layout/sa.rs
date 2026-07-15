@@ -25,7 +25,7 @@ use crate::layout::cost::{
     cost_fast_if_legal, initialize_bridging, populate_bridgeable_info,
 };
 use crate::layout::placement::{BBox, Rotation};
-use crate::layout::progress::AnnealMetrics;
+use crate::layout::progress::{AnnealMetrics, InitializerFamily};
 
 // ============================================================
 //  Profile helpers (profile_sa cfg 启用, 默认 noop)
@@ -129,8 +129,9 @@ pub struct SAConfig {
     /// 跑多少次取最低 cost 的解。SA 是随机算法, 单次可能卡在 local optimum。
     /// 多 seed 独立跑, 取 cost 最低的。默认 1。
     pub n_seeds: usize,
-    /// `true` 用 [`SAState::from_spectral`] 做初排 (频谱嵌入, 无参数, 一步到位);
-    /// `false` 用顺序提示 + 公共 cost-aware legalizer [`SAState::from_greedy_with_weights`].
+    /// `true` 启用预排 family：单 seed 保持 spectral，多 seed 在 spectral、
+    /// force-directed、greedy 与 randomized-greedy 间按固定周期分配；`false` 只用
+    /// 顺序提示 + 公共 cost-aware legalizer [`SAState::from_greedy_with_weights`]。
     pub use_spectral: bool,
     /// Whether Bridged poses are disabled, explored, or mandatory.
     pub bridge_policy: BridgePolicy,
@@ -970,6 +971,7 @@ fn can_shift_left_one(state: &SAState, board: &Breadboard, i: usize) -> bool {
 
 pub(super) enum SimulationProgress {
     Initial {
+        initializer: InitializerFamily,
         state: SAState,
         cost: f64,
     },
@@ -996,6 +998,11 @@ pub(super) struct SimulationObserver<'a> {
 pub(super) struct SimulationControl<'a> {
     pub observer: Option<SimulationObserver<'a>>,
     pub cancellation: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+pub(super) struct SimulationRun<'a> {
+    pub initializer: InitializerFamily,
+    pub control: Option<SimulationControl<'a>>,
 }
 
 fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
@@ -1043,11 +1050,32 @@ fn stagnation_check_start(config: &SAConfig) -> usize {
     config.max_iters.saturating_mul(9) / 10
 }
 
+pub(super) fn initializer_family_for_seed(
+    use_spectral: bool,
+    seed_index: usize,
+    total_seeds: usize,
+) -> InitializerFamily {
+    if !use_spectral {
+        return InitializerFamily::Greedy;
+    }
+    if total_seeds <= 1 {
+        return InitializerFamily::Spectral;
+    }
+    const CYCLE: [InitializerFamily; 8] = [
+        InitializerFamily::ForceDirected,
+        InitializerFamily::Spectral,
+        InitializerFamily::RandomizedGreedy,
+        InitializerFamily::ForceDirected,
+        InitializerFamily::Spectral,
+        InitializerFamily::RandomizedGreedy,
+        InitializerFamily::ForceDirected,
+        InitializerFamily::Greedy,
+    ];
+    CYCLE[seed_index % CYCLE.len()]
+}
+
 /// 跑模拟退火, 返回最佳 [`SAState`] 和 attempt 分类计数。
-///
-/// 初始状态按 [`SAConfig::use_spectral`] 选 [`SAState::from_spectral`] 或
-/// [`SAState::from_greedy`]; 两者都已经避免 pin 撞 / bbox 撞 / 列冲突,
-/// (后续 `Flip` / `ShiftX` 偶尔会重新引入列短路, 由 cost 罚分优化掉)。
+#[cfg(test)]
 pub(super) fn simulate(
     placeable: Vec<ComponentId>,
     circuit: &Circuit,
@@ -1057,11 +1085,39 @@ pub(super) fn simulate(
     preprocess: &crate::layout::preprocess::PreprocessResult,
     control: Option<SimulationControl<'_>>,
 ) -> Result<SimulationOutcome, crate::layout::LayoutError> {
+    let initializer = initializer_family_for_seed(config.use_spectral, 0, 1);
+    simulate_with_initializer(
+        placeable,
+        circuit,
+        board,
+        config,
+        problem,
+        preprocess,
+        SimulationRun {
+            initializer,
+            control,
+        },
+    )
+}
+
+pub(super) fn simulate_with_initializer(
+    mut placeable: Vec<ComponentId>,
+    circuit: &Circuit,
+    board: &Breadboard,
+    config: &SAConfig,
+    problem: &crate::layout::problem::AnnealProblem,
+    preprocess: &crate::layout::preprocess::PreprocessResult,
+    run: SimulationRun<'_>,
+) -> Result<SimulationOutcome, crate::layout::LayoutError> {
+    let SimulationRun {
+        initializer,
+        control,
+    } = run;
     #[cfg(profile_sa)]
     let profile_init_started = std::time::Instant::now();
     let mut rng = fastrand::Rng::with_seed(config.seed);
-    let mut state = if config.use_spectral {
-        SAState::from_spectral_with_weights(
+    let mut state = match initializer {
+        InitializerFamily::Spectral => SAState::from_spectral_with_weights(
             placeable,
             circuit,
             board,
@@ -1069,16 +1125,35 @@ pub(super) fn simulate(
             preprocess,
             problem,
             &config.weights,
-        )
-    } else {
-        SAState::from_greedy_with_weights(
+        ),
+        InitializerFamily::ForceDirected => SAState::from_force_directed_with_weights(
+            placeable,
+            circuit,
+            board,
+            config.seed,
+            preprocess,
+            problem,
+            &config.weights,
+        ),
+        InitializerFamily::RandomizedGreedy => {
+            fastrand::Rng::with_seed(config.seed ^ 0xA076_1D64_78BD_642F).shuffle(&mut placeable);
+            SAState::from_greedy_with_weights(
+                placeable,
+                circuit,
+                board,
+                preprocess,
+                problem,
+                &config.weights,
+            )
+        }
+        InitializerFamily::Greedy => SAState::from_greedy_with_weights(
             placeable,
             circuit,
             board,
             preprocess,
             problem,
             &config.weights,
-        )
+        ),
     }?;
     let observer = control
         .as_ref()
@@ -1112,10 +1187,9 @@ pub(super) fn simulate(
         config.bridge_policy,
     )?;
     let mut current_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
-    if config.use_spectral
-        && let Some(observer) = observer
-    {
+    if let Some(observer) = observer {
         (observer.callback)(SimulationProgress::Initial {
+            initializer,
             state: state.clone(),
             cost: current_cost,
         });
@@ -2456,6 +2530,36 @@ mod tests {
     }
 
     #[test]
+    fn initializer_family_schedule_preserves_seed_diversity() {
+        use crate::layout::progress::InitializerFamily;
+
+        assert_eq!(
+            initializer_family_for_seed(true, 0, 1),
+            InitializerFamily::Spectral
+        );
+        assert_eq!(
+            initializer_family_for_seed(false, 0, 8),
+            InitializerFamily::Greedy
+        );
+        let scheduled: Vec<_> = (0..8)
+            .map(|seed_index| initializer_family_for_seed(true, seed_index, 8))
+            .collect();
+        assert_eq!(
+            scheduled,
+            vec![
+                InitializerFamily::ForceDirected,
+                InitializerFamily::Spectral,
+                InitializerFamily::RandomizedGreedy,
+                InitializerFamily::ForceDirected,
+                InitializerFamily::Spectral,
+                InitializerFamily::RandomizedGreedy,
+                InitializerFamily::ForceDirected,
+                InitializerFamily::Greedy,
+            ]
+        );
+    }
+
+    #[test]
     fn zero_iterations_do_not_force_bridging_when_onboard_is_equally_good() {
         let (circuit, board) = bridgable_fixture();
         let config = SAConfig {
@@ -2500,7 +2604,7 @@ mod tests {
         let (circuit, board) = bridgable_fixture();
         let initial_states = std::sync::Mutex::new(Vec::new());
         let callback = |progress| {
-            if let SimulationProgress::Initial { state, cost } = progress {
+            if let SimulationProgress::Initial { state, cost, .. } = progress {
                 initial_states.lock().unwrap().push((state, cost));
             }
         };

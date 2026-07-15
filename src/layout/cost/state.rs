@@ -475,7 +475,6 @@ impl SAState {
             })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn from_force_directed_with_weights(
         placeable: Vec<ComponentId>,
         circuit: &Circuit,

@@ -51,12 +51,22 @@ pub struct AnnealMetrics {
     pub accepted: usize,
 }
 
+/// Strategy used to construct one annealing seed's legal initial placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitializerFamily {
+    Greedy,
+    Spectral,
+    ForceDirected,
+    RandomizedGreedy,
+}
+
 /// Step 3 所需的几个稳定阶段。
 #[derive(Debug, Clone)]
 pub enum LayoutProgress {
     /// 展示 seed 完成 bridge 初始化后的真实退火起点及其成本。
-    SpectralInitial {
+    InitialPlacement {
         seed: u64,
+        initializer: InitializerFamily,
         cost: f64,
         snapshot: LayoutSnapshot,
     },

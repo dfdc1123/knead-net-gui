@@ -20,8 +20,6 @@ use crate::layout::breadboard::Breadboard;
 mod bridge;
 pub(crate) mod context;
 mod cost_fast;
-// Kept separate so the seed scheduler can treat it as an independent family.
-#[allow(dead_code)]
 mod force;
 mod legalize;
 mod mst;

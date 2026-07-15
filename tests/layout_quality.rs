@@ -69,6 +69,7 @@ const FIXTURES: [Fixture; 3] = [
 enum Initializer {
     Greedy,
     Spectral,
+    Portfolio,
 }
 
 impl Initializer {
@@ -76,11 +77,19 @@ impl Initializer {
         match self {
             Self::Greedy => "greedy",
             Self::Spectral => "spectral",
+            Self::Portfolio => "portfolio",
         }
     }
 
     fn use_spectral(self) -> bool {
-        matches!(self, Self::Spectral)
+        !matches!(self, Self::Greedy)
+    }
+
+    fn n_seeds(self) -> usize {
+        match self {
+            Self::Portfolio => 8,
+            Self::Greedy | Self::Spectral => 1,
+        }
     }
 }
 
@@ -123,7 +132,7 @@ fn quick_config(seed: u64, initializer: Initializer, max_iters: usize) -> SAConf
         t_start: 40.0,
         t_end: 0.1,
         seed,
-        n_seeds: 1,
+        n_seeds: initializer.n_seeds(),
         use_spectral: initializer.use_spectral(),
         bridge_policy: BridgePolicy::Explore {
             initial: BridgeInitial::BestOfBoth,
@@ -306,5 +315,41 @@ fn report_initializer_quality() {
                 .collect();
             print_summary(fixture, initializer, &runs);
         }
+    }
+}
+
+#[test]
+#[ignore = "fixed-seed portfolio quality report; run explicitly after scheduler changes"]
+fn report_initializer_portfolio_quality() {
+    for fixture in FIXTURES {
+        let runs = [run_fixture(
+            fixture,
+            Initializer::Portfolio,
+            FIXED_SEEDS[0],
+            5_000,
+        )];
+        print_summary(fixture, Initializer::Portfolio, &runs);
+        let run = runs[0];
+        assert!(
+            run.final_cost <= fixture.spectral_envelope.final_cost_median,
+            "{} portfolio final cost regressed: actual={}, maximum={}",
+            fixture.name,
+            run.final_cost,
+            fixture.spectral_envelope.final_cost_median,
+        );
+        assert!(
+            run.wire_count as f64 <= fixture.spectral_envelope.wire_count_median,
+            "{} portfolio wire count regressed: actual={}, maximum={}",
+            fixture.name,
+            run.wire_count,
+            fixture.spectral_envelope.wire_count_median,
+        );
+        assert!(
+            run.wire_length as f64 <= fixture.spectral_envelope.wire_length_median,
+            "{} portfolio wire length regressed: actual={}, maximum={}",
+            fixture.name,
+            run.wire_length,
+            fixture.spectral_envelope.wire_length_median,
+        );
     }
 }

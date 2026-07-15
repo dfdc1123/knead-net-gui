@@ -5,8 +5,8 @@ use std::time::Instant;
 
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
-    Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Circuit, HoleId, Layout,
-    LayoutProgress, LayoutSnapshot, PathFinderRouter, ProgressOptions, Region, SAConfig,
+    Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Circuit, HoleId, InitializerFamily,
+    Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, ProgressOptions, Region, SAConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -499,8 +499,9 @@ fn progress_event(
     } = context;
     let locale = *locale;
     match progress {
-        LayoutProgress::SpectralInitial {
+        LayoutProgress::InitialPlacement {
             seed,
+            initializer,
             cost,
             snapshot,
         } => ComputeEvent {
@@ -508,8 +509,14 @@ fn progress_event(
             phase: "spectral",
             progress: 5.0,
             message: match locale {
-                UiLocale::ZhCn => format!("Spectral 初始布局 · seed {seed} · cost {cost:.1}"),
-                UiLocale::En => format!("Spectral initial layout · seed {seed} · cost {cost:.1}"),
+                UiLocale::ZhCn => format!(
+                    "{} 初始布局 · seed {seed} · cost {cost:.1}",
+                    initializer_label(initializer, locale)
+                ),
+                UiLocale::En => format!(
+                    "{} initial layout · seed {seed} · cost {cost:.1}",
+                    initializer_label(initializer, locale)
+                ),
             },
             frame: Some(snapshot_frame(
                 &snapshot,
@@ -617,6 +624,15 @@ fn progress_event(
                 None,
             )),
         },
+    }
+}
+
+fn initializer_label(initializer: InitializerFamily, locale: UiLocale) -> &'static str {
+    match initializer {
+        InitializerFamily::Greedy => locale.text("贪心", "Greedy"),
+        InitializerFamily::Spectral => locale.text("频谱", "Spectral"),
+        InitializerFamily::ForceDirected => locale.text("力导向", "Force-directed"),
+        InitializerFamily::RandomizedGreedy => locale.text("随机化贪心", "Randomized greedy"),
     }
 }
 
@@ -1001,15 +1017,16 @@ mod tests {
     }
 
     #[test]
-    fn spectral_progress_exposes_the_post_bridge_cost() {
+    fn initializer_progress_exposes_the_post_bridge_cost() {
         let circuit = Circuit::empty();
         let board = Breadboard::standard();
         let metadata = ComponentMetadataMap::new();
         let started = Instant::now();
         let event = progress_event(
             7,
-            LayoutProgress::SpectralInitial {
+            LayoutProgress::InitialPlacement {
                 seed: 42,
+                initializer: knead_net::layout::InitializerFamily::ForceDirected,
                 cost: 123.5,
                 snapshot: LayoutSnapshot {
                     placements: Vec::new(),
@@ -1028,6 +1045,7 @@ mod tests {
 
         assert_eq!(event.phase, "spectral");
         assert!(event.message.contains("cost 123.5"));
-        assert_eq!(event.frame.expect("spectral frame").cost, Some(123.5));
+        assert!(event.message.contains("力导向"));
+        assert_eq!(event.frame.expect("initializer frame").cost, Some(123.5));
     }
 }
