@@ -11,7 +11,9 @@ use crate::layout::placement::{BBox, PlacedFootprint, Rotation, rotate};
 use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
 
-use super::spectral::{compute_fiedler, compute_second_evec, grid_fill_2d};
+use super::Weights;
+use super::legalize::{PlacementHints, legalize};
+use super::spectral::{compute_fiedler, compute_second_evec, spectral_hints};
 
 pub(super) struct InitialGeometry {
     pins: Vec<(i32, i32, Option<crate::circuit::NetId>)>,
@@ -52,6 +54,7 @@ impl InitialGeometry {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct InitialOccupancy {
     occupied: std::collections::HashSet<(i32, i32)>,
     rail_owners: HashMap<u32, Option<crate::circuit::NetId>>,
@@ -279,13 +282,13 @@ impl SAState {
         }
     }
 
-    /// 贪心 first-fit 初始状态: 按元件顺序, 找第一个有效 `(x, y)` (按行从上到下、
-    /// 列从左到右扫)。"有效" = 所有 pin 都在板内 + 包围盒不撞已摆元件 bbox +
-    /// 不引入列冲突 (同列同 rail 不同 net 的 pin)。
+    /// 顺序初始状态: 按元件顺序构造位置提示，由公共 beam legalizer 保留多个
+    /// 合法部分布局，并以完整状态的真实 SA cost 选优。
     ///
     /// 两个初排 (`from_greedy` / `from_spectral`) 都
     /// 做这个检查, 因此初排结果**保证**不引入列短路 — SA 后续只在 `Flip` /
     /// `ShiftX` 偶尔重新引入时捕捉并罚分。
+    #[cfg(test)]
     pub(crate) fn from_greedy(
         placeable: Vec<ComponentId>,
         circuit: &Circuit,
@@ -293,59 +296,50 @@ impl SAState {
         preprocess: &PreprocessResult,
         problem: &AnnealProblem,
     ) -> Result<Self, crate::layout::LayoutError> {
-        let n = placeable.len();
-        let mut x = vec![0i32; n];
-        let mut y = vec![0i32; n];
-        let mut rotation = vec![Rotation::R0; n];
-        let mut r90_only = vec![false; n];
-        let mut y_locked = vec![None; n];
-        let mut occupancy = InitialOccupancy::new(problem);
-
-        for idx in 0..n {
-            let comp_id = placeable[idx];
-            let component = &circuit.components[comp_id.0];
-            let selected_rotation = if preprocess.r90_only.contains(&comp_id) {
-                r90_only[idx] = true;
-                Rotation::R90
-            } else {
-                Rotation::R0
-            };
-            rotation[idx] = selected_rotation;
-            let locked_y = preprocess.y_locked.get(&comp_id).copied();
-            y_locked[idx] = locked_y;
-            let geometry = InitialGeometry::new(component, circuit, selected_rotation);
-
-            let mut found: Option<(i32, i32)> = None;
-            let try_ys: Vec<i32> =
-                locked_y.map_or_else(|| (0..board.main_rows() as i32).collect(), |y| vec![y]);
-            'outer: for try_y in try_ys {
-                for try_x in 0..board.cols() as i32 {
-                    if occupancy.try_reserve(board, &geometry, try_x, try_y, locked_y.is_some()) {
-                        found = Some((try_x, try_y));
-                        break 'outer;
-                    }
-                }
-            }
-
-            let (fx, fy) = found.ok_or(crate::layout::LayoutError::NoLegalInitialPlacement {
-                component: comp_id,
-            })?;
-            x[idx] = fx;
-            y[idx] = fy;
-        }
-
-        Ok(Self {
+        Self::from_greedy_with_weights(
             placeable,
-            is_bridgeable: vec![false; n],
-            bridged: vec![false; n],
-            bridged_pin_pairs: vec![Vec::new(); n],
-            active_bridge_idx: vec![0; n],
-            x,
-            y,
-            rotation,
-            r90_only,
-            y_locked,
-        })
+            circuit,
+            board,
+            preprocess,
+            problem,
+            &Weights::default(),
+        )
+    }
+
+    pub(crate) fn from_greedy_with_weights(
+        placeable: Vec<ComponentId>,
+        circuit: &Circuit,
+        board: &Breadboard,
+        preprocess: &PreprocessResult,
+        problem: &AnnealProblem,
+        weights: &Weights,
+    ) -> Result<Self, crate::layout::LayoutError> {
+        let n = placeable.len();
+        let valid_rows: Vec<i32> = (0..board.main_rows() as i32)
+            .filter(|row| !board.is_blocked(*row as usize))
+            .collect();
+        let row_preferences = placeable
+            .iter()
+            .map(|component| {
+                preprocess
+                    .y_locked
+                    .get(component)
+                    .map_or_else(|| valid_rows.clone(), |row| vec![*row])
+            })
+            .collect();
+        legalize(
+            placeable,
+            circuit,
+            board,
+            preprocess,
+            problem,
+            weights,
+            PlacementHints {
+                order: (0..n).collect(),
+                target_x: vec![0; n],
+                row_preferences,
+            },
+        )
     }
 
     /// 频谱布局初排: 图拉普拉斯 2D 嵌入 → 网格填充。
@@ -354,7 +348,7 @@ impl SAState {
     /// 1. Net-star 图: 每个 net 作为虚拟节点, 元件只连到所属 net
     ///    (避免 pairwise 展开形成的虚假吸引团)
     /// 2. 拉普拉斯 + 幂迭代 → v₂, v₃ (只取元件节点对应分量)
-    /// 3. v₂ 值 → x 目标, 贪心碰撞解决 → 紧凑格点
+    /// 3. v₂/v₃ → 位置提示, 公共 beam legalizer → 紧凑合法格点
     ///
     /// Net-star 比 pairwise 好的地方:
     /// - 大 net (6+ pin) 不会变成 O(k²) 边的团
@@ -368,9 +362,31 @@ impl SAState {
         preprocess: &PreprocessResult,
         problem: &AnnealProblem,
     ) -> Result<Self, crate::layout::LayoutError> {
+        Self::from_spectral_with_weights(
+            placeable,
+            circuit,
+            board,
+            seed,
+            preprocess,
+            problem,
+            &Weights::default(),
+        )
+    }
+
+    pub(crate) fn from_spectral_with_weights(
+        placeable: Vec<ComponentId>,
+        circuit: &Circuit,
+        board: &Breadboard,
+        seed: u64,
+        preprocess: &PreprocessResult,
+        problem: &AnnealProblem,
+        weights: &Weights,
+    ) -> Result<Self, crate::layout::LayoutError> {
         let n = placeable.len();
         if n <= 2 {
-            return Self::from_greedy(placeable, circuit, board, preprocess, problem);
+            return Self::from_greedy_with_weights(
+                placeable, circuit, board, preprocess, problem, weights,
+            );
         }
 
         // ── comp_id → placeable_idx 映射 ──
@@ -429,39 +445,11 @@ impl SAState {
         let v3: Vec<f64> = v3_all[..n].to_vec();
 
         // ============================================================
-        // Phase 3: v₂ 值 → 目标 x, 贪心碰撞解决 → 紧凑格点
+        // Phase 3: v₂/v₃ → 位置提示，公共 legalizer 负责合法落格与真实 cost 选优。
         // ============================================================
-        let (x, y) = grid_fill_2d(&v2, &v3, board, &placeable, circuit, preprocess, problem)?;
-        let rotation: Vec<Rotation> = placeable
-            .iter()
-            .map(|component| {
-                if preprocess.r90_only.contains(component) {
-                    Rotation::R90
-                } else {
-                    Rotation::R0
-                }
-            })
-            .collect();
-        let r90_only = placeable
-            .iter()
-            .map(|component| preprocess.r90_only.contains(component))
-            .collect();
-        let y_locked = placeable
-            .iter()
-            .map(|component| preprocess.y_locked.get(component).copied())
-            .collect();
-
-        Ok(Self {
-            placeable,
-            is_bridgeable: vec![false; n],
-            bridged: vec![false; n],
-            bridged_pin_pairs: vec![Vec::new(); n],
-            active_bridge_idx: vec![0; n],
-            x,
-            y,
-            rotation,
-            r90_only,
-            y_locked,
-        })
+        let hints = spectral_hints(&v2, &v3, board, &placeable, preprocess)?;
+        legalize(
+            placeable, circuit, board, preprocess, problem, weights, hints,
+        )
     }
 }

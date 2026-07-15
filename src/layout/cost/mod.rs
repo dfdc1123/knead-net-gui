@@ -20,6 +20,7 @@ use crate::layout::breadboard::Breadboard;
 mod bridge;
 pub(crate) mod context;
 mod cost_fast;
+mod legalize;
 mod mst;
 #[macro_use]
 mod profile;

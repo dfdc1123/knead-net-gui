@@ -599,9 +599,9 @@ fn from_greedy_fits_2d() {
 }
 
 #[test]
-fn from_greedy_spills_to_next_row() {
-    // 4 个 11-col footprint (实际只 1 pin 在用), 30 col 板 → 4*11=44 > 30, 第 4 个应
-    // 溢出到 row 1
+fn from_greedy_uses_cost_to_spread_rows() {
+    // 4 个宽 footprint 有多种合法分行；cost-aware legalizer 应选择 row_squash
+    // 更低的完整候选，而不是锁定第一个能塞下的 row 1。
     let fp = Footprint {
         id: FootprintId(0),
         name: "wide".into(),
@@ -651,11 +651,9 @@ fn from_greedy_spills_to_next_row() {
         &crate::layout::problem::AnnealProblem::default(),
     )
     .unwrap();
-    // 3 个 11-col 放 row 0 占 0..33 (实际放 0, 1, 12, 3 个 footprint 总跨度)
-    // 第 4 个放不下 row 0 → 走 row 1
     assert_eq!(
-        state.y[3], 1,
-        "第 4 个应去 row 1, 实际在 row {}",
+        state.y[3], 3,
+        "cost-aware legalizer 应利用空行降低 row_squash, 实际在 row {}",
         state.y[3]
     );
 }

@@ -130,7 +130,7 @@ pub struct SAConfig {
     /// 多 seed 独立跑, 取 cost 最低的。默认 1。
     pub n_seeds: usize,
     /// `true` 用 [`SAState::from_spectral`] 做初排 (频谱嵌入, 无参数, 一步到位);
-    /// `false` 用贪心 first-fit [`SAState::from_greedy`].
+    /// `false` 用顺序提示 + 公共 cost-aware legalizer [`SAState::from_greedy_with_weights`].
     pub use_spectral: bool,
     /// Whether Bridged poses are disabled, explored, or mandatory.
     pub bridge_policy: BridgePolicy,
@@ -1061,9 +1061,24 @@ pub(super) fn simulate(
     let profile_init_started = std::time::Instant::now();
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
-        SAState::from_spectral(placeable, circuit, board, config.seed, preprocess, problem)
+        SAState::from_spectral_with_weights(
+            placeable,
+            circuit,
+            board,
+            config.seed,
+            preprocess,
+            problem,
+            &config.weights,
+        )
     } else {
-        SAState::from_greedy(placeable, circuit, board, preprocess, problem)
+        SAState::from_greedy_with_weights(
+            placeable,
+            circuit,
+            board,
+            preprocess,
+            problem,
+            &config.weights,
+        )
     }?;
     let observer = control
         .as_ref()

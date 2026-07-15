@@ -2,13 +2,11 @@
 
 use fastrand;
 
-use crate::circuit::{Circuit, ComponentId};
+use crate::circuit::ComponentId;
 use crate::layout::breadboard::Breadboard;
-use crate::layout::placement::Rotation;
 use crate::layout::preprocess::PreprocessResult;
-use crate::layout::problem::AnnealProblem;
 
-use super::state::{InitialGeometry, InitialOccupancy};
+use super::legalize::PlacementHints;
 
 /// 幂迭代求 Fiedler 向量
 pub(super) fn compute_fiedler(l: &[Vec<f64>], n: usize, seed: u64) -> Vec<f64> {
@@ -91,16 +89,14 @@ pub(super) fn normalize_vec(v: &mut [f64]) -> bool {
     true
 }
 
-/// 频谱 → 格点映射
-pub(super) fn grid_fill_2d(
+/// Convert spectral coordinates into ordering and position preferences for the shared legalizer.
+pub(super) fn spectral_hints(
     v2: &[f64],
     v3: &[f64],
     board: &Breadboard,
     placeable: &[ComponentId],
-    circuit: &Circuit,
     preprocess: &PreprocessResult,
-    problem: &AnnealProblem,
-) -> Result<(Vec<i32>, Vec<i32>), crate::layout::LayoutError> {
+) -> Result<PlacementHints, crate::layout::LayoutError> {
     let n = placeable.len();
     let valid_rows: Vec<i32> = (0..board.rows() as i32)
         .filter(|&r| !board.is_blocked(r as usize))
@@ -144,69 +140,22 @@ pub(super) fn grid_fill_2d(
         target_x[i] = target_x[i].clamp(0, cols - 1);
     }
 
-    let mut target_y = vec![0i32; n];
-    for i in 0..n {
-        target_y[i] = valid_rows[rank_y[i] % n_rows];
-    }
-
-    let mut x = vec![0i32; n];
-    let mut y = vec![0i32; n];
-    let mut occupancy = InitialOccupancy::new(problem);
-
-    for &idx in &order {
-        let comp_id = placeable[idx];
-        let component = &circuit.components[comp_id.0];
-        let r90 = preprocess.r90_only.contains(&comp_id);
-        let is_y_locked = preprocess.y_locked.contains_key(&comp_id);
-        let rotation = if r90 { Rotation::R90 } else { Rotation::R0 };
-        let geometry = InitialGeometry::new(component, circuit, rotation);
-
-        // search
-        let mut best: Option<(i32, i32)> = None;
-        'search: for dx in 0..=cols {
-            for &x_sign in &[1i32, -1i32] {
-                if dx == 0 && x_sign == -1 {
-                    continue;
-                }
-                let try_x = target_x[idx] + x_sign * dx;
-                if try_x < 0 || try_x >= cols {
-                    continue;
-                }
-
-                let try_ys: Vec<i32> = if is_y_locked {
-                    vec![preprocess.y_locked[&comp_id]]
-                } else {
-                    let mut cands = Vec::with_capacity(n_rows);
-                    for d in 0..n_rows as i32 {
-                        for &s in &[0i32, 1i32, -1i32] {
-                            if d == 0 && s != 0 {
-                                continue;
-                            }
-                            let yi =
-                                (rank_y[idx] as i32 + s * d).rem_euclid(n_rows as i32) as usize;
-                            let yv = valid_rows[yi];
-                            if !cands.contains(&yv) {
-                                cands.push(yv);
-                            }
-                        }
-                    }
-                    cands
-                };
-
-                for &try_y in &try_ys {
-                    if occupancy.try_reserve(board, &geometry, try_x, try_y, is_y_locked) {
-                        best = Some((try_x, try_y));
-                        break 'search;
-                    }
-                }
+    let row_preferences = placeable
+        .iter()
+        .enumerate()
+        .map(|(idx, component)| {
+            if let Some(row) = preprocess.y_locked.get(component) {
+                return vec![*row];
             }
-        }
+            (0..n_rows)
+                .map(|offset| valid_rows[(rank_y[idx] + offset) % n_rows])
+                .collect()
+        })
+        .collect();
 
-        let (fx, fy) =
-            best.ok_or(crate::layout::LayoutError::NoLegalInitialPlacement { component: comp_id })?;
-        x[idx] = fx;
-        y[idx] = fy;
-    }
-
-    Ok((x, y))
+    Ok(PlacementHints {
+        order,
+        target_x,
+        row_preferences,
+    })
 }
