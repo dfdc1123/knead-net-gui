@@ -19,7 +19,7 @@
 - **无法复现**：按当前入口和确定性 fixture 未看到报告所述行为。
 - **审查已过时**：当前 `HEAD` 已不再包含报告所述实现。
 
-本次结果：主问题 1、2、3、4、5、7、8 均已经确认；主问题 6 部分确认；电源轨物理模型部分确认；注释问题中的客观矛盾已经确认、风格判断部分确认。另行确认了报告在推荐顺序/测试清单中提到的 Toggle reject 不完整回滚、非事务 write-back 和 bridge eligibility 残留。没有“无法复现”或“审查已过时”的主问题。
+本次结果：主问题 1、2、3、4、5、7、8 均已经确认；主问题 6 部分确认；电源轨模型中 top/bottom 被隐式合并的问题已经确认，但原报告把同一行 5 孔 group 间的孔位间隔误判为导体断口，现已纠正；注释问题中的客观矛盾已经确认、风格判断部分确认。另行确认了报告在推荐顺序/测试清单中提到的 Toggle reject 不完整回滚、非事务 write-back 和 bridge eligibility 残留。没有“无法复现”或“审查已过时”的主问题。
 
 ## 当前实际调用链
 
@@ -230,17 +230,19 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 最小失败测试 `T08_profiles_reach_same_configured_end_temperature`：按每个 profile 的 `max_iters` 计算最后一次尝试温度，断言均到同一个 `T_end`；另用全 dead-move fixture 断言温度仍按 attempt index 前进。当前第一个断言用现有 profile 即可失败，第二个需要内部 trace/metrics 暴露 attempt temperature。
 
-### A9. 电源轨 `groups` 与 `rail_id` 的物理模型
+### A9. 电源轨行与 top/bottom `rail_id` 的物理模型
 
-状态：**部分确认**。
+状态：top/bottom 隐式合并问题 **已经确认**；原报告的 group 断口判断 **已经纠正**。
 
-代码事实已经确认：`PowerRail.groups` 表示 5 孔组和断口；构造器 `breadboard.rs:311` 却只按 polarity 分配两个 rail_id，同极性的所有 group、top、bottom 都共享同一个 id。`connected_to`、MST、conflict validation、bridge matching 和 router 都把相同 rail_id 当作零成本内部短接。现有测试还明确要求 top/bottom 以及跨 group 连通。
+`PowerRail.groups` 表示一条电源轨行中有插孔的 5 孔范围及 group 之间没有插孔的位置；它不表示底层导体断开。本产品模型已经明确：同一条完整电源轨行天然导通，所有 group 属于同一个 conductive island；top 与 bottom 是两个独立 island。
 
-无法仅从代码确定产品究竟要建模真实未短接面包板，还是假定用户已用外部跳线把所有同极性轨连好。因此“模型与物理不符”成立，“哪一种修复是正确产品行为”尚未确认。若保留全局连通假设，外部 RailTie 也必须成为显式、可展示、可验证的对象，不能继续伪装成内部 rail_id。
+构造器 `breadboard.rs:311` 只按 polarity 分配两个 rail_id，使同极性的同一行、top 和 bottom 全部共享 id。跨 group 共享 id 是正确的板内连通；top/bottom 共享 id 则把外部短接伪装成板内连通。`connected_to`、MST、conflict validation、bridge matching 和 router 因而无法区分“同一行天然导通”和“上下轨由跳线连接”。现有跨 group 连通测试应保留；要求 top/bottom 无条件共享 rail 的测试应由显式 `RailTie` 场景替换。
+
+产品决定见 `docs/adr/power-rail-connectivity.md`：采用独立 top/bottom islands，并在 400/800 preset 中为 negative 和 positive 各物化一条默认 top/bottom `RailTie`。同一行不生成 group 间 tie。
 
 受影响路径：`Breadboard::connected_to`、`rail_id_of`、cost MST/congestion/rail conflict、bridge 候选 matching、router 的 net dedup/empty-hole 选择、最终 wire 数、GUI 结果图。
 
-最小失败测试 `T09_power_groups_are_distinct_without_explicit_tie`：在无 RailTie 的标准板上断言同一行相邻 5 孔组、top/bottom 同极性拥有不同 conductive island；若产品选择默认显式 ties，则另断言只有应用这些 ties 后电气图才连通且结果快照能看到 tie。当前无条件共享 rail_id。
+最小失败测试 `T09_power_rows_and_top_bottom_ties_match_physics`：断言同一行相邻 5 孔 group 属于同一个 conductive island；无 `RailTie` 时同极性 top/bottom 属于不同 island 且不连通；应用 preset 的两条默认 ties 后，对应 polarity 的上下轨才形成 effective connection，且结果快照能看到 tie。当前实现会在无 tie 时错误地连通 top/bottom。
 
 ### A10. 注释与诊断不等于当前设计
 
@@ -313,7 +315,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 | 状态 | 写入者 | 读取者 | 当前风险 |
 |---|---|---|---|
 | `Circuit.components[].bridgeable` | `prepare`/`auto_mark_bridgeable` | bridge catalog、UI preparation result | 跨 binding 调用残留 |
-| `Breadboard.holes[].rail_id` | board 构造器 | occupancy、cost、bridge、router | 把物理 island、外部 tie、polarity binding 混成一个概念 |
+| `Breadboard.holes[].rail_id` | board 构造器 | occupancy、cost、bridge、router | 正确表示同一电源轨行的内部连通，但又错误地把 top/bottom 外部 tie 和 polarity binding 混入同一个 id |
 | `Breadboard.power_rail_binding` | preparation | cost、bridge、router；validation 未完整读取 | 软优化与最终 legality 不一致 |
 | `Layout.placements` / `Layout.wires` | public mutator、SA write-back、router | snapshots、occupancy、routing | 失败后仍被修改；已有几何未进入 SA |
 | `SAState` 平行 Vec | init、move、bridge candidate selection | cost、best clone、write-back | 字段需同步；Toggle reject 漏恢复 index |
@@ -339,16 +341,16 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 - 对应：A9。
 - 前置：无。
-- 最小验收场景：记录 T09 的期望答案——默认无 tie 时各 5 孔 group/top/bottom 是否独立；如果产品假设预接线，列出每一条默认 `RailTie` 以及 UI 如何展示。
+- 最小验收场景：记录 T09 的期望答案——同一电源轨行的各 5 孔 group 天然导通，默认无 tie 时 top/bottom 独立；如果产品假设预接线，列出每一条默认 `RailTie` 以及 UI 如何展示。
 - 允许修改范围：仅 ADR/产品文档；本阶段不改 Rust/测试。
-- 完成条件：`ConductiveIsland`、`bound_net`、`RailTie` 三者语义无歧义；明确 400/800 preset 的默认 ties。没有这个决定不得进入 R1。
+- 完成条件：**已完成**。`docs/adr/power-rail-connectivity.md` 已明确 `ConductiveIsland`、`bound_net`、`RailTie` 三者语义；每条完整电源轨行是一个 island；400/800 preset 默认各有两条 top/bottom ties。
 
 ### R1. 纠正 conductive-island / RailTie 基础模型
 
 - 对应：A9；为 A5、A3、A7 的最终语义打基础。
 - 最小失败测试：T09；旧的“同 polarity 全共享 rail_id”测试必须按 R0 决定替换，不能简单删除断言。
 - 允许修改范围：`src/layout/{breadboard,mod,routing,prepare}.rs`，以及因新连通 API 必须同步的 `src/layout/cost/{mst,context,cost_fast,bridge}.rs`；若 R0 选择显式 ties，可改 `src-tauri/src/{lib,compute}.rs`、`src/lib/components/{Step2SelectBoard,BreadboardPreview,Step4Result}.svelte` 和 `src/lib/i18n.ts`。不得改 SA move/temperature。
-- 完成条件：物理内部连通只由 island 表示；外部连接只由 RailTie 表示；cost、occupancy、router 对同一 effective connectivity graph 给出一致答案；400/800 的断口测试通过。
+- 完成条件：物理内部连通只由 island 表示；同一电源轨行跨 5 孔 group 天然导通；top/bottom 外部连接只由 RailTie 表示；cost、occupancy、router 对同一 effective connectivity graph 给出一致答案；400/800 的行内连通及 top/bottom tie 测试通过。
 
 ### R2. 收紧 public legality：Bridged bijection + rail binding
 

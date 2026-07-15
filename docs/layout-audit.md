@@ -68,17 +68,17 @@ BridgePolicy::Forced
 
 建议由 `T_start/T_end/max_iters` 推导 schedule，按尝试次数推进，而不是暴露一个难以解释的 `cool_rate`。
 
-## 电源轨模型需要尽快做产品决策
+## 电源轨模型需要显式区分板内连通与外部短接
 
-[PowerRail.groups](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/breadboard.rs:87) 明确描述“5 孔组之间有断口”，但构造时 [breadboard.rs:311](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/breadboard.rs:311) 把所有 group、顶部、底部同极性轨全部赋成同一个 `rail_id`。
+[PowerRail.groups](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/breadboard.rs:87) 描述同一行中有插孔的 5 孔范围以及 group 之间没有插孔的位置；这些孔位间隔不是底层导体断口。本产品模型中，一条完整电源轨行天然导通，因此同一行的所有 group 属于同一个 `ConductiveIsland`。
 
-如果没有额外短接线，当前模型会少算 wire，甚至输出电气不通的布局。建议拆成：
+[breadboard.rs:311](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/breadboard.rs:311) 当前按 polarity 把同一行以及 top/bottom 都赋成同一个 `rail_id`。其中同一行共享 id 符合物理模型；问题仅在于 top 与 bottom 是两条独立导体，其连通不能伪装成板内短接。如果没有实际 top/bottom 跳线，当前模型会少算 wire，甚至输出电气不通的布局。模型应拆成：
 
-- `ConductiveIslandId`：真实物理短接单元；
+- `ConductiveIslandId`：真实物理短接单元；每条完整电源轨行是一个 island；
 - `bound_net`：期望该 island 属于哪个 net；
 - `RailTie`：用户明确声明的外部短接。
 
-如果产品就是假设用户已把所有电源轨短接，也应显式展示这些 RailTie，而不是静默视为内部连通。
+产品决策记录在 [power-rail-connectivity.md](adr/power-rail-connectivity.md)：400/800 preset 默认各包含两条可显示、可占孔、可验证的 `RailTie`，分别短接 negative 和 positive 的 top/bottom。相邻 5 孔 group 天然导通，不生成 group 间 tie。
 
 ## 注释目前不能作为设计文档
 
