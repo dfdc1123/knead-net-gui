@@ -49,7 +49,7 @@ impl ComputeProfile {
             max_iters,
             n_seeds,
             use_spectral: true,
-            // 与 CLI 的正式 SA 配置保持一致；默认的 0.95 会过早冻结。
+            // 正式计算使用较慢的降温配置；默认的 0.95 会过早冻结。
             t0: 40.0,
             cool_rate: 0.99999,
             ..SAConfig::default()

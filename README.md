@@ -1,86 +1,110 @@
-# knead-net
+# Knead Net
 
-把 KiCad PCB 文件 (`.kicad_pcb`) 投影到面包板上, 自动摆位 + 布线, 输出 SVG 调试图。
+Knead Net 是一个实验性的桌面工具，用来把 KiCad 电路工程转换为可操作的面包板布局与装配指引。
 
-数据流: `.kicad_pcb` → [`Circuit`] → Spectral 初排 → 多 seed 模拟退火 →
-PathFinder/MST 跳线生成 → 面包板渲染。
+它会读取 KiCad 的 PCB 连接与封装信息，自动选择元件摆位并生成跳线方案；如果工程中包含同名原理图，还可以在原理图、面包板和装配清单之间联动查看元件与网络。
 
-## 快速开始
+> 项目仍处于早期预览阶段。目前可以从源码运行，首个可下载安装的 release 即将提供。
 
-### CLI 模式（原始 Rust 入口）
+## 软件截图
 
-```bash
-cargo run --release
-# 读 examples/inputs/h-bridge.kicad_pcb
-# 输出 layout.svg / layout-spectral.svg 到 output/
-```
+### 1. 导入 KiCad 工程
 
-### GUI 模式（Tauri 桌面应用）
+![导入 KiCad 工程并预览原理图](docs/screenshots/tab1.png)
+
+### 2. 选择面包板
+
+![选择面包板规格并预览](docs/screenshots/tab2.png)
+
+### 3. 计算布局
+
+![计算元件布局与跳线](docs/screenshots/tab3.png)
+
+### 4. 装配视图
+
+![原理图、面包板与装配清单联动](docs/screenshots/tab4.png)
+
+## 当前功能
+
+- 从文件夹中识别并配对同名的 `.kicad_sch` 与 `.kicad_pcb` 文件
+- 在应用内预览 KiCad 原理图
+- 提供 170、400 和 800 孔面包板预设，并支持调整列数
+- 使用 Spectral 初始布局、并行模拟退火和 routing 自动计算元件位置与跳线
+- 提供快速、标准、完整三档计算强度，并实时显示计算过程
+- 允许提前中断模拟退火，使用当前最佳结果继续布线
+- 在原理图、面包板和清单之间同步高亮元件与网络
+- 生成按孔位排列的元件与跳线装配清单，并可勾选记录装配进度
+- 根据系统语言显示简体中文或英文界面
+
+## 使用流程
+
+1. 选择包含 KiCad 工程文件的文件夹。
+2. 选择工程，并确认原理图预览与 PCB 文件已正确载入。
+3. 选择面包板规格和列数。
+4. 选择计算强度并开始计算。
+5. 在装配视图中对照原理图、面包板和清单完成搭建。
+
+`.kicad_pcb` 是进行布局计算的必要输入；同名的 `.kicad_sch` 用于原理图预览和联动，但不是必需的。两个文件需要直接位于所选文件夹中。
+
+## 从源码运行
+
+目前只提供 Tauri 桌面 GUI，不提供命令行界面。
+
+开始前请先安装：
+
+- Node.js 与 pnpm
+- Rust stable toolchain
+- Tauri 2 对应平台的系统依赖
+
+安装前端依赖并启动开发版：
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
 
-GUI 已支持选择 KiCad 工程目录、预览原理图、配置面包板，并在 Step 3 连续展示
-Spectral 初排、固定观察 seed 的 SA 过程以及全局最佳布局的最终布线。Step 4 会并排展示
-原理图与面包板，点击任一侧的元器件或网络可在另一侧同步高亮。
+仓库的 `examples/folders/` 中包含可用于体验的 KiCad 示例工程。
 
-Step 3 有三档计算强度：开发环境默认使用“快速”（8 seeds × 5,000 次），生产构建
-默认使用“标准”（32 seeds × 200,000 次）。“完整”会运行 100 seeds × 1,000,000 次，
-建议配合 release 构建使用。过程动画只观察一个固定 seed，最终结果仍从全部 seed 中
-选择成本最低者；进度采样不参与算法决策。
-
-SA 运行期间可以选择“中断并布线”。所有并行 seed 会协作式停止，并以截至中断时
-各 seed 的最佳状态继续全局选优和 routing，不会丢弃已经得到的布局。
-
-## 输入格式
-
-只需要一个 `.kicad_pcb` 文件 (KiCad 的 PCB 文件, S-expression 格式)。
-文件里内联了所有信息: 元件编号 (Reference)、元件值 (Value)、封装焊盘几何、
-网络连接、引脚功能 (pinfunction)。不需要分开的网表和封装库文件。
-
-加新电路时只需把 `.kicad_pcb` 放到 `examples/inputs/` 下,
-然后改 `src/main.rs` 里的文件名即可。
+## 本地检查
 
 ```bash
-cargo run --release
+pnpm check
+cargo test --workspace
 ```
 
-## 目录结构
+## 工作原理
 
+```text
+KiCad PCB
+   ↓
+电路、封装与网络解析
+   ↓
+Spectral 初始布局
+   ↓
+多 seed 模拟退火摆位
+   ↓
+PathFinder / MST 跳线生成
+   ↓
+面包板与装配视图
 ```
+
+## 项目结构
+
+```text
 knead-net-gui/
-├── Cargo.toml          # workspace 根 + knead-net crate (老 Rust 核心)
-├── src/                # Rust 核心/CLI 与 SvelteKit 前端源码
-│   ├── lib.rs
-│   ├── main.rs
-│   ├── circuit.rs
-│   ├── render.rs
-│   ├── input/
-│   ├── layout/
-│   ├── app.html
-│   ├── app.css
-│   ├── lib/components/
-│   └── routes/
-├── examples/inputs/    # 示例/测试电路 (.kicad_pcb)
-├── src-tauri/          # Tauri crate (workspace member)
-│   ├── Cargo.toml      # depends on knead-net (path = "..")
-│   └── src/
-│       ├── main.rs
-│       ├── lib.rs      # Tauri 状态与 commands
-│       ├── compute.rs  # 核心布局进度 → GUI 事件适配
-│       └── sch.rs      # KiCad 原理图解析与 SVG 渲染
-└── package.json
+├── src/                    # SvelteKit 前端与 Rust 布局核心
+│   ├── lib/components/     # 四步工作流与面包板组件
+│   ├── routes/             # 应用页面
+│   ├── input/              # KiCad PCB 解析
+│   └── layout/             # 摆位、成本计算与布线算法
+├── src-tauri/              # Tauri 桌面应用及原理图解析
+├── examples/folders/       # 示例 KiCad 工程
+├── package.json
+└── Cargo.toml
 ```
 
-## 状态
+## 当前限制
 
-实验性项目。Rust 核心算法（Spectral + 模拟退火摆位 + 路由）和 CLI 已可运行，并已有
-单元测试与集成测试覆盖。GUI 的 Step 1（选择工程、原理图预览）、Step 2（面包板配置）
-和 Step 3（计算过程与最终布线）已可用；Step 4 已支持原理图/面包板联动查看，结果导出仍在
-开发中。仓库已配置基础 CI，完整 CLI 参数框架仍是后续工作。
-
-## License
-
-未指定。
+- 项目仍在开发中，复杂电路和少见封装可能无法得到理想布局。
+- 结果导出功能尚未完成。
+- 暂无可下载安装的构建；release 即将提供。

@@ -20,7 +20,7 @@ pub struct LayoutPreparation {
     pub power_rails: PowerRailMatch,
 }
 
-/// 执行 CLI 和 GUI 都必须完成的布局准备。
+/// 执行布局前必须完成的通用准备。
 ///
 /// 该函数保持原有策略：先按板子的正/负电源名称标记可桥接的两脚元件；只有
 /// 正负两条网络都匹配成功时才真正绑定电源轨，单边匹配只写入报告。
