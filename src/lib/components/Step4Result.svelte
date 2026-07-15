@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
+  import { ui } from "$lib/i18n";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import ZoomControls from "./ZoomControls.svelte";
   import type {
@@ -9,6 +10,7 @@
     CircuitSelection,
     LayoutFrame,
     LayoutPart,
+    LayoutPin,
     LayoutWire,
   } from "$lib/layout";
 
@@ -233,7 +235,7 @@
     const column = hole.col + 1;
     if (hole.region === "main-top") return `${String.fromCharCode(65 + hole.row)}${column}`;
     if (hole.region === "main-bottom") return `${String.fromCharCode(70 + hole.row)}${column}`;
-    const position = hole.region === "rail-top" ? "上" : "下";
+    const position = hole.region === "rail-top" ? ui.step4.top : ui.step4.bottom;
     const polarity = hole.row === 0 ? "−" : "+";
     return `${position}${polarity}${column}`;
   }
@@ -248,7 +250,22 @@
       }
     }
     const pinOne = part.pins.find((pin) => pin.number === "1");
-    return pinOne ? `1 脚 ${holeLabel(pinOne.hole)}` : "未提供 1 脚位置";
+    return pinOne ? `1: ${holeLabel(pinOne.hole)}` : ui.common.placeholder;
+  }
+
+  function orderedPins(part: LayoutPart) {
+    return [...part.pins].sort((left, right) => {
+      const leftNumber = Number.parseInt(left.number ?? "", 10);
+      const rightNumber = Number.parseInt(right.number ?? "", 10);
+      if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+        return leftNumber - rightNumber;
+      }
+      return (left.number ?? "").localeCompare(right.number ?? "");
+    });
+  }
+
+  function netLabel(pin: LayoutPin) {
+    return pin.net_name || pin.net_id || ui.common.placeholder;
   }
 
   function selectionFromElement(element: Element | null): CircuitSelection | null {
@@ -317,18 +334,18 @@
 <div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-3 overflow-hidden p-4">
   <header class="flex shrink-0 items-center justify-between gap-3">
     <div>
-      <h1 class="text-2xl font-bold">装配视图</h1>
-      <p class="text-sm text-base-content/60">按右侧清单逐项装配，面包板会同步显示接线状态</p>
+      <h1 class="text-2xl font-bold">{ui.step4.title}</h1>
+      <p class="text-sm text-base-content/60">{ui.step4.subtitle}</p>
     </div>
 
     <div class="flex items-center gap-2">
       <div class="join">
-        <span class="badge badge-outline join-item h-8">{frame.parts.length} 个元件</span>
-        <span class="badge badge-outline join-item h-8">{wires.length} 根跳线</span>
-        <span class="badge badge-outline join-item h-8">{netCount} 个网络</span>
+        <span class="badge badge-outline join-item h-8">{ui.step4.componentCount(frame.parts.length)}</span>
+        <span class="badge badge-outline join-item h-8">{ui.step4.wireCount(wires.length)}</span>
+        <span class="badge badge-outline join-item h-8">{ui.step4.netCount(netCount)}</span>
       </div>
       {#if selected}
-        <button class="btn btn-sm btn-ghost" onclick={() => (selected = null)} aria-label="清除高亮">清除高亮</button>
+        <button class="btn btn-sm btn-ghost" onclick={() => (selected = null)} aria-label={ui.step4.clearHighlight}>{ui.step4.clearHighlight}</button>
       {/if}
     </div>
   </header>
@@ -341,15 +358,17 @@
     {#if selected}
       <span>
         <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : selected.type === 'wire' ? 'badge-accent' : 'badge-secondary'}">
-          {selected.type === "component" ? "元件" : selected.type === "wire" ? "跳线" : "网络"}
+          {selected.type === "component" ? ui.step4.component : selected.type === "wire" ? ui.step4.wire : ui.step4.net}
         </span>
         <strong class="ml-1 font-mono">{selected.label}</strong>
         {#if selectedPart}
-          <span class="ml-2 text-xs opacity-70">已展开 {selectedPart.pins.length} 个引脚定义</span>
+          <span class="ml-2 text-xs opacity-70">
+            {selectedPart.value || ui.common.placeholder} · {selectedPart.description || ui.step4.pinCount(selectedPart.pins.length)}
+          </span>
         {/if}
       </span>
     {:else}
-      <span>点击原理图、面包板或清单中的条目，可同步查看对应关系</span>
+      <span>{ui.step4.selectionHint}</span>
     {/if}
   </div>
 
@@ -358,7 +377,7 @@
       <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between px-1">
-            <h2 class="card-title text-base">原理图</h2>
+            <h2 class="card-title text-base">{ui.common.schematic}</h2>
             <div class="flex items-center gap-2">
               <span class="badge badge-ghost badge-sm">SCH</span>
               <ZoomControls
@@ -381,7 +400,7 @@
               onpointercancel={stopPan}
               onlostpointercapture={stopPan}
               oncontextmenu={(event) => event.preventDefault()}
-              title="滚轮缩放 · 按住右键拖动"
+              title={ui.step4.scrollHint}
               role="presentation"
             >
               <div
@@ -400,7 +419,7 @@
             </div>
           {:else}
             <div class="hero grid min-h-0 flex-1 place-items-center rounded-box bg-base-200 p-6 text-center text-sm text-base-content/60">
-              无原理图
+              {ui.common.noSchematic}
             </div>
           {/if}
         </div>
@@ -410,12 +429,12 @@
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between gap-3 px-1">
             <div class="flex items-center gap-2">
-              <h2 class="card-title text-base">面包板</h2>
-              <span class="badge badge-ghost badge-sm">{cols} 列</span>
+              <h2 class="card-title text-base">{ui.step4.breadboard}</h2>
+              <span class="badge badge-ghost badge-sm">{ui.step4.columns(cols)}</span>
             </div>
             <div class="flex items-center gap-3 text-xs">
-              <span class="flex items-center gap-1.5"><span class="status status-success"></span>已完成（实线）</span>
-              <span class="flex items-center gap-1.5 text-base-content/60"><span class="status status-neutral"></span>待连接（虚线）</span>
+              <span class="flex items-center gap-1.5"><span class="status status-success"></span>{ui.step4.completedSolid}</span>
+              <span class="flex items-center gap-1.5 text-base-content/60"><span class="status status-neutral"></span>{ui.step4.pendingDashed}</span>
               <ZoomControls
                 zoom={breadboardZoom}
                 onZoom={(zoom) => (breadboardZoom = clampZoom(zoom))}
@@ -434,7 +453,7 @@
             onpointercancel={stopPan}
             onlostpointercapture={stopPan}
             oncontextmenu={(event) => event.preventDefault()}
-            title="滚轮缩放 · 按住右键拖动"
+            title={ui.step4.scrollHint}
             role="presentation"
           >
             <BreadboardPreview
@@ -451,27 +470,77 @@
       </section>
     </div>
 
-    <aside class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm" aria-label="装配清单">
+    <aside class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm" aria-label={ui.step4.assemblyList}>
       <div class="card-body min-h-0 gap-3 p-3">
         <div class="shrink-0 px-1">
           <div class="flex items-center justify-between gap-2">
-            <h2 class="card-title text-base">装配清单</h2>
+            <h2 class="card-title text-base">{ui.step4.assemblyList}</h2>
             <span class="badge {completedTaskCount === taskCount && taskCount > 0 ? 'badge-success' : 'badge-primary'} badge-sm">
               {completedTaskCount} / {taskCount}
             </span>
           </div>
-          <progress class="progress progress-primary mt-2 w-full" value={assemblyProgress} max="100" aria-label="装配完成进度 {assemblyProgress}%"></progress>
+          <progress class="progress progress-primary mt-2 w-full" value={assemblyProgress} max="100" aria-label={`${ui.step4.assemblyProgress} ${assemblyProgress}%`}></progress>
           <div class="mt-1 flex items-center justify-between text-xs text-base-content/60">
-            <span>总装配进度</span>
+            <span>{ui.step4.assemblyProgress}</span>
             <span>{assemblyProgress}%</span>
           </div>
         </div>
 
+        {#if selectedPart}
+          <section class="shrink-0 overflow-hidden rounded-box border border-warning/50 bg-warning/5" aria-label={ui.step4.selectedDetails}>
+            <div class="flex items-start justify-between gap-2 border-b border-warning/30 px-3 py-2">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="badge badge-warning badge-sm font-mono">{selectedPart.reference}</span>
+                  <strong class="truncate text-sm">{selectedPart.value || ui.common.placeholder}</strong>
+                </div>
+                {#if selectedPart.description}
+                  <p class="mt-1 truncate text-xs text-base-content/65" title={selectedPart.description}>{selectedPart.description}</p>
+                {/if}
+              </div>
+              <span class="badge badge-outline badge-sm shrink-0">{ui.step4.pinCount(selectedPart.pins.length)}</span>
+            </div>
+            <div class="max-h-56 overflow-auto px-2 py-1">
+              <table class="table table-xs">
+                <thead>
+                  <tr>
+                    <th>{ui.step4.number}</th>
+                    <th>{ui.step4.nameTypeShape}</th>
+                    <th>{ui.step4.net}</th>
+                    <th>{ui.step4.hole}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each orderedPins(selectedPart) as pin}
+                    <tr>
+                      <td class="font-mono font-semibold">{pin.number || ui.common.placeholder}</td>
+                      <td>
+                        <div class="flex flex-wrap items-center gap-1">
+                          <span>{pin.name || ui.common.placeholder}</span>
+                          {#if pin.pin_type}<span class="badge badge-ghost badge-xs">{pin.pin_type}</span>{/if}
+                          {#if pin.pin_shape}<span class="badge badge-ghost badge-xs">{pin.pin_shape}</span>{/if}
+                        </div>
+                        {#if pin.unit !== undefined}<span class="text-[0.65rem] text-base-content/50">{ui.step4.unit} {pin.unit}</span>{/if}
+                      </td>
+                      <td class="max-w-32 truncate font-mono text-[0.68rem]" title={netLabel(pin)}>{netLabel(pin)}</td>
+                      <td class="whitespace-nowrap font-mono text-[0.68rem]">{holeLabel(pin.hole)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+            <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-warning/30 px-3 py-2 text-[0.68rem] text-base-content/55">
+              <span class="truncate" title={selectedPart.footprint}>{ui.step4.footprint}: {selectedPart.footprint}</span>
+              {#if selectedPart.datasheet}<span class="truncate" title={selectedPart.datasheet}>{ui.step4.datasheet}: {selectedPart.datasheet}</span>{/if}
+            </div>
+          </section>
+        {/if}
+
         <div class="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" bind:this={assemblyListHost}>
           <div class="collapse-arrow collapse border border-base-300 bg-base-100">
-            <input type="checkbox" checked aria-label="展开或收起元器件列表" />
+            <input type="checkbox" checked aria-label={ui.step4.toggleComponents} />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
-              元器件
+              {ui.step4.components}
               <span class="badge {completedPartCount === frame.parts.length && frame.parts.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
                 {completedPartCount} / {frame.parts.length}
               </span>
@@ -479,8 +548,8 @@
             <div class="collapse-content px-2 pb-2">
               {#if frame.parts.length > 0}
                 <div class="join mb-2 flex w-full">
-                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(true)} disabled={completedPartCount === frame.parts.length}>全部完成</button>
-                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(false)} disabled={completedPartCount === 0}>全部重置</button>
+                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(true)} disabled={completedPartCount === frame.parts.length}>{ui.step4.markAllComplete}</button>
+                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllParts(false)} disabled={completedPartCount === 0}>{ui.step4.resetAll}</button>
                 </div>
                 <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
                   {#each assemblyParts as part (part.id)}
@@ -489,35 +558,35 @@
                       <button
                         class="assembly-row-hit absolute inset-0 cursor-pointer"
                         onclick={() => choosePart(part)}
-                        aria-label="选择元件 {part.reference}"
+                        aria-label={ui.step4.selectComponent(part.reference)}
                       ></button>
                       <input
                         class="checkbox checkbox-success checkbox-sm relative z-10 self-center"
                         type="checkbox"
                         checked={completed}
-                        aria-label="{completed ? '标记为待安装' : '标记为已安装'}：元件 {part.reference}"
+                        aria-label={completed ? ui.step4.markComponentPending(part.reference) : ui.step4.markComponentInstalled(part.reference)}
                         onchange={(event) => setPartCompleted(part.id, event.currentTarget.checked)}
                       />
                       <div class="pointer-events-none relative z-10 grid min-w-0 grid-cols-[auto_1fr] items-center gap-x-2">
                         <span class="badge badge-outline badge-sm row-span-2 font-mono">{part.reference}</span>
-                        <span class="truncate text-sm font-medium {completed ? 'line-through opacity-60' : ''}">{part.value || "未标注值"}</span>
+                        <span class="truncate text-sm font-medium {completed ? 'line-through opacity-60' : ''}">{part.value || ui.common.placeholder}</span>
                         <span class="truncate text-xs text-base-content/55">
-                          {part.pins.length} 个引脚 · {partPlacementSummary(part)}
+                          {ui.step4.pinCount(part.pins.length)} · {partPlacementSummary(part)}
                         </span>
                       </div>
                     </li>
                   {/each}
                 </ul>
               {:else}
-                <div class="py-4 text-center text-sm text-base-content/50">无元器件</div>
+                <div class="py-4 text-center text-sm text-base-content/50">{ui.step4.noComponents}</div>
               {/if}
             </div>
           </div>
 
           <div class="collapse-arrow collapse border border-base-300 bg-base-100">
-            <input type="checkbox" bind:checked={wireListOpen} aria-label="展开或收起跳线列表" />
+            <input type="checkbox" bind:checked={wireListOpen} aria-label={ui.step4.toggleWires} />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
-              跳线
+              {ui.step4.wires}
               <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
                 {completedWireCount} / {wires.length}
               </span>
@@ -525,8 +594,8 @@
             <div class="collapse-content px-2 pb-2">
               {#if wires.length > 0}
                 <div class="join mb-2 flex w-full">
-                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllWires(true)} disabled={completedWireCount === wires.length}>全部完成</button>
-                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllWires(false)} disabled={completedWireCount === 0}>全部重置</button>
+                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllWires(true)} disabled={completedWireCount === wires.length}>{ui.step4.markAllComplete}</button>
+                  <button class="btn btn-sm join-item flex-1" onclick={() => markAllWires(false)} disabled={completedWireCount === 0}>{ui.step4.resetAll}</button>
                 </div>
                 <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
                   {#each assemblyWires as wire (wire.id)}
@@ -539,13 +608,13 @@
                       <button
                         class="assembly-row-hit absolute inset-0 cursor-pointer"
                         onclick={() => chooseWire(wire)}
-                        aria-label="选择跳线 {wireNumber}"
+                        aria-label={ui.step4.selectWire(wireNumber)}
                       ></button>
                       <input
                         class="checkbox checkbox-success checkbox-sm relative z-10 row-span-2 self-center"
                         type="checkbox"
                         checked={completed}
-                        aria-label="{completed ? '标记为待连接' : '标记为已完成'}：跳线 {wireNumber}"
+                        aria-label={completed ? ui.step4.markWirePending(wireNumber) : ui.step4.markWireComplete(wireNumber)}
                         onchange={(event) => setWireCompleted(wire.id, event.currentTarget.checked)}
                       />
                       <div class="pointer-events-none relative z-10 min-w-0">
@@ -556,7 +625,7 @@
                             aria-hidden="true"
                           ></span>
                           <span class="truncate text-sm font-medium {completed ? 'line-through opacity-60' : ''}">
-                            跳线 {wireNumber} · {wire.net_name || wire.net_id || "未命名网络"}
+                            {ui.step4.wireLabel(wireNumber)} · {wire.net_name || wire.net_id || ui.common.placeholder}
                           </span>
                         </span>
                         <span class="mt-0.5 block font-mono text-xs text-base-content/55">
@@ -567,7 +636,7 @@
                   {/each}
                 </ul>
               {:else}
-                <div class="py-4 text-center text-sm text-base-content/50">无需添加跳线</div>
+                <div class="py-4 text-center text-sm text-base-content/50">{ui.step4.noWires}</div>
               {/if}
             </div>
           </div>
@@ -576,7 +645,7 @@
         {#if taskCount > 0 && completedTaskCount === taskCount}
           <div class="alert alert-success shrink-0 py-2 text-sm" role="status">
             <span class="status status-success"></span>
-            <span>所有元器件与跳线均已完成</span>
+            <span>{ui.step4.allComplete}</span>
           </div>
         {/if}
       </div>

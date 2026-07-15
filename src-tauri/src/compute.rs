@@ -11,7 +11,8 @@ use knead_net::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
-use crate::AppState;
+use crate::sch::ComponentMetadataMap;
+use crate::{AppState, UiLocale};
 
 const PROGRESS_EVENT: &str = "compute-progress";
 
@@ -26,14 +27,15 @@ enum ComputeProfile {
 #[derive(Debug, Deserialize)]
 pub struct ComputeRequest {
     profile: ComputeProfile,
+    locale: UiLocale,
 }
 
 impl ComputeProfile {
-    fn label(self) -> &'static str {
+    fn label(self, locale: UiLocale) -> &'static str {
         match self {
-            Self::Quick => "快速",
-            Self::Standard => "标准",
-            Self::Full => "完整",
+            Self::Quick => locale.text("快速", "Quick"),
+            Self::Standard => locale.text("标准", "Standard"),
+            Self::Full => locale.text("完整", "Full"),
         }
     }
 
@@ -81,6 +83,11 @@ struct LayoutPart {
     reference: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    datasheet: Option<String>,
+    footprint: String,
     package: &'static str,
     device: &'static str,
     pins: Vec<LayoutPin>,
@@ -92,6 +99,12 @@ struct LayoutPin {
     number: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pin_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pin_shape: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     net_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -117,6 +130,14 @@ struct BreadboardHole {
 }
 
 struct RunningGuard<'a>(&'a AppState);
+
+struct ProgressContext<'a> {
+    circuit: &'a Circuit,
+    board: &'a Breadboard,
+    schematic_metadata: &'a ComponentMetadataMap,
+    locale: UiLocale,
+    started: &'a Instant,
+}
 
 impl Drop for RunningGuard<'_> {
     fn drop(&mut self) {
@@ -146,12 +167,15 @@ pub async fn start_compute(
     state: State<'_, AppState>,
     request: ComputeRequest,
 ) -> Result<(), String> {
+    let locale = request.locale;
     if state
         .compute_running
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return Err("已有布局任务正在运行".into());
+        return Err(locale
+            .text("已有布局任务正在运行", "A layout task is already running")
+            .into());
     }
     let _running = RunningGuard(&state);
 
@@ -160,13 +184,32 @@ pub async fn start_compute(
         .lock()
         .map_err(|e| e.to_string())?
         .clone()
-        .ok_or_else(|| "请先在 Step 1 选择一个 .kicad_pcb 文件".to_string())?;
+        .ok_or_else(|| {
+            locale
+                .text(
+                    "请先在 Step 1 选择一个 .kicad_pcb 文件",
+                    "Select a .kicad_pcb file in Step 1 first",
+                )
+                .to_string()
+        })?;
+    let schematic_metadata = state
+        .schematic_metadata
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
     let (_, board) = state
         .breadboard_cfg
         .lock()
         .map_err(|e| e.to_string())?
         .clone()
-        .ok_or_else(|| "请先在 Step 2 选择面包板".to_string())?;
+        .ok_or_else(|| {
+            locale
+                .text(
+                    "请先在 Step 2 选择面包板",
+                    "Choose a breadboard in Step 2 first",
+                )
+                .to_string()
+        })?;
     let run_id = state.next_run_id.fetch_add(1, Ordering::Relaxed) + 1;
     let cancellation = CancellationToken::new();
     *state
@@ -175,23 +218,35 @@ pub async fn start_compute(
         .map_err(|e| e.to_string())? = Some(cancellation.clone());
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        run_compute(app.clone(), run_id, &pcb_path, board, request, cancellation).inspect_err(
-            |error| {
-                let _ = app.emit(
-                    PROGRESS_EVENT,
-                    ComputeEvent {
-                        run_id,
-                        phase: "error",
-                        progress: 0.0,
-                        message: error.clone(),
-                        frame: None,
-                    },
-                );
-            },
+        run_compute(
+            app.clone(),
+            run_id,
+            &pcb_path,
+            schematic_metadata,
+            board,
+            request,
+            cancellation,
         )
+        .inspect_err(|error| {
+            let _ = app.emit(
+                PROGRESS_EVENT,
+                ComputeEvent {
+                    run_id,
+                    phase: "error",
+                    progress: 0.0,
+                    message: error.clone(),
+                    frame: None,
+                },
+            );
+        })
     })
     .await
-    .map_err(|e| format!("布局任务异常退出: {e}"))?;
+    .map_err(|e| {
+        format!(
+            "{}: {e}",
+            locale.text("布局任务异常退出", "Layout task exited unexpectedly")
+        )
+    })?;
 
     result
 }
@@ -200,13 +255,26 @@ fn run_compute(
     app: AppHandle,
     run_id: u64,
     pcb_path: &str,
+    schematic_metadata: ComponentMetadataMap,
     board: Breadboard,
     request: ComputeRequest,
     cancellation: CancellationToken,
 ) -> Result<(), String> {
+    let locale = request.locale;
     let started = Instant::now();
-    let text = fs::read_to_string(pcb_path).map_err(|e| format!("读取 PCB 失败: {e}"))?;
-    let mut circuit = parse_pcb(&text).map_err(|e| format!("解析 PCB 失败: {}", e.message))?;
+    let text = fs::read_to_string(pcb_path).map_err(|e| {
+        format!(
+            "{}: {e}",
+            locale.text("读取 PCB 失败", "Failed to read PCB")
+        )
+    })?;
+    let mut circuit = parse_pcb(&text).map_err(|e| {
+        format!(
+            "{}: {}",
+            locale.text("解析 PCB 失败", "Failed to parse PCB"),
+            e.message
+        )
+    })?;
     let board = knead_net::prepare_for_layout(&mut circuit, board).board;
     let mut layout = Layout::new(&circuit);
 
@@ -232,17 +300,39 @@ fn run_compute(
             run_id,
             phase: "spectral",
             progress: 0.0,
-            message: format!(
-                "{}模式 · {} seeds × {} 次迭代",
-                request.profile.label(),
-                config.n_seeds,
-                config.max_iters
-            ),
+            message: match locale {
+                UiLocale::ZhCn => format!(
+                    "{}模式 · {} seeds × {} 次迭代",
+                    request.profile.label(locale),
+                    config.n_seeds,
+                    config.max_iters
+                ),
+                UiLocale::En => format!(
+                    "{} profile · {} seeds × {} iterations",
+                    request.profile.label(locale),
+                    config.n_seeds,
+                    config.max_iters
+                ),
+            },
             frame: None,
         })
-        .map_err(|_| "进度转发线程已退出".to_string())?;
+        .map_err(|_| {
+            locale
+                .text(
+                    "进度转发线程已退出",
+                    "Progress forwarding thread has exited",
+                )
+                .to_string()
+        })?;
 
     let callback_sender = sender.clone();
+    let progress_context = ProgressContext {
+        circuit: &circuit,
+        board: &board,
+        schematic_metadata: &schematic_metadata,
+        locale,
+        started: &started,
+    };
     layout
         .place_sa_with_progress_and_cancellation(
             &board,
@@ -253,15 +343,15 @@ fn run_compute(
                 let event = progress_event(
                     run_id,
                     progress,
-                    &circuit,
-                    &board,
-                    &started,
+                    &progress_context,
                     cancellation.is_cancelled(),
                 );
                 let _ = callback_sender.send(event);
             },
         )
-        .map_err(|errors| format_layout_errors("布局失败", &errors))?;
+        .map_err(|errors| {
+            format_layout_errors(locale.text("布局失败", "Layout failed"), &errors)
+        })?;
 
     let cancelled = cancellation.is_cancelled();
     sender
@@ -270,9 +360,19 @@ fn run_compute(
             phase: "routing",
             progress: 90.0,
             message: if cancelled {
-                "SA 已中断，正在为当前最佳布局生成跳线".into()
+                locale
+                    .text(
+                        "SA 已中断，正在为当前最佳布局生成跳线",
+                        "SA stopped; routing the current best layout",
+                    )
+                    .into()
             } else {
-                "全局最佳布局已选出，正在生成跳线".into()
+                locale
+                    .text(
+                        "全局最佳布局已选出，正在生成跳线",
+                        "Global best layout selected; generating wires",
+                    )
+                    .into()
             },
             frame: Some(snapshot_frame(
                 &LayoutSnapshot {
@@ -281,45 +381,79 @@ fn run_compute(
                 },
                 &circuit,
                 &board,
+                &schematic_metadata,
                 None,
                 None,
             )),
         })
-        .map_err(|_| "进度转发线程已退出".to_string())?;
+        .map_err(|_| {
+            locale
+                .text(
+                    "进度转发线程已退出",
+                    "Progress forwarding thread has exited",
+                )
+                .to_string()
+        })?;
 
     let route_sender = sender.clone();
     layout
         .route_with_progress(&board, &PathFinderRouter::default(), |progress| {
             let _ = route_sender.send(progress_event(
-                run_id, progress, &circuit, &board, &started, cancelled,
+                run_id,
+                progress,
+                &progress_context,
+                cancelled,
             ));
         })
-        .map_err(|errors| format_layout_errors("布线失败", &errors))?;
+        .map_err(|errors| {
+            format_layout_errors(locale.text("布线失败", "Routing failed"), &errors)
+        })?;
 
     drop(route_sender);
     drop(callback_sender);
     drop(sender);
-    forwarder
-        .join()
-        .map_err(|_| "进度转发线程异常退出".to_string())?;
+    forwarder.join().map_err(|_| {
+        locale
+            .text(
+                "进度转发线程异常退出",
+                "Progress forwarding thread exited unexpectedly",
+            )
+            .to_string()
+    })?;
     Ok(())
 }
 
 fn progress_event(
     run_id: u64,
     progress: LayoutProgress,
-    circuit: &Circuit,
-    board: &Breadboard,
-    started: &Instant,
+    context: &ProgressContext<'_>,
     cancelled: bool,
 ) -> ComputeEvent {
+    let ProgressContext {
+        circuit,
+        board,
+        schematic_metadata,
+        locale,
+        started,
+    } = context;
+    let locale = *locale;
     match progress {
         LayoutProgress::SpectralInitial { seed, snapshot } => ComputeEvent {
             run_id,
             phase: "spectral",
             progress: 5.0,
-            message: format!("Spectral 初始布局 · 观察 seed {seed}"),
-            frame: Some(snapshot_frame(&snapshot, circuit, board, Some(0), None)),
+            message: match locale {
+                UiLocale::ZhCn => format!("Spectral 初始布局 · 观察 seed {seed}"),
+                UiLocale::En => format!("Spectral initial layout · observing seed {seed}"),
+            },
+            frame: Some(snapshot_frame(
+                &snapshot,
+                circuit,
+                board,
+                schematic_metadata,
+                Some(0),
+                None,
+            )),
         },
         LayoutProgress::Annealing {
             seed,
@@ -332,11 +466,15 @@ fn progress_event(
             phase: "annealing",
             // 观察 seed 的帧不代表所有并行 seed 的总进度。
             progress: 10.0,
-            message: format!("SA 优化中 · 固定观察 seed {seed}"),
+            message: match locale {
+                UiLocale::ZhCn => format!("SA 优化中 · 固定观察 seed {seed}"),
+                UiLocale::En => format!("SA optimization · observing seed {seed}"),
+            },
             frame: Some(snapshot_frame(
                 &snapshot,
                 circuit,
                 board,
+                schematic_metadata,
                 Some(iteration),
                 Some(best_cost),
             )),
@@ -345,7 +483,10 @@ fn progress_event(
             run_id,
             phase: "annealing",
             progress: 10.0 + 75.0 * completed as f64 / total.max(1) as f64,
-            message: format!("SA 优化中 · 已完成 {completed}/{total} seeds"),
+            message: match locale {
+                UiLocale::ZhCn => format!("SA 优化中 · 已完成 {completed}/{total} seeds"),
+                UiLocale::En => format!("SA optimization · {completed}/{total} seeds complete"),
+            },
             frame: None,
         },
         LayoutProgress::PlacementComplete {
@@ -358,26 +499,57 @@ fn progress_event(
             phase: "annealing",
             progress: 88.0,
             message: if cancelled {
-                format!("SA 已中断 · 当前最佳 seed {seed}")
+                match locale {
+                    UiLocale::ZhCn => format!("SA 已中断 · 当前最佳 seed {seed}"),
+                    UiLocale::En => format!("SA stopped · current best seed {seed}"),
+                }
             } else {
-                format!("全部种子完成 · 最佳 seed {seed}")
+                match locale {
+                    UiLocale::ZhCn => format!("全部种子完成 · 最佳 seed {seed}"),
+                    UiLocale::En => format!("All seeds complete · best seed {seed}"),
+                }
             },
-            frame: Some(snapshot_frame(&snapshot, circuit, board, None, Some(cost))),
+            frame: Some(snapshot_frame(
+                &snapshot,
+                circuit,
+                board,
+                schematic_metadata,
+                None,
+                Some(cost),
+            )),
         },
         LayoutProgress::RoutingComplete { snapshot } => ComputeEvent {
             run_id,
             phase: "done",
             progress: 100.0,
-            message: format!(
-                "{} · 用时 {:.2}s",
-                if cancelled {
-                    "中断后的布局与布线完成"
-                } else {
-                    "布局与布线完成"
-                },
-                started.elapsed().as_secs_f64()
-            ),
-            frame: Some(snapshot_frame(&snapshot, circuit, board, None, None)),
+            message: match locale {
+                UiLocale::ZhCn => format!(
+                    "{} · 用时 {:.2}s",
+                    if cancelled {
+                        "中断后的布局与布线完成"
+                    } else {
+                        "布局与布线完成"
+                    },
+                    started.elapsed().as_secs_f64()
+                ),
+                UiLocale::En => format!(
+                    "{} · {:.2}s",
+                    if cancelled {
+                        "Layout and routing complete after interruption"
+                    } else {
+                        "Layout and routing complete"
+                    },
+                    started.elapsed().as_secs_f64()
+                ),
+            },
+            frame: Some(snapshot_frame(
+                &snapshot,
+                circuit,
+                board,
+                schematic_metadata,
+                None,
+                None,
+            )),
         },
     }
 }
@@ -386,6 +558,7 @@ fn snapshot_frame(
     snapshot: &LayoutSnapshot,
     circuit: &Circuit,
     board: &Breadboard,
+    schematic_metadata: &ComponentMetadataMap,
     iteration: Option<usize>,
     cost: Option<f64>,
 ) -> LayoutFrame {
@@ -404,17 +577,25 @@ fn snapshot_frame(
         };
         let package = classify_package(component.kind(), footprint.name(), component.pins().len());
         let device = classify_device(component.kind());
+        let component_metadata = schematic_metadata.get(component.ref_());
         let pins: Vec<_> = placed
             .pin_holes
             .into_iter()
             .map(|pin_hole| {
                 let pin = &circuit.pins()[pin_hole.pin.raw()];
+                let pin_metadata =
+                    component_metadata.and_then(|metadata| metadata.pins.get(pin.num()));
                 let hole = display_hole(board, pin_hole.hole);
                 pin_holes.insert(pin_hole.pin, hole);
                 LayoutPin {
                     hole,
                     number: pin.num().to_string(),
-                    name: display_pin_name(pin.pinfunction(), pin.num()),
+                    name: pin_metadata
+                        .and_then(|metadata| metadata.name.clone())
+                        .or_else(|| pin.pinfunction().map(str::to_string)),
+                    pin_type: pin_metadata.and_then(|metadata| metadata.electrical_type.clone()),
+                    pin_shape: pin_metadata.and_then(|metadata| metadata.shape.clone()),
+                    unit: pin_metadata.and_then(|metadata| metadata.unit),
                     net_id: pin
                         .net()
                         .map(|net| circuit.nets()[net.raw()].name().to_string()),
@@ -427,7 +608,15 @@ fn snapshot_frame(
         parts.push(LayoutPart {
             id: format!("component-{index}"),
             reference: component.ref_().to_string(),
-            value: component.value().map(str::to_string),
+            value: component
+                .value()
+                .map(str::to_string)
+                .or_else(|| component_metadata.and_then(|metadata| metadata.value.clone())),
+            description: component_metadata.and_then(|metadata| metadata.description.clone()),
+            datasheet: component_metadata.and_then(|metadata| metadata.datasheet.clone()),
+            footprint: component_metadata
+                .and_then(|metadata| metadata.footprint.clone())
+                .unwrap_or_else(|| footprint.name().to_string()),
             package,
             device,
             pins,
@@ -483,21 +672,9 @@ fn classify_device(component_kind: &str) -> &'static str {
     }
 }
 
-/// KiCad 10 may suffix pin functions with their pad number (for example
-/// `C_1`, `K_1`, or `V-_4`). That suffix helps KiCad disambiguate pins but is
-/// noise in the assembly view, where the number is already rendered separately.
-fn display_pin_name(pinfunction: Option<&str>, pin_number: &str) -> Option<String> {
-    pinfunction.and_then(|name| {
-        let name = name.trim();
-        let suffix = format!("_{pin_number}");
-        let name = name.strip_suffix(&suffix).unwrap_or(name).trim();
-        (!name.is_empty() && name != "~").then(|| name.to_string())
-    })
-}
-
 #[cfg(test)]
 mod layout_metadata_tests {
-    use super::{classify_device, classify_package, display_pin_name, parse_pcb};
+    use super::{classify_device, classify_package, parse_pcb};
 
     #[test]
     fn classifies_only_the_kicad_metadata_needed_for_physical_markers() {
@@ -506,14 +683,6 @@ mod layout_metadata_tests {
         assert_eq!(classify_package("Package_DIP", "DIP-8_W7.62mm", 8), "dip");
         assert_eq!(classify_device("Package_DIP"), "generic");
         assert_eq!(classify_device("Package_TO_SOT_THT"), "generic");
-    }
-
-    #[test]
-    fn cleans_kicad_pin_function_suffixes_without_inventing_missing_names() {
-        assert_eq!(display_pin_name(Some("C_1"), "1"), Some("C".into()));
-        assert_eq!(display_pin_name(Some("V-_4"), "4"), Some("V-".into()));
-        assert_eq!(display_pin_name(Some("-_2"), "2"), Some("-".into()));
-        assert_eq!(display_pin_name(None, "1"), None);
     }
 
     #[test]
@@ -539,13 +708,13 @@ mod layout_metadata_tests {
             .iter()
             .map(|pin_id| {
                 let pin = &circuit.pins()[pin_id.raw()];
-                (pin.num(), display_pin_name(pin.pinfunction(), pin.num()))
+                (pin.num(), pin.pinfunction().map(str::to_string))
             })
             .collect();
         assert_eq!(diode_package, "axial");
         assert_eq!(diode_device, "diode");
-        assert!(diode_pins.contains(&("1", Some("K".into()))));
-        assert!(diode_pins.contains(&("2", Some("A".into()))));
+        assert!(diode_pins.contains(&("1", Some("K_1".into()))));
+        assert!(diode_pins.contains(&("2", Some("A_2".into()))));
 
         let transistor = circuit
             .components()
@@ -557,10 +726,10 @@ mod layout_metadata_tests {
             .iter()
             .filter_map(|pin_id| {
                 let pin = &circuit.pins()[pin_id.raw()];
-                display_pin_name(pin.pinfunction(), pin.num())
+                pin.pinfunction().map(str::to_string)
             })
             .collect();
-        assert_eq!(transistor_names, ["C", "B", "E"]);
+        assert_eq!(transistor_names, ["C_1", "B_2", "E_3"]);
 
         let lm741 = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -580,8 +749,7 @@ mod layout_metadata_tests {
         );
         assert!(op_amp.pins().iter().any(|pin_id| {
             let pin = &circuit.pins()[pin_id.raw()];
-            pin.num() == "1"
-                && display_pin_name(pin.pinfunction(), pin.num()) == Some("NULL".into())
+            pin.num() == "1" && pin.pinfunction() == Some("NULL_1")
         }));
     }
 }

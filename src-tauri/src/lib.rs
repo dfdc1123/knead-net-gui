@@ -7,6 +7,23 @@ use std::sync::Mutex;
 mod compute;
 mod sch;
 
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub(crate) enum UiLocale {
+    #[serde(rename = "zh-CN")]
+    ZhCn,
+    #[serde(rename = "en")]
+    En,
+}
+
+impl UiLocale {
+    pub(crate) fn text(self, zh_cn: &'static str, en: &'static str) -> &'static str {
+        match self {
+            Self::ZhCn => zh_cn,
+            Self::En => en,
+        }
+    }
+}
+
 /// 给 tests/sch_smoke.rs 用的入口
 #[doc(hidden)]
 pub fn test_render_sch(path: &str) -> Result<String, String> {
@@ -19,10 +36,11 @@ pub fn test_render_sch_with_pcb(path: &str, pcb_path: &str) -> Result<String, St
     sch::render_with_pcb(path, Some(pcb_path))
 }
 
-/// 全局状态:记住用户当前选中的 .kicad_pcb 路径 + 面包板配置
+/// 全局状态：当前工程输入、面包板配置和计算任务状态。
 #[derive(Default)]
 pub(crate) struct AppState {
     pub(crate) pcb_path: Mutex<Option<String>>,
+    pub(crate) schematic_metadata: Mutex<sch::ComponentMetadataMap>,
     pub(crate) breadboard_cfg: Mutex<Option<(String, knead_net::layout::Breadboard)>>,
     pub(crate) compute_running: AtomicBool,
     pub(crate) next_run_id: AtomicU64,
@@ -41,10 +59,13 @@ struct FolderEntry {
 
 /// 列出指定目录下所有文件 (Step 1 选了目录后调用)
 #[tauri::command]
-fn list_folder(path: String) -> Result<Vec<FolderEntry>, String> {
+fn list_folder(path: String, locale: UiLocale) -> Result<Vec<FolderEntry>, String> {
     let dir = PathBuf::from(&path);
     if !dir.is_dir() {
-        return Err(format!("不是目录: {}", path));
+        return Err(format!(
+            "{}: {path}",
+            locale.text("不是目录", "Not a directory")
+        ));
     }
     let mut out = Vec::new();
     for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
@@ -77,8 +98,35 @@ fn list_folder(path: String) -> Result<Vec<FolderEntry>, String> {
 
 /// 渲染 .kicad_sch → SVG 字符串 (Step 1 调用)
 #[tauri::command]
-fn render_sch(path: String, pcb_path: Option<String>) -> Result<String, String> {
-    sch::render_with_pcb(&path, pcb_path.as_deref())
+fn render_sch(
+    state: tauri::State<AppState>,
+    path: String,
+    pcb_path: Option<String>,
+    locale: UiLocale,
+) -> Result<String, String> {
+    let (svg, metadata) = sch::render_with_pcb_and_metadata(&path, pcb_path.as_deref())
+        .map_err(|error| localize_schematic_error(error, locale))?;
+    *state.schematic_metadata.lock().map_err(|e| e.to_string())? = metadata;
+    Ok(svg)
+}
+
+fn localize_schematic_error(error: sch::RenderError, locale: UiLocale) -> String {
+    match error {
+        sch::RenderError::Read(detail) => format!(
+            "{}: {detail}",
+            locale.text("读取原理图失败", "Failed to read schematic")
+        ),
+        sch::RenderError::Parse(detail) => format!(
+            "{}: {detail}",
+            locale.text("解析 S-Expression 失败", "Failed to parse S-expression")
+        ),
+        sch::RenderError::MissingLibrarySymbols => locale
+            .text(
+                "原理图缺少 lib_symbols 节点",
+                "Schematic is missing lib_symbols",
+            )
+            .to_string(),
+    }
 }
 
 /// 把选中的 .pcb 路径存到全局 state, 供 Step 3 布局用
@@ -89,11 +137,16 @@ fn set_pcb_path(state: tauri::State<AppState>, path: String) -> Result<(), Strin
     Ok(())
 }
 
-/// 清除之前选择的 PCB，避免重新选择无 PCB 的目录后沿用旧路径。
+/// 清除之前选择的工程输入，避免项目切换时混用 PCB 和原理图元数据。
 #[tauri::command]
-fn clear_pcb_path(state: tauri::State<AppState>) -> Result<(), String> {
+fn clear_project_source(state: tauri::State<AppState>) -> Result<(), String> {
     let mut guard = state.pcb_path.lock().map_err(|e| e.to_string())?;
     *guard = None;
+    state
+        .schematic_metadata
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clear();
     Ok(())
 }
 
@@ -145,9 +198,24 @@ fn set_breadboard(
     state: tauri::State<AppState>,
     preset: String,
     cols: usize,
+    locale: UiLocale,
 ) -> Result<BreadboardInfo, String> {
-    let p = preset_from_str(&preset)?;
-    let board = make_breadboard(p, cols)?;
+    let p = preset_from_str(&preset)
+        .map_err(|_| format!("{}: {preset}", locale.text("未知预设", "Unknown preset")))?;
+    let board = make_breadboard(p, cols).map_err(|_| {
+        if !(3..=120).contains(&cols) {
+            locale.text(
+                "面包板列数必须在 3 到 120 之间",
+                "Breadboard columns must be between 3 and 120",
+            )
+        } else {
+            locale.text(
+                "800 孔预设需要至少 4 列",
+                "The 800-hole preset requires at least 4 columns",
+            )
+        }
+        .to_string()
+    })?;
     let info = BreadboardInfo {
         preset: preset.clone(),
         cols: board.cols(),
@@ -180,7 +248,7 @@ pub fn run() {
             list_folder,
             render_sch,
             set_pcb_path,
-            clear_pcb_path,
+            clear_project_source,
             get_pcb_path,
             set_breadboard,
             get_breadboard_info,

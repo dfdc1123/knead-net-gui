@@ -22,6 +22,9 @@ export type LayoutPin = {
   hole: BreadboardHole;
   number?: string;
   name?: string;
+  pin_type?: string;
+  pin_shape?: string;
+  unit?: number;
   net_id?: string;
   net_name?: string;
 };
@@ -30,6 +33,9 @@ export type LayoutPart = {
   id: string;
   reference: string;
   value?: string;
+  description?: string;
+  datasheet?: string;
+  footprint: string;
   package?: "generic" | "dip" | "axial";
   device?: "generic" | "diode" | "led";
   pins: LayoutPin[];
@@ -63,6 +69,7 @@ export type ComputePhase = "idle" | "spectral" | "annealing" | "routing" | "done
 
 export type ComputeRequest = {
   profile: "quick" | "standard" | "full";
+  locale: "zh-CN" | "en";
 };
 
 export type ComputeProgressEvent = {

@@ -10,6 +10,7 @@
 
 use lexpr::Value;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs;
 
 use knead_net::input::pcb::parse_pcb;
@@ -67,12 +68,10 @@ enum Fill {
 struct Pin {
     at: (f64, f64, f64), // x, y, direction(度)
     length: f64,
-    #[expect(
-        dead_code,
-        reason = "Step 4 will display pin names in the rendered result"
-    )]
     name: String,
     number: String,
+    electrical_type: String,
+    shape: String,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -101,6 +100,49 @@ struct Inst {
     unit: u32,
     body_style: u32,
     properties: Vec<Property>,
+}
+
+/// 从 `.kicad_sch` 提取的、供装配视图使用的逻辑引脚信息。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ComponentMetadata {
+    pub(crate) value: Option<String>,
+    pub(crate) footprint: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) datasheet: Option<String>,
+    pub(crate) pins: HashMap<String, PinMetadata>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PinMetadata {
+    pub(crate) name: Option<String>,
+    pub(crate) electrical_type: Option<String>,
+    pub(crate) shape: Option<String>,
+    pub(crate) unit: Option<u32>,
+}
+
+pub(crate) type ComponentMetadataMap = HashMap<String, ComponentMetadata>;
+
+#[derive(Debug)]
+pub(crate) enum RenderError {
+    Read(String),
+    Parse(String),
+    MissingLibrarySymbols,
+}
+
+impl fmt::Display for RenderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(detail) => write!(formatter, "Failed to read schematic: {detail}"),
+            Self::Parse(detail) => write!(formatter, "Failed to parse S-expression: {detail}"),
+            Self::MissingLibrarySymbols => formatter.write_str("Missing lib_symbols node"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct LibraryMetadata {
+    description: Option<String>,
+    datasheet: Option<String>,
 }
 
 // ─────────────────────────── lexpr 辅助 ───────────────────────────
@@ -181,9 +223,9 @@ fn parse_fill(v: &Value) -> Fill {
 
 // ─────────────────────────── 提取 ───────────────────────────
 
-fn extract_lib_symbols(root: &Value) -> Result<LibMap, String> {
+fn extract_lib_symbols(root: &Value) -> Result<LibMap, RenderError> {
     let mut libs = LibMap::new();
-    let lib_symbols_node = child(root, "lib_symbols").ok_or("lib_symbols 节点不存在")?;
+    let lib_symbols_node = child(root, "lib_symbols").ok_or(RenderError::MissingLibrarySymbols)?;
 
     for sym_node in children(lib_symbols_node, "symbol") {
         // 顶层 symbol: (symbol "NAME" ...)
@@ -295,11 +337,23 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
                     .and_then(|value| value.list_iter().into_iter().flatten().nth(1))
                     .and_then(as_str)
                     .unwrap_or_default();
+                let electrical_type = list_items(item)
+                    .nth(1)
+                    .and_then(as_symbol)
+                    .unwrap_or_default()
+                    .to_string();
+                let shape = list_items(item)
+                    .nth(2)
+                    .and_then(as_symbol)
+                    .unwrap_or_default()
+                    .to_string();
                 pins.push(Pin {
                     at,
                     length,
                     name,
                     number,
+                    electrical_type,
+                    shape,
                 });
             }
             _ => {}
@@ -398,6 +452,119 @@ fn extract_instances(root: &Value) -> Vec<Inst> {
         .collect()
 }
 
+fn property_value_in_node<'a>(node: &'a Value, key: &str) -> Option<&'a str> {
+    children(node, "property").into_iter().find_map(|property| {
+        let mut iter = list_items(property);
+        let _ = iter.next();
+        let property_key = iter.next()?.as_str()?;
+        if property_key != key {
+            return None;
+        }
+        iter.next()?.as_str()
+    })
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value.filter(|value| !value.is_empty()).map(str::to_string)
+}
+
+fn library_metadata(root: &Value) -> HashMap<String, LibraryMetadata> {
+    let mut properties = HashMap::new();
+    let Some(lib_symbols) = child(root, "lib_symbols") else {
+        return properties;
+    };
+    for symbol in children(lib_symbols, "symbol") {
+        let mut iter = list_items(symbol);
+        let _ = iter.next();
+        let Some(name) = iter.next().and_then(as_str) else {
+            continue;
+        };
+        properties.insert(
+            name,
+            LibraryMetadata {
+                description: non_empty(property_value_in_node(symbol, "Description")),
+                datasheet: non_empty(property_value_in_node(symbol, "Datasheet")),
+            },
+        );
+    }
+    properties
+}
+
+fn instance_pins_for_metadata<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a Pin> {
+    let Some(units) = libs.get(&inst.lib_id) else {
+        return Vec::new();
+    };
+    let Some(styles) = units.get(&inst.unit).or_else(|| units.get(&0)) else {
+        return Vec::new();
+    };
+    // Shared pins can live in body style 0 while the visible body uses another style.
+    // Keep the selected style authoritative, then supplement it deterministically.
+    let mut seen = HashSet::new();
+    let mut style_order: Vec<u32> = styles.keys().copied().collect();
+    style_order.sort_by_key(|style| {
+        let priority = if *style == inst.body_style {
+            0
+        } else if *style == 0 {
+            1
+        } else {
+            2
+        };
+        (priority, *style)
+    });
+    style_order
+        .into_iter()
+        .filter_map(|style| styles.get(&style))
+        .flat_map(|sub| sub.pins.iter())
+        .filter(|pin| seen.insert(pin.number.clone()))
+        .collect()
+}
+
+/// 聚合同一参考标号下的全部多单元符号定义。
+fn extract_component_metadata(root: &Value, libs: &LibMap) -> ComponentMetadataMap {
+    let library_metadata = library_metadata(root);
+    let mut metadata = ComponentMetadataMap::new();
+
+    for inst in extract_instances(root) {
+        let Some(reference) = property_value(&inst, "Reference") else {
+            continue;
+        };
+        let library = library_metadata.get(&inst.lib_id);
+        let entry = metadata.entry(reference.to_string()).or_default();
+        if entry.value.is_none() {
+            entry.value = non_empty(property_value(&inst, "Value"));
+        }
+        if entry.footprint.is_none() {
+            entry.footprint = non_empty(property_value(&inst, "Footprint"));
+        }
+        if entry.description.is_none() {
+            entry.description = non_empty(property_value(&inst, "Description"))
+                .or_else(|| library.and_then(|metadata| metadata.description.clone()));
+        }
+        if entry.datasheet.is_none() {
+            entry.datasheet = non_empty(property_value(&inst, "Datasheet"))
+                .or_else(|| library.and_then(|metadata| metadata.datasheet.clone()));
+        }
+
+        for pin in instance_pins_for_metadata(&inst, libs) {
+            if pin.number.is_empty() {
+                continue;
+            }
+            entry
+                .pins
+                .entry(pin.number.clone())
+                .or_insert_with(|| PinMetadata {
+                    name: non_empty(Some(pin.name.as_str())),
+                    electrical_type: (!pin.electrical_type.is_empty())
+                        .then(|| pin.electrical_type.clone()),
+                    shape: (!pin.shape.is_empty()).then(|| pin.shape.clone()),
+                    unit: Some(inst.unit),
+                });
+        }
+    }
+
+    metadata
+}
+
 // ─────────────────────────── 坐标变换 ───────────────────────────
 
 fn transform(lx: f64, ly: f64, at: (f64, f64, f64), mx: bool, my: bool) -> (f64, f64) {
@@ -480,7 +647,7 @@ fn compute_bbox(
     junctions: &[(f64, f64)],
     insts: &[Inst],
     libs: &LibMap,
-) -> Result<(f64, f64, f64, f64), String> {
+) -> (f64, f64, f64, f64) {
     let mut bbs: Vec<(f64, f64, f64, f64)> = Vec::new();
 
     for w in wires {
@@ -527,7 +694,7 @@ fn compute_bbox(
     }
 
     if bbs.is_empty() {
-        return Ok((0.0, 0.0, 100.0, 100.0));
+        return (0.0, 0.0, 100.0, 100.0);
     }
     let (mut minx, mut miny, mut maxx, mut maxy) = bbs.remove(0);
     for (a, b, c, d) in bbs {
@@ -536,7 +703,7 @@ fn compute_bbox(
         maxx = maxx.max(c);
         maxy = maxy.max(d);
     }
-    Ok((minx, miny, maxx, maxy))
+    (minx, miny, maxx, maxy)
 }
 
 // ─────────────────────────── 弧线求圆心 ───────────────────────────
@@ -959,16 +1126,26 @@ pub fn render(path: &str) -> Result<String, String> {
 }
 
 pub fn render_with_pcb(path: &str, pcb_path: Option<&str>) -> Result<String, String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("读 .sch 失败: {e}"))?;
-    let root = lexpr::from_str(&text).map_err(|e| format!("S-Expression 解析失败: {e}"))?;
+    render_with_pcb_and_metadata(path, pcb_path)
+        .map(|(svg, _)| svg)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn render_with_pcb_and_metadata(
+    path: &str,
+    pcb_path: Option<&str>,
+) -> Result<(String, ComponentMetadataMap), RenderError> {
+    let text = fs::read_to_string(path).map_err(|error| RenderError::Read(error.to_string()))?;
+    let root = lexpr::from_str(&text).map_err(|error| RenderError::Parse(error.to_string()))?;
 
     let libs = extract_lib_symbols(&root)?;
+    let component_metadata = extract_component_metadata(&root, &libs);
     let wires = extract_wires(&root);
     let junctions = extract_junctions(&root);
     let instances = extract_instances(&root);
     let wire_nets = wire_net_names(&wires, &instances, &libs, pcb_path);
 
-    let (min_x, min_y, max_x, max_y) = compute_bbox(&wires, &junctions, &instances, &libs)?;
+    let (min_x, min_y, max_x, max_y) = compute_bbox(&wires, &junctions, &instances, &libs);
     let margin = 5.0;
     let ox = min_x - margin;
     let oy = min_y - margin;
@@ -1025,12 +1202,111 @@ pub fn render_with_pcb(path: &str, pcb_path: Option<&str>) -> Result<String, Str
     }
 
     svg.push_str("</svg>");
-    Ok(svg)
+    Ok((svg, component_metadata))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_meaningful_multi_unit_pin_metadata_from_sn4hc00() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/folders/SNx4HC00/SNx4HC00.kicad_sch"
+        ))
+        .unwrap();
+        let root = lexpr::from_str(&text).unwrap();
+        let libs = extract_lib_symbols(&root).unwrap();
+        let metadata = extract_component_metadata(&root, &libs);
+        let u1 = metadata.get("U1").unwrap();
+
+        assert_eq!(u1.value.as_deref(), Some("74HC00"));
+        assert_eq!(u1.description.as_deref(), Some("quad 2-input NAND gate"));
+        assert_eq!(
+            u1.pins.get("1").unwrap().electrical_type.as_deref(),
+            Some("input")
+        );
+        assert_eq!(
+            u1.pins.get("3").unwrap().electrical_type.as_deref(),
+            Some("output")
+        );
+        assert_eq!(u1.pins.get("3").unwrap().shape.as_deref(), Some("inverted"));
+        assert_eq!(u1.pins.get("7").unwrap().name.as_deref(), Some("GND"));
+        assert_eq!(u1.pins.get("14").unwrap().name.as_deref(), Some("VCC"));
+        assert_eq!(u1.pins.get("7").unwrap().unit, Some(5));
+        assert_eq!(
+            u1.pins.get("14").unwrap().electrical_type.as_deref(),
+            Some("power_in")
+        );
+    }
+
+    #[test]
+    fn preserves_raw_pin_fields_and_discards_only_empty_properties() {
+        let root = lexpr::from_str(
+            r#"(kicad_sch
+                (lib_symbols
+                    (symbol "Test:Part"
+                        (property "Description" "")
+                        (property "Datasheet" "")
+                        (symbol "Part_0_1"
+                            (pin input line
+                                (at 0 0 0)
+                                (length 2.54)
+                                (name "~")
+                                (number "1")))))
+                (symbol
+                    (lib_id "Test:Part")
+                    (body_style 1)
+                    (property "Reference" "U1")
+                    (property "Value" "")
+                    (property "Footprint" "")))"#,
+        )
+        .unwrap();
+        let libs = extract_lib_symbols(&root).unwrap();
+        let metadata = extract_component_metadata(&root, &libs);
+        let part = metadata.get("U1").unwrap();
+        let pin = part.pins.get("1").unwrap();
+
+        assert_eq!(part.value, None);
+        assert_eq!(part.footprint, None);
+        assert_eq!(part.description, None);
+        assert_eq!(part.datasheet, None);
+        assert_eq!(pin.name.as_deref(), Some("~"));
+        assert_eq!(pin.electrical_type.as_deref(), Some("input"));
+        assert_eq!(pin.shape.as_deref(), Some("line"));
+        assert_eq!(pin.unit, Some(0));
+    }
+
+    #[test]
+    fn pin_metadata_uses_selected_then_shared_then_numbered_body_styles() {
+        let root = lexpr::from_str(
+            r#"(kicad_sch
+                (lib_symbols
+                    (symbol "Test:Styled"
+                        (symbol "Styled_1_0"
+                            (pin passive line (at 0 0 0) (length 2.54) (name "shared-1") (number "1"))
+                            (pin passive line (at 0 0 0) (length 2.54) (name "shared-2") (number "2")))
+                        (symbol "Styled_1_1"
+                            (pin passive line (at 0 0 0) (length 2.54) (name "style-1-2") (number "2"))
+                            (pin passive line (at 0 0 0) (length 2.54) (name "style-1-3") (number "3")))
+                        (symbol "Styled_1_2"
+                            (pin passive line (at 0 0 0) (length 2.54) (name "selected-1") (number "1")))))
+                (symbol
+                    (lib_id "Test:Styled")
+                    (unit 1)
+                    (body_style 2)
+                    (property "Reference" "U1")))"#,
+        )
+        .unwrap();
+        let libs = extract_lib_symbols(&root).unwrap();
+        let metadata = extract_component_metadata(&root, &libs);
+        let pins = &metadata.get("U1").unwrap().pins;
+
+        assert_eq!(pins.get("1").unwrap().name.as_deref(), Some("selected-1"));
+        assert_eq!(pins.get("2").unwrap().name.as_deref(), Some("shared-2"));
+        assert_eq!(pins.get("3").unwrap().name.as_deref(), Some("style-1-3"));
+    }
 
     #[test]
     fn property_text_is_xml_escaped_before_svg_insertion() {
@@ -1089,6 +1365,8 @@ mod tests {
             length: 2.54,
             name: "IN".into(),
             number: "1".into(),
+            electrical_type: "input".into(),
+            shape: "line".into(),
         };
         let libs = HashMap::from([(
             "Connector:Test".into(),
@@ -1145,6 +1423,8 @@ mod tests {
                             length: 1.0,
                             name: "1".into(),
                             number: "1".into(),
+                            electrical_type: "passive".into(),
+                            shape: "line".into(),
                         }],
                     },
                 )]),

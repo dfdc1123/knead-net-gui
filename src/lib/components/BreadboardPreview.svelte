@@ -8,6 +8,7 @@
     LayoutPin,
     LayoutWire,
   } from "$lib/layout";
+  import { ui } from "$lib/i18n";
 
   let {
     preset,
@@ -254,7 +255,8 @@
 
   function pinLabelText(pin: LayoutPin) {
     const name = pin.name?.trim();
-    return `${pin.number || "?"}${name ? ` · ${name}` : ""}`;
+    const detail = [name, pin.pin_type?.trim(), pin.pin_shape?.trim()].filter(Boolean).join(" · ");
+    return `${pin.number || "?"}${detail ? ` · ${detail}` : ""}`;
   }
 
   function axialGeometry(part: LayoutPart) {
@@ -659,7 +661,7 @@
     height={displayHeight * zoom}
     viewBox="0 0 {boardWidth} {boardHeight}"
     role="img"
-    aria-label="面包板预览：{preset === 'hole170' ? '170 孔' : preset === 'hole400' ? '400 孔' : '800 规格（默认实际 830 孔）'}"
+    aria-label={ui.boardPreview.preview(preset === "hole170" ? ui.boardPreview.hole170 : preset === "hole400" ? ui.boardPreview.hole400 : ui.boardPreview.hole800)}
     class="block max-w-none"
   >
     <rect x="0.8" y="0.8" width={boardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
@@ -721,7 +723,7 @@
     {/if}
 
     {#if frame}
-      <g aria-label="布局连线">
+      <g aria-label={ui.boardPreview.wires}>
         {#each plannedWires as planned (planned.wire.id)}
           {@const wire = planned.wire}
           {@const path = wirePath(planned)}
@@ -730,7 +732,7 @@
             class="cursor-pointer"
             role="button"
             tabindex="0"
-            aria-label="选择跳线 {wire.net_name ?? wire.net_id ?? wire.id}"
+            aria-label={ui.boardPreview.selectWire(wire.net_name ?? wire.net_id ?? wire.id)}
             onclick={(event) => selectWire(event, wire)}
             onkeydown={(event) => {
               if (event.key === "Enter" || event.key === " ") selectWire(event, wire);
@@ -759,7 +761,7 @@
         {/each}
       </g>
 
-      <g aria-label="布局元件">
+      <g aria-label={ui.boardPreview.components}>
         {#each frame.parts as part (part.id)}
           {@const bounds = partBounds(part)}
           {@const label = plannedPartLabels.get(part.id) ?? { x: bounds.cx, y: bounds.cy }}
@@ -767,7 +769,7 @@
             class="cursor-pointer transition-opacity"
             role="button"
             tabindex="0"
-            aria-label="选择元件 {part.reference}"
+            aria-label={ui.boardPreview.selectComponent(part.reference)}
             opacity={selected?.type === "component" ? (selected.id === part.reference ? 1 : 0.25) : 1}
             onclick={(event) => selectComponent(event, part.reference)}
             onkeydown={(event) => {
@@ -896,7 +898,7 @@
           >{part.reference}</text>
 
           {#if selected?.type === "component" && selected.id === part.reference}
-            <g aria-label="{part.reference} 引脚定义" pointer-events="none">
+            <g aria-label={ui.boardPreview.pinDefinitions(part.reference)} pointer-events="none">
               {#each planSelectedPinLabels(part) as pinLabel}
                 <line
                   x1={pinLabel.point.x}

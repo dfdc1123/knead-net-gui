@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
+  import { locale, ui } from "$lib/i18n";
   import type {
     BreadboardPreset,
     ComputePhase,
@@ -25,22 +26,22 @@
   type ComputeProfile = { id: ProfileId; name: string; description: string };
 
   const profiles: ComputeProfile[] = [
-    { id: "quick", name: "快速", description: "8 seeds · 5,000 次" },
-    { id: "standard", name: "标准", description: "32 seeds · 200,000 次" },
-    { id: "full", name: "完整", description: "100 seeds · 1,000,000 次" },
+    { id: "quick", name: ui.step3.profiles.quick, description: ui.step3.profileDescriptions.quick },
+    { id: "standard", name: ui.step3.profiles.standard, description: ui.step3.profileDescriptions.standard },
+    { id: "full", name: ui.step3.profiles.full, description: ui.step3.profileDescriptions.full },
   ];
   const phases: { id: Exclude<ComputePhase, "idle" | "error">; label: string }[] = [
     { id: "spectral", label: "Spectral" },
     { id: "annealing", label: "SA" },
     { id: "routing", label: "Routing" },
-    { id: "done", label: "完成" },
+    { id: "done", label: ui.step3.done },
   ];
 
   let profileId = $state<ProfileId>(import.meta.env.DEV ? "quick" : "standard");
   let phase = $state<ComputePhase>("idle");
   let progress = $state(0);
   let frame = $state<LayoutFrame | null>(null);
-  let message = $state("准备计算");
+  let message = $state<string>(ui.step3.ready);
   let error = $state("");
   let listenerReady = $state(false);
   let interrupting = $state(false);
@@ -110,7 +111,7 @@
         }
       },
       (reason) => {
-        error = `无法监听计算进度：${String(reason)}`;
+        error = ui.step3.listenerError(String(reason));
         phase = "error";
       },
     );
@@ -137,10 +138,11 @@
     interrupting = false;
     progress = 0;
     phase = "spectral";
-    message = `正在启动${selectedProfile.name}计算…`;
+    message = ui.step3.starting(selectedProfile.name);
 
     const request: ComputeRequest = {
       profile: selectedProfile.id,
+      locale,
     };
     try {
       await invoke("start_compute", { request });
@@ -148,40 +150,40 @@
       queue = [];
       phase = "error";
       error = String(reason);
-      message = "计算失败";
+      message = ui.step3.computeFailed;
     }
   }
 
   async function interruptAndRoute() {
     if (phase !== "annealing" || interrupting) return;
     interrupting = true;
-    message = "正在中断 SA，并准备为当前最佳布局布线…";
+    message = ui.step3.interruptingRoute;
     // 丢掉尚未播放的旧 SA 帧；保留可能已经抵达的选优/routing/final 事件。
     queue = queue.filter((event) => event.phase !== "annealing" || event.progress >= 88);
     try {
       const accepted = await invoke<boolean>("cancel_compute");
       if (!accepted) {
-        message = "SA 已经结束，正在切换到布线结果…";
+        message = ui.step3.saAlreadyDone;
       }
     } catch (reason) {
       interrupting = false;
-      error = `无法中断计算：${String(reason)}`;
+      error = ui.step3.interruptError(String(reason));
     }
   }
 </script>
 
 <div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="flex shrink-0 items-center justify-between gap-3">
-    <h1 class="text-2xl font-bold">计算布局</h1>
+    <h1 class="text-2xl font-bold">{ui.step3.title}</h1>
     {#if phase === "annealing"}
       <button class="btn btn-sm btn-warning" onclick={interruptAndRoute} disabled={interrupting}>
         {#if interrupting}<span class="loading loading-spinner loading-xs"></span>{/if}
-        {interrupting ? "正在中断" : "中断并布线"}
+        {interrupting ? ui.step3.interrupting : ui.step3.interruptAndRoute}
       </button>
     {:else}
       <button class="btn btn-sm btn-primary" onclick={start} disabled={busy || !listenerReady}>
         {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
-        {phase === "done" || phase === "error" ? "重新计算" : busy ? "计算中" : "开始计算"}
+        {phase === "done" || phase === "error" ? ui.step3.recompute : busy ? ui.step3.computing : ui.step3.start}
       </button>
     {/if}
   </header>
@@ -190,7 +192,7 @@
     <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 gap-4 overflow-auto p-4">
         <fieldset class="fieldset shrink-0" disabled={busy}>
-          <legend class="fieldset-legend">计算强度</legend>
+          <legend class="fieldset-legend">{ui.step3.strength}</legend>
           <div class="join join-vertical w-full">
             {#each profiles as item}
               <label class="join-item flex cursor-pointer items-center gap-3 border border-base-300 px-4 py-3 hover:bg-base-200" class:bg-base-200={profileId === item.id}>
@@ -202,7 +204,7 @@
           </div>
         </fieldset>
 
-        <ul class="steps steps-vertical text-sm" aria-label="计算阶段">
+        <ul class="steps steps-vertical text-sm" aria-label={ui.step3.phases}>
           {#each phases as item, index}
             <li class={stepClass(index)} data-content={phase === item.id && busy ? "●" : undefined}>{item.label}</li>
           {/each}
@@ -225,7 +227,7 @@
     <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex items-center justify-between gap-2">
-          <h2 class="card-title text-sm">预览</h2>
+          <h2 class="card-title text-sm">{ui.common.preview}</h2>
           <div class="flex gap-2">
             {#if frame?.iteration !== undefined}<span class="badge badge-ghost badge-sm">#{frame.iteration}</span>{/if}
             {#if frame?.cost !== undefined}<span class="badge badge-secondary badge-sm">{frame.cost.toFixed(2)}</span>{/if}
@@ -238,7 +240,7 @@
           </div>
           {#if !frame}
             <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-base-200/75">
-              {#if busy}<span class="loading loading-spinner loading-lg text-primary"></span>{:else}<span class="text-sm text-base-content/50">等待开始</span>{/if}
+              {#if busy}<span class="loading loading-spinner loading-lg text-primary"></span>{:else}<span class="text-sm text-base-content/50">{ui.step3.waiting}</span>{/if}
             </div>
           {/if}
         </div>

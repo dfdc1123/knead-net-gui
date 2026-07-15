@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { locale, ui } from "$lib/i18n";
 
   type FolderEntry = { name: string; path: string; ext: string; bytes: number };
   type Project = { name: string; sch?: FolderEntry; pcb?: FolderEntry };
@@ -46,8 +47,8 @@
     onSchematicChange("");
     onStatusChange(false);
     try {
-      await invoke("clear_pcb_path");
-      const nextEntries = await invoke<FolderEntry[]>("list_folder", { path });
+      await invoke("clear_project_source");
+      const nextEntries = await invoke<FolderEntry[]>("list_folder", { path, locale });
       const projectsByStem = new Map<string, Project>();
       for (const entry of nextEntries) {
         if (entry.ext !== "kicad_sch" && entry.ext !== "kicad_pcb") continue;
@@ -87,23 +88,24 @@
     onStatusChange(false);
 
     try {
-      await invoke("clear_pcb_path");
+      await invoke("clear_project_source");
       if (project.sch) {
         svg = await invoke<string>("render_sch", {
           path: project.sch.path,
           pcbPath: project.pcb?.path ?? null,
+          locale,
         });
         onSchematicChange(svg);
       }
       if (!project.pcb) {
-        error = `找不到与 ${project.name}.kicad_sch 同名的 .kicad_pcb 文件`;
+        error = ui.step1.matchingPcbMissing(project.name);
         return;
       }
       await invoke("set_pcb_path", { path: project.pcb.path });
       onStatusChange(true);
     } catch (e) {
       error = String(e);
-      await invoke("clear_pcb_path").catch(() => {});
+      await invoke("clear_project_source").catch(() => {});
     } finally {
       busy = false;
     }
@@ -123,8 +125,8 @@
 
 <div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="shrink-0">
-    <h1 class="text-2xl font-bold">导入工程</h1>
-    <p class="text-sm text-base-content/60">自动配对同名的 KiCad 原理图与 PCB。</p>
+    <h1 class="text-2xl font-bold">{ui.step1.title}</h1>
+    <p class="text-sm text-base-content/60">{ui.step1.subtitle}</p>
   </header>
 
   {#if error}
@@ -135,23 +137,23 @@
     <aside class="card min-h-0 min-w-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 min-w-0 gap-3 overflow-hidden p-4">
         <fieldset class="fieldset min-w-0 shrink-0">
-          <legend class="fieldset-legend">项目文件夹</legend>
+          <legend class="fieldset-legend">{ui.step1.projectFolder}</legend>
           <button
             type="button"
             class="btn btn-primary btn-sm btn-block"
             disabled={busy}
             onclick={() => void pickFolder()}
           >
-            {folder ? "更换项目文件夹" : "选择项目文件夹"}
+            {folder ? ui.step1.changeFolder : ui.step1.chooseFolder}
           </button>
           {#if busy}
-            <p class="label"><span class="loading loading-spinner loading-xs"></span>扫描中</p>
+            <p class="label"><span class="loading loading-spinner loading-xs"></span>{ui.step1.scanning}</p>
           {:else if folder}
             <div class="alert alert-success alert-soft mt-1 min-w-0 overflow-hidden px-3 py-2" role="status">
               <span class="block min-w-0 max-w-full truncate font-mono text-xs" title={folder}>{folder}</span>
             </div>
           {:else}
-            <p class="label text-base-content/50">尚未选择项目文件夹</p>
+            <p class="label text-base-content/50">{ui.step1.noFolder}</p>
           {/if}
         </fieldset>
 
@@ -159,7 +161,7 @@
 
         <div class="flex min-h-0 flex-1 flex-col gap-2">
           <div class="flex items-center justify-between">
-            <h2 class="card-title text-sm">工程</h2>
+            <h2 class="card-title text-sm">{ui.step1.projects}</h2>
             {#if projects.length}<span class="badge badge-neutral badge-sm">{projects.length}</span>{/if}
           </div>
           {#if projects.length > 0}
@@ -169,7 +171,7 @@
                   <button class:menu-active={selectedProject === project.name} onclick={() => selectProject(project)} disabled={busy}>
                     <span class="min-w-0 flex-1 truncate font-mono text-xs">{project.name}</span>
                     {#if !project.pcb}
-                      <span class="badge badge-error badge-xs">缺 PCB</span>
+                      <span class="badge badge-error badge-xs">{ui.step1.missingPcb}</span>
                     {:else if !project.sch}
                       <span class="badge badge-ghost badge-xs">PCB</span>
                     {/if}
@@ -179,7 +181,7 @@
             </ul>
           {:else}
             <div class="hero min-h-28 flex-1 rounded-box bg-base-200">
-              <span class="text-sm text-base-content/50">尚未选择文件夹</span>
+              <span class="text-sm text-base-content/50">{ui.step1.noFolder}</span>
             </div>
           {/if}
         </div>
@@ -187,7 +189,7 @@
         {#if entries.length > 0}
           <div class="collapse collapse-arrow shrink-0 border border-base-300 bg-base-200">
             <input type="checkbox" />
-            <div class="collapse-title min-h-0 py-3 text-sm font-medium">文件 · {entries.length}</div>
+            <div class="collapse-title min-h-0 py-3 text-sm font-medium">{ui.step1.files(entries.length)}</div>
             <div class="collapse-content max-h-40 overflow-auto">
               <ul class="list">
                 {#each entries as e}
@@ -206,7 +208,7 @@
     <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
-          <h2 class="card-title text-sm">原理图</h2>
+          <h2 class="card-title text-sm">{ui.common.schematic}</h2>
           {#if selectedProject}<span class="badge badge-ghost badge-sm font-mono">{selectedProject}</span>{/if}
         </div>
         {#if svg}
@@ -216,7 +218,7 @@
         {:else}
           <div class="hero min-h-0 flex-1 rounded-box bg-base-200">
             <span class="text-sm text-base-content/50">
-              {selectedProject && selectedHasSchematic ? "加载失败" : selectedProject ? "无原理图" : "暂无预览"}
+              {selectedProject && selectedHasSchematic ? ui.step1.loadFailed : selectedProject ? ui.common.noSchematic : ui.step1.noPreview}
             </span>
           </div>
         {/if}

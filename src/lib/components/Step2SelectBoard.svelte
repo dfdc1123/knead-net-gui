@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { locale, ui } from "$lib/i18n";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
 
@@ -14,9 +15,9 @@
   type Info = { preset: string; cols: number; holes: number; has_power_rails: boolean };
 
   const PRESETS: { id: BreadboardPreset; name: string; defaultCols: number }[] = [
-    { id: "hole170", name: "170 孔", defaultCols: 17 },
-    { id: "hole400", name: "400 孔", defaultCols: 30 },
-    { id: "hole800", name: "800 孔", defaultCols: 63 },
+    { id: "hole170", name: ui.step2.holes(170), defaultCols: 17 },
+    { id: "hole400", name: ui.step2.holes(400), defaultCols: 30 },
+    { id: "hole800", name: ui.step2.holes(800), defaultCols: 63 },
   ];
 
   let preset = $state<BreadboardPreset>("hole400");
@@ -44,7 +45,7 @@
     error = "";
     onStatusChange(false);
     try {
-      info = await invoke<Info>("set_breadboard", { preset: p, cols: c });
+      info = await invoke<Info>("set_breadboard", { preset: p, cols: c, locale });
       onBoardChange({ preset: p, cols: info.cols });
       onStatusChange(true);
     } catch (e) {
@@ -59,14 +60,14 @@
 
 <div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="shrink-0">
-    <h1 class="text-2xl font-bold">选择面包板</h1>
+    <h1 class="text-2xl font-bold">{ui.step2.title}</h1>
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[22rem_minmax(0,1fr)] gap-4">
     <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body gap-4 p-4">
         <fieldset class="fieldset" disabled={busy}>
-          <legend class="fieldset-legend">板型</legend>
+          <legend class="fieldset-legend">{ui.step2.boardType}</legend>
           <div class="join join-vertical w-full">
             {#each PRESETS as p}
               <label class="join-item flex cursor-pointer items-center gap-3 border border-base-300 px-4 py-3 hover:bg-base-200" class:bg-base-200={preset === p.id}>
@@ -76,27 +77,27 @@
                   name="breadboard-preset"
                   checked={preset === p.id}
                   onchange={() => pick(p.id)}
-                  aria-label={`选择 ${p.name}`}
+                  aria-label={ui.step2.selectPreset(p.name)}
                 />
                 <span class="flex-1 font-semibold">{p.name}</span>
-                <span class="badge badge-ghost badge-sm">{p.defaultCols} 列</span>
+                <span class="badge badge-ghost badge-sm">{ui.step2.columns(p.defaultCols)}</span>
               </label>
             {/each}
           </div>
         </fieldset>
 
         <fieldset class="fieldset">
-          <legend class="fieldset-legend">列数</legend>
+          <legend class="fieldset-legend">{ui.step2.columnCount}</legend>
           <label class="input w-full">
-            <input type="number" min="3" max="120" bind:value={cols} aria-label="面包板可用列数" />
+            <input type="number" min="3" max="120" bind:value={cols} aria-label={ui.step2.availableColumns} />
             <span class="label">3–120</span>
           </label>
         </fieldset>
 
         {#if info}
           <div class="flex flex-wrap gap-2">
-            <span class="badge badge-primary">{info.holes} 孔</span>
-            <span class="badge badge-outline">{info.has_power_rails ? "含电源轨" : "无电源轨"}</span>
+            <span class="badge badge-primary">{ui.step2.holes(info.holes)}</span>
+            <span class="badge badge-outline">{info.has_power_rails ? ui.step2.withRails : ui.step2.withoutRails}</span>
           </div>
         {/if}
 
@@ -109,7 +110,7 @@
     <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
-          <h2 class="card-title text-sm">预览</h2>
+          <h2 class="card-title text-sm">{ui.common.preview}</h2>
           {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × 10</span>{/if}
         </div>
         <div inert class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
