@@ -59,8 +59,8 @@ use crate::layout::breadboard::Breadboard;
 #[cfg(test)]
 use crate::layout::cost::cost;
 use crate::layout::cost::{
-    CostBuf, SAContext, SAState, Weights, cost_fast, init_bridgeable_to_bridged,
-    populate_bridgeable_info,
+    BridgeInitContext, BridgePolicy, CostBuf, SAContext, SAState, Weights, cost_fast,
+    initialize_bridging, populate_bridgeable_info,
 };
 use crate::layout::placement::Rotation;
 
@@ -165,12 +165,14 @@ pub struct SAConfig {
     /// `true` 用 [`SAState::from_spectral`] 做初排 (频谱嵌入, 无参数, 一步到位);
     /// `false` 用贪心 first-fit [`SAState::from_greedy`].
     pub use_spectral: bool,
+    /// Whether Bridged poses are disabled, explored, or mandatory.
+    pub bridge_policy: BridgePolicy,
     /// `random_move` 生成 `Move::ToggleBridging` 的目标概率。
     /// 仅当 `state.is_bridgeable[i] = true` 时实际生效, 否则该分支退回 `ShiftX`。
     /// 调高 → SA 更频繁探索 Bridged vs OnBoard; 调低 → Toggle 区间越窄。
     /// 默认 0.15: 配合 v7 默认分布, Toggle 实际概率 15%。
-    /// 0 = 完全关闭 Toggle 区间; ShiftGroup / ShiftX / Flip / ShiftY 仍按 v7
-    /// 比例挤压运行 (不是字面意义的 v6 分布)。
+    /// 只在 [`BridgePolicy::Explore`] 下生效；Disabled / Forced 都不会生成 Toggle。
+    /// 0 = 关闭 Explore 的 Toggle 区间；它不再决定是否建立候选或初始姿态。
     pub p_toggle_bridge: f64,
 }
 
@@ -184,6 +186,7 @@ impl Default for SAConfig {
             seed: 0xCAFE_F00D,
             n_seeds: 1,
             use_spectral: false,
+            bridge_policy: BridgePolicy::default(),
             p_toggle_bridge: 0.15,
         }
     }
@@ -241,7 +244,11 @@ fn random_move(
 
     // v7 分布: ShiftX 37% / Flip 20% / ShiftY 20% / ToggleBridging 15% / ShiftGroup 8%。
     // ShiftX 从 45% → 37%, 匀 8% 给 ShiftGroup。
-    let p_toggle = config.p_toggle_bridge.clamp(0.0, 0.45);
+    let p_toggle = if matches!(config.bridge_policy, BridgePolicy::Explore { .. }) {
+        config.p_toggle_bridge.clamp(0.0, 0.45)
+    } else {
+        0.0
+    };
     let p_shiftx = (1.0 - p_toggle) * 0.37 / 0.85;
     let p_flip = (1.0 - p_toggle) * 0.20 / 0.85;
     let p_shiftg = (1.0 - p_toggle) * 0.08 / 0.85;
@@ -785,23 +792,27 @@ pub(super) fn simulate(
         .power_rail_binding()
         .map(|binding| binding.iter().map(|(_, net)| net).collect())
         .unwrap_or_default();
-    populate_bridgeable_info(&mut state, circuit, board, &power_net_ids);
+    if config.bridge_policy != BridgePolicy::Disabled {
+        populate_bridgeable_info(&mut state, circuit, board, &power_net_ids);
+    }
     // 预计算 context (footprint pin offset, bbox) 和 reusable buffers
     let mut ctx = SAContext::new(circuit, &state.placeable);
     ctx.fill_bridged_bboxes(&state, circuit, board, &[]);
     ctx.fill_problem(problem);
     let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
-    // Aggressive init: 默认所有 bridgeable 都走桥接, cache 里挑 cost 最低的 pair。
-    // 不做 safety net; SA 后续可以 ToggleBridging 翻回去。
-    init_bridgeable_to_bridged(
+    initialize_bridging(
         &mut state,
-        circuit,
-        board,
-        &[],
-        &config.weights,
-        &ctx,
+        BridgeInitContext {
+            circuit,
+            board,
+            bridged_pins: &[],
+            weights: &config.weights,
+            cost_context: &ctx,
+            problem,
+        },
         &mut buf,
-    );
+        config.bridge_policy,
+    )?;
     let mut current_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
@@ -1699,6 +1710,169 @@ mod tests {
                 "from_greedy 把元件放到了 blocked row y={y}"
             );
         }
+    }
+
+    #[test]
+    fn zero_iterations_do_not_force_bridging_when_onboard_is_equally_good() {
+        let (circuit, board) = bridgable_fixture();
+        let config = SAConfig {
+            max_iters: 0,
+            p_toggle_bridge: 0.0,
+            bridge_policy: BridgePolicy::Explore {
+                initial: crate::layout::cost::BridgeInitial::BestOfBoth,
+            },
+            weights: Weights {
+                mst: 0.0,
+                pin_overlap: 0.0,
+                b_box_overlap: 0.0,
+                column_conflict: 0.0,
+                out_of_bounds: 0.0,
+                compactness: 0.0,
+                rail_crossing: 0.0,
+                row_squash: 0.0,
+                mst_congestion: 0.0,
+            },
+            ..SAConfig::default()
+        };
+        let state = simulate(
+            vec![ComponentId(0)],
+            &circuit,
+            &board,
+            &config,
+            &crate::layout::problem::AnnealProblem::default(),
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(state.bridged, vec![false]);
+    }
+
+    #[test]
+    fn bridge_policy_controls_catalog_initial_mode_and_toggle_availability() {
+        use crate::layout::cost::BridgeInitial;
+
+        let (circuit, board) = bridgable_fixture();
+        let preprocess = crate::layout::preprocess::PreprocessResult {
+            r90_only: std::collections::HashSet::new(),
+            y_locked: std::collections::HashMap::new(),
+        };
+        let problem = crate::layout::problem::AnnealProblem::default();
+        let run = |policy| {
+            simulate(
+                vec![ComponentId(0)],
+                &circuit,
+                &board,
+                &SAConfig {
+                    max_iters: 0,
+                    bridge_policy: policy,
+                    ..SAConfig::default()
+                },
+                &problem,
+                &preprocess,
+                None,
+            )
+            .unwrap()
+        };
+
+        let disabled = run(BridgePolicy::Disabled);
+        assert_eq!(disabled.is_bridgeable, vec![false]);
+        assert_eq!(disabled.bridged, vec![false]);
+        assert!(disabled.bridged_pin_pairs[0].is_empty());
+
+        let onboard = run(BridgePolicy::Explore {
+            initial: BridgeInitial::OnBoard,
+        });
+        assert_eq!(onboard.is_bridgeable, vec![true]);
+        assert_eq!(onboard.bridged, vec![false]);
+        assert!(!onboard.bridged_pin_pairs[0].is_empty());
+
+        let forced = run(BridgePolicy::Forced);
+        assert_eq!(forced.is_bridgeable, vec![true]);
+        assert_eq!(forced.bridged, vec![true]);
+
+        let mut rng = fastrand::Rng::with_seed(7);
+        let forced_config = SAConfig {
+            bridge_policy: BridgePolicy::Forced,
+            p_toggle_bridge: 0.45,
+            ..SAConfig::default()
+        };
+        for _ in 0..500 {
+            assert!(
+                !matches!(
+                    random_move(&forced, &mut rng, 10.0, 10.0, &forced_config, &board),
+                    Move::ToggleBridging(_)
+                ),
+                "Forced policy must not emit a move back to OnBoard"
+            );
+        }
+    }
+
+    #[test]
+    fn forced_bridge_policy_errors_without_a_legal_candidate() {
+        let (circuit, _) = bridgable_fixture();
+        let board = Breadboard::standard();
+        let result = simulate(
+            vec![ComponentId(0)],
+            &circuit,
+            &board,
+            &SAConfig {
+                max_iters: 0,
+                bridge_policy: BridgePolicy::Forced,
+                ..SAConfig::default()
+            },
+            &crate::layout::problem::AnnealProblem::default(),
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+            None,
+        );
+
+        assert_eq!(
+            result.unwrap_err(),
+            crate::layout::LayoutError::NoLegalInitialPlacement {
+                component: ComponentId(0)
+            }
+        );
+    }
+
+    #[test]
+    fn cancellation_after_bridge_initialization_returns_a_complete_state() {
+        use crate::layout::cost::BridgeInitial;
+
+        let (circuit, board) = bridgable_fixture();
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let state = simulate(
+            vec![ComponentId(0)],
+            &circuit,
+            &board,
+            &SAConfig {
+                max_iters: 100,
+                bridge_policy: BridgePolicy::Explore {
+                    initial: BridgeInitial::OnBoard,
+                },
+                ..SAConfig::default()
+            },
+            &crate::layout::problem::AnnealProblem::default(),
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+            Some(SimulationControl {
+                observer: None,
+                cancellation: Some(&cancelled),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(state.placeable, vec![ComponentId(0)]);
+        assert_eq!(state.is_bridgeable, vec![true]);
+        assert_eq!(state.bridged, vec![false]);
+        assert!(!state.bridged_pin_pairs[0].is_empty());
     }
 
     #[test]

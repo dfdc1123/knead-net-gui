@@ -188,10 +188,11 @@ impl<'c> super::Layout<'c> {
             }
         }
         use rayon::prelude::*;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let base_placements = self.placements.clone();
         let base_wires = self.wires.clone();
         let completed_seeds = AtomicUsize::new(0);
+        let initial_progress_reported = AtomicBool::new(!config.use_spectral);
         let display_seed = progress
             .map_or(0, |(_, options)| options.display_seed)
             .min(n_seeds - 1);
@@ -225,10 +226,13 @@ impl<'c> super::Layout<'c> {
                     };
                     let snapshot = snapshot_from_state(&base_placements, &base_wires, &state);
                     match kind {
-                        None => callback(LayoutProgress::SpectralInitial {
-                            seed: cfg_s.seed,
-                            snapshot,
-                        }),
+                        None => {
+                            callback(LayoutProgress::SpectralInitial {
+                                seed: cfg_s.seed,
+                                snapshot,
+                            });
+                            initial_progress_reported.store(true, Ordering::Release);
+                        }
                         Some((iteration, current_cost, best_cost)) => {
                             callback(LayoutProgress::Annealing {
                                 seed: cfg_s.seed,
@@ -274,7 +278,9 @@ impl<'c> super::Layout<'c> {
                     &config.weights,
                 );
                 let completed = completed_seeds.fetch_add(1, Ordering::AcqRel) + 1;
-                if let Some((callback, _)) = progress {
+                if let Some((callback, _)) = progress
+                    && initial_progress_reported.load(Ordering::Acquire)
+                {
                     callback(LayoutProgress::SeedsProgress {
                         completed,
                         total: n_seeds,

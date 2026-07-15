@@ -6,10 +6,10 @@ use crate::circuit::{
     Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin, PinId,
     Position,
 };
-use crate::layout::Breadboard;
 use crate::layout::breadboard::{PowerRailBinding, Region, standard_power_rails};
 use crate::layout::cost::bridge::collect_matching_rail_ids;
 use crate::layout::placement::{Placement, Rotation};
+use crate::layout::{Breadboard, HoleId};
 
 /// 1 列宽, 1 个 pin, R0/R180 等价的 footprint (没有第二个 pin 区分方向)。
 fn one_pin_fp() -> Footprint {
@@ -1678,10 +1678,10 @@ fn populate_bridgeable_info_top_rail_tiebreaker() {
 }
 
 // ============================================================
-//  init_bridgeable_to_bridged: aggressive bridge default
+//  initialize_bridging policy
 // ============================================================
 
-/// 验证 `init_bridgeable_to_bridged` 把所有 is_bridgeable 元件默认到 bridged。
+/// Forced policy puts every eligible component into Bridged mode.
 #[test]
 fn init_bridgeable_to_bridged_flips_all() {
     // 多个 bridgeable 元件, 都需要 bridge。
@@ -1710,15 +1710,20 @@ fn init_bridgeable_to_bridged_flips_all() {
 
     let ctx = SAContext::new(&circuit, &placeable);
     let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
-    init_bridgeable_to_bridged(
+    initialize_bridging(
         &mut state,
-        &circuit,
-        &board,
-        &[],
-        &Weights::default(),
-        &ctx,
+        BridgeInitContext {
+            circuit: &circuit,
+            board: &board,
+            bridged_pins: &[],
+            weights: &Weights::default(),
+            cost_context: &ctx,
+            problem: &crate::layout::problem::AnnealProblem::default(),
+        },
         &mut buf,
-    );
+        BridgePolicy::Forced,
+    )
+    .unwrap();
 
     // 调用后: 所有 is_bridgeable=true 的元件都应 bridged
     for i in 0..placeable.len() {
@@ -1728,7 +1733,8 @@ fn init_bridgeable_to_bridged_flips_all() {
     }
 }
 
-/// 验证 `init_bridgeable_to_bridged` 挑的是 cache 里 cost 最低的 pair。
+/// 回归：即使启发式目录的候选 0 明确不是最优，bridge init 也必须比较真实的
+/// Bridged 状态，而不是把同一个 OnBoard 状态重复计算 K 次。
 #[test]
 fn init_bridgeable_to_bridged_picks_lowest_cost_pair() {
     let (circuit, board) = bridgeable_two_pin_circuit();
@@ -1746,39 +1752,60 @@ fn init_bridgeable_to_bridged_picks_lowest_cost_pair() {
     .unwrap();
     populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 
-    let ctx = SAContext::new(&circuit, &placeable);
-    let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
     let weights = Weights::default();
-    init_bridgeable_to_bridged(&mut state, &circuit, &board, &[], &weights, &ctx, &mut buf);
+    let i = 0;
+    assert!(state.bridged_pin_pairs[i].len() > 1);
 
-    // 对每个 bridgeable 验证 active_bridge_idx 对应的 cache pair 成本
-    // 不超过 cache 里任何其他 pair 的成本。
-    for i in 0..placeable.len() {
-        if !state.is_bridgeable[i] || state.bridged_pin_pairs[i].is_empty() {
-            continue;
-        }
-        let active_idx = state.active_bridge_idx[i];
-        let mut min_cost_idx = active_idx;
-        let mut min_cost = f64::INFINITY;
-        for j in 0..state.bridged_pin_pairs[i].len() {
+    // 先在真实 Bridged 模式下找一对严格不同的 best/worst，再把目录故意排成
+    // [worst, best]。这样期望值明确是 index 1，不依赖启发式碰巧把谁排在前面。
+    state.bridged[i] = true;
+    let mut ctx = SAContext::new(&circuit, &placeable);
+    ctx.fill_bridged_bboxes(&state, &circuit, &board, &[]);
+    let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
+    let candidates = state.bridged_pin_pairs[i].clone();
+    let mut ranked: Vec<(f64, [(HoleId, PinId); 2])> = candidates
+        .iter()
+        .enumerate()
+        .map(|(j, &pair)| {
             state.active_bridge_idx[i] = j;
-            let c = cost_fast(&state, &circuit, &board, &[], &weights, &ctx, &mut buf);
-            if c < min_cost {
-                min_cost = c;
-                min_cost_idx = j;
-            }
-        }
-        assert_eq!(
-            active_idx, min_cost_idx,
-            "init_bridgeable_to_bridged 选中的 active_bridge_idx = {active_idx} \
-                 但 cache 里 cost 最低的下标是 {min_cost_idx}"
-        );
-        // 验证完后复原 关键状态。
-        state.active_bridge_idx[i] = active_idx;
-    }
+            (
+                cost_fast(&state, &circuit, &board, &[], &weights, &ctx, &mut buf),
+                pair,
+            )
+        })
+        .collect();
+    ranked.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let best = ranked.first().copied().unwrap();
+    let worst = ranked.last().copied().unwrap();
+    assert!(best.0 < worst.0, "fixture 必须提供严格不同的 bridge cost");
+
+    state.bridged_pin_pairs[i] = vec![worst.1, best.1];
+    state.active_bridge_idx[i] = 0;
+    state.bridged[i] = false;
+    ctx.fill_bridged_bboxes(&state, &circuit, &board, &[]);
+    initialize_bridging(
+        &mut state,
+        BridgeInitContext {
+            circuit: &circuit,
+            board: &board,
+            bridged_pins: &[],
+            weights: &weights,
+            cost_context: &ctx,
+            problem: &crate::layout::problem::AnnealProblem::default(),
+        },
+        &mut buf,
+        BridgePolicy::Forced,
+    )
+    .unwrap();
+
+    assert!(state.bridged[i]);
+    assert_eq!(
+        state.active_bridge_idx[i], 1,
+        "真实最优候选被放在 index 1，不能继续默认选 0"
+    );
 }
 
-/// 用于 init_bridgeable_to_bridged 测试的最小 fixture: 1 个 bridgeable R
+/// 用于 initialize_bridging 测试的最小 fixture: 1 个 bridgeable R
 /// + 1 个带 SIGNAL net pin 的 1-pin 元件 (SIGNAL net 上多个 pin, 让 net center 可算)。
 fn bridgeable_two_pin_circuit() -> (Circuit, Breadboard) {
     use crate::circuit::{Footprint, PhysicalPin};

@@ -26,7 +26,7 @@ pub use breadboard::{
     PowerRails, PowerStrip, Preset, RailTie, RailTieError, RailTieId, RailTieSource, Region,
     standard_power_rails, wide_power_rails_800,
 };
-pub use cost::Weights;
+pub use cost::{BridgeInitial, BridgePolicy, Weights};
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{BBox, PinHole, PlacedFootprint, Placement, Rotation};
 pub use prepare::{

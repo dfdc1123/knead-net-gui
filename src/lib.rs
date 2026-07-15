@@ -17,10 +17,10 @@ pub use circuit::{
     Position,
 };
 pub use layout::{
-    Breadboard, CancellationToken, Hole, HoleId, Layout, LayoutError, LayoutPreparation,
-    LayoutProgress, LayoutSnapshot, Occupancy, Occupant, PathFinderRouter, PinHole,
-    PlacedFootprint, Placement, Polarity, PowerRail, PowerRailBinding, PowerRailMatch, PowerRails,
-    PowerStrip, Preset, ProgressOptions, Region, Rotation, Router, SAConfig, Weights, Wire, WireId,
-    prepare_for_layout, prepare_for_layout_with_power_nets, spectral_debug_positions,
+    Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Hole, HoleId, Layout, LayoutError,
+    LayoutPreparation, LayoutProgress, LayoutSnapshot, Occupancy, Occupant, PathFinderRouter,
+    PinHole, PlacedFootprint, Placement, Polarity, PowerRail, PowerRailBinding, PowerRailMatch,
+    PowerRails, PowerStrip, Preset, ProgressOptions, Region, Rotation, Router, SAConfig, Weights,
+    Wire, WireId, prepare_for_layout, prepare_for_layout_with_power_nets, spectral_debug_positions,
     standard_power_rails, wide_power_rails_800,
 };

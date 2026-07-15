@@ -2,12 +2,41 @@
 
 use crate::circuit::{Circuit, Component, ComponentId, NetId, PinId, Position};
 use crate::layout::breadboard::{Breadboard, HoleId, Region};
-use crate::layout::placement::{Rotation, rotate};
+use crate::layout::placement::{Placement, Rotation, rotate};
+use crate::layout::problem::AnnealProblem;
 
 use super::Weights;
 use super::context::{CostBuf, SAContext};
 use super::cost_fast::cost_fast;
-use super::state::SAState;
+use super::state::{InitialGeometry, InitialOccupancy, SAState};
+
+/// Initial mode used while bridge exploration remains enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeInitial {
+    /// Keep the preprocess-aware OnBoard placement as the initial state.
+    OnBoard,
+    /// Compare the legal OnBoard pose with every legal Bridged candidate.
+    BestOfBoth,
+}
+
+/// Controls whether bridge candidates exist and whether SA may toggle modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgePolicy {
+    /// Do not build a candidate catalog and never enter Bridged mode.
+    Disabled,
+    /// Build the catalog and allow `ToggleBridging` moves.
+    Explore { initial: BridgeInitial },
+    /// Every component marked bridgeable must start and remain Bridged.
+    Forced,
+}
+
+impl Default for BridgePolicy {
+    fn default() -> Self {
+        Self::Explore {
+            initial: BridgeInitial::BestOfBoth,
+        }
+    }
+}
 
 pub(crate) fn propose_bridged_pairs(
     comp: &Component,
@@ -236,51 +265,161 @@ pub(crate) fn populate_bridgeable_info(
     }
 }
 
-/// Init 阶段: 给每个 `is_bridgeable` 的元件默认走 bridged 模式, 取 cache 里
-/// `cost_fast` 最低的那一对。
-///
-/// **设计动机**: SA 启动时 ToggleBridging 概率只 15%, 多数 seeds 跑完全部
-/// iter 都没把 bridgeable 翻过去, 初始 OnBoard 起点拖住 SOTA 收敛。本函数
-/// 在 init 阶段把 "翻成桥接" 提前, 起点直接是 "全 bridgeable 都在桥接"。
-/// SA 的 ToggleBridging 仍然能翻回 OnBoard (如果那更优), 不锁死。
-///
-/// **不做 safety net**: 即使 cache 最优 cache pair 的 cost 仍高于 OnBoard
-/// 起点也强制翻。理由: SA 能在温度高的时候翻回去, 与不翻、让 SA 自己探索
-/// 相比, 主动翻有一个更好的局部起点用于其他 Move 微调。
-///
-/// **预算**: 每个 bridgeable K 次 cost 评估 (K ≈ cache 长度)。5 个 bridgeable
-/// × 5 个候选 ≈ 25 次, 跟 30k iter × 几百 cost 评估相比可以忽略。
-///
-/// **调用时机**: `populate_bridgeable_info` 之后, SA 主循环首次 `cost_fast`
-/// 之前。在 `sa::simulate` 里调用。
-pub(crate) fn init_bridgeable_to_bridged(
+/// Applies the configured bridge initialization policy. Every candidate is evaluated while
+/// the component is actually in Bridged mode, and only hard-legal candidates participate.
+pub(crate) struct BridgeInitContext<'a> {
+    pub circuit: &'a Circuit,
+    pub board: &'a Breadboard,
+    pub bridged_pins: &'a [(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
+    pub weights: &'a Weights,
+    pub cost_context: &'a SAContext,
+    pub problem: &'a AnnealProblem,
+}
+
+pub(crate) fn initialize_bridging(
     state: &mut SAState,
-    circuit: &Circuit,
-    board: &Breadboard,
-    bridged_pins: &[(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
-    weights: &Weights,
-    ctx: &SAContext,
+    input: BridgeInitContext<'_>,
     buf: &mut CostBuf,
-) {
+    policy: BridgePolicy,
+) -> Result<(), crate::layout::LayoutError> {
+    let BridgeInitContext {
+        circuit,
+        board,
+        bridged_pins,
+        weights,
+        cost_context,
+        problem,
+    } = input;
+    if policy == BridgePolicy::Disabled
+        || policy
+            == (BridgePolicy::Explore {
+                initial: BridgeInitial::OnBoard,
+            })
+    {
+        return Ok(());
+    }
+
     let n = state.placeable.len();
     for i in 0..n {
-        if !state.is_bridgeable[i] || state.bridged_pin_pairs[i].is_empty() {
+        let component = &circuit.components[state.placeable[i].raw()];
+        if !component.bridgeable {
             continue;
         }
-        let cache_len = state.bridged_pin_pairs[i].len();
-        let mut best_cost = f64::INFINITY;
-        let mut best_idx = 0;
-        for j in 0..cache_len {
+
+        if !state.is_bridgeable[i] || state.bridged_pin_pairs[i].is_empty() {
+            if policy == BridgePolicy::Forced {
+                return Err(crate::layout::LayoutError::NoLegalInitialPlacement {
+                    component: state.placeable[i],
+                });
+            }
+            continue;
+        }
+
+        let onboard_cost = (policy
+            == (BridgePolicy::Explore {
+                initial: BridgeInitial::BestOfBoth,
+            }))
+        .then(|| {
+            cost_fast(
+                state,
+                circuit,
+                board,
+                bridged_pins,
+                weights,
+                cost_context,
+                buf,
+            )
+        });
+        let old_active_idx = state.active_bridge_idx[i];
+        let mut best: Option<(f64, usize)> = None;
+        state.bridged[i] = true;
+        for j in 0..state.bridged_pin_pairs[i].len() {
             state.active_bridge_idx[i] = j;
-            let c = cost_fast(state, circuit, board, bridged_pins, weights, ctx, buf);
-            if c < best_cost {
-                best_cost = c;
-                best_idx = j;
+            if !state_hard_legal(state, circuit, board, problem) {
+                continue;
+            }
+            let candidate_cost = cost_fast(
+                state,
+                circuit,
+                board,
+                bridged_pins,
+                weights,
+                cost_context,
+                buf,
+            );
+            if best.is_none_or(|(best_cost, _)| candidate_cost < best_cost) {
+                best = Some((candidate_cost, j));
             }
         }
-        state.active_bridge_idx[i] = best_idx;
-        state.bridged[i] = true;
+        state.bridged[i] = false;
+        state.active_bridge_idx[i] = old_active_idx;
+
+        match (policy, onboard_cost, best) {
+            (BridgePolicy::Forced, _, Some((_, best_idx))) => {
+                state.bridged[i] = true;
+                state.active_bridge_idx[i] = best_idx;
+            }
+            (BridgePolicy::Forced, _, None) => {
+                return Err(crate::layout::LayoutError::NoLegalInitialPlacement {
+                    component: state.placeable[i],
+                });
+            }
+            (
+                BridgePolicy::Explore {
+                    initial: BridgeInitial::BestOfBoth,
+                },
+                Some(onboard_cost),
+                Some((best_cost, best_idx)),
+            ) if best_cost < onboard_cost => {
+                state.bridged[i] = true;
+                state.active_bridge_idx[i] = best_idx;
+            }
+            _ => {}
+        }
     }
+    Ok(())
+}
+
+fn state_hard_legal(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    problem: &AnnealProblem,
+) -> bool {
+    let mut occupancy = InitialOccupancy::new(problem);
+    for (i, &component_id) in state.placeable.iter().enumerate() {
+        let component = &circuit.components[component_id.raw()];
+        if state.bridged[i] {
+            let Some(pin_holes) = state.active_bridge_pair(i) else {
+                return false;
+            };
+            let footprint =
+                &circuit.footprints[component.footprint.expect("placeable 必有 footprint").raw()];
+            let Ok(placed) = (Placement::Bridged { pin_holes }).apply(
+                component,
+                footprint,
+                board,
+                circuit.pins(),
+            ) else {
+                return false;
+            };
+            if !occupancy.try_reserve_placed(board, &placed, circuit) {
+                return false;
+            }
+        } else {
+            let geometry = InitialGeometry::new(component, circuit, state.rotation[i]);
+            if !occupancy.try_reserve(
+                board,
+                &geometry,
+                state.x[i],
+                state.y[i],
+                state.y_locked[i].is_some(),
+            ) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// 算一个 net 的几何中心 (各 pin 位置的平均)。排除 `exclude_comp` 的 pin

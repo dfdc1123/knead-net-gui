@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::circuit::{Circuit, ComponentId, PinId};
 use crate::layout::breadboard::{Breadboard, HoleId};
-use crate::layout::placement::{BBox, Rotation, rotate};
+use crate::layout::placement::{BBox, PlacedFootprint, Rotation, rotate};
 use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
 
@@ -114,6 +114,60 @@ impl InitialOccupancy {
             if board.at(cell.0, cell.1).is_some() {
                 self.occupied.insert(cell);
             }
+        }
+        self.rail_owners.extend(candidate_owners);
+        true
+    }
+
+    /// Reserve an already-projected placement such as a Bridged component.
+    /// Cells outside the board are ignored, matching `Occupancy::from_layout` for a
+    /// body suspended between a power rail and the main board.
+    pub(super) fn try_reserve_placed(
+        &mut self,
+        board: &Breadboard,
+        placed: &PlacedFootprint,
+        circuit: &Circuit,
+    ) -> bool {
+        let mut candidate_owners: HashMap<u32, Option<crate::circuit::NetId>> = HashMap::new();
+        for pin_hole in &placed.pin_holes {
+            let position = board.hole(pin_hole.hole).position;
+            if self.occupied.contains(&(position.x, position.y)) {
+                return false;
+            }
+            let rail = board.effective_rail_id_of(pin_hole.hole);
+            let net = circuit.pins[pin_hole.pin.raw()].net;
+            if self
+                .rail_owners
+                .get(&rail)
+                .is_some_and(|owner| *owner != net)
+                || candidate_owners
+                    .get(&rail)
+                    .is_some_and(|owner| *owner != net)
+            {
+                return false;
+            }
+            candidate_owners.entry(rail).or_insert(net);
+        }
+
+        if let Some(bbox) = placed.bbox
+            && bbox.iter_cells().any(|position| {
+                board.at(position.x, position.y).is_some()
+                    && self.occupied.contains(&(position.x, position.y))
+            })
+        {
+            return false;
+        }
+
+        for pin_hole in &placed.pin_holes {
+            let position = board.hole(pin_hole.hole).position;
+            self.occupied.insert((position.x, position.y));
+        }
+        if let Some(bbox) = placed.bbox {
+            self.occupied.extend(
+                bbox.iter_cells()
+                    .filter(|position| board.at(position.x, position.y).is_some())
+                    .map(|position| (position.x, position.y)),
+            );
         }
         self.rail_owners.extend(candidate_owners);
         true

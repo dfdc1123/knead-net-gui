@@ -409,6 +409,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R8. 引入明确 BridgePolicy 并修正初始化候选比较
 
+- 实施状态：**已完成**（2026-07-15）。T01 先把真实 Bridged 成本严格更低的候选放到 index 1，旧实现仍选 0；T06 先复现 zero-iteration、零 Toggle rate、OnBoard/Bridged 同成本时仍被无条件强制桥接。公开配置现提供 `Disabled`、`Explore { initial: OnBoard | BestOfBoth }`、`Forced`：Disabled 不建 catalog，Explore 才按 `p_toggle_bridge` 生成 Toggle，BestOfBoth 比较合法 OnBoard 与全部合法候选并在平局保留 OnBoard，Forced 不允许翻回且无合法候选会返回结构化错误。桥接初始化使用与固定几何、wire、rail binding 一致的 hard-legality；取消和 zero-iteration 均返回完成初始化的状态。GUI 三档显式使用 Explore/BestOfBoth。
 - 对应：A1、A6；覆盖 bridge 初始化、cancel、zero iteration。
 - 依赖：R1/R2 的 rail/bridge legality、R5 的合法 OnBoard baseline、R7 的 reject invariant、R6 的准确 eligibility。
 - 最小失败测试：T01、T06；保留一个“最优就是 index 0”的正例但不能只靠它。
