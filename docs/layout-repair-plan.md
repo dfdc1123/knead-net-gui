@@ -349,7 +349,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 - [x] R9：排列不变、同源 cost/diagnostics
 - [x] R10：state-aware move 与归一化 attempt schedule
 - [x] R11：当前不变量注释与诊断说明
-- [ ] R12：真实 PCB 全链路连通图回归
+- [x] R12：真实 PCB 全链路连通图回归
 - [ ] R13：benchmark-gated 质量与性能重构
 - [ ] 最终全量验证与完成审计
 
@@ -461,6 +461,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R12. 加真实 PCB 全链路连通图回归
 
+- [x] **已完成**（2026-07-15）。新增 root integration test `real_pcb_parse_prepare_sa_route_connectivity`，直接读取真实 `examples/inputs/h-bridge.kicad_pcb`，固定算法契约 `state-aware-attempt-v1` 与 seed，连续执行 parse → automatic prepare/power binding → spectral SA → PathFinder route → validate。测试不复用 occupancy validator 判断连通性，而是从 physical/effective islands、RailTie 和 wire contacts 独立构造并查集，断言每个 net 的真实 pins、绑定 anchors 与 wire endpoints 同分量且不同 nets 不共享分量；同时明确覆盖 OnBoard、Bridged、power binding、wire，并双跑比较 placement/wire 可复现性。
 - 对应：审查报告“最优先补的测试”的最终一项，用来封住所有任务组合后的系统行为。
 - 依赖：R1-R11 全部完成。
 - 最小失败测试：`T14_real_pcb_parse_prepare_sa_route_connectivity`，使用仓库真实 PCB fixture，固定算法版本/seed，执行 parse -> prepare -> SA -> route -> validate，再构造 effective connectivity graph；每个 net 的所有真实 pin 和绑定 anchor 必须在该 net 的同一连通分量，且不同 net 不得共享 conductive island。
