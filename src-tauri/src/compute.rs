@@ -499,13 +499,17 @@ fn progress_event(
     } = context;
     let locale = *locale;
     match progress {
-        LayoutProgress::SpectralInitial { seed, snapshot } => ComputeEvent {
+        LayoutProgress::SpectralInitial {
+            seed,
+            cost,
+            snapshot,
+        } => ComputeEvent {
             run_id,
             phase: "spectral",
             progress: 5.0,
             message: match locale {
-                UiLocale::ZhCn => format!("Spectral 初始布局 · 观察 seed {seed}"),
-                UiLocale::En => format!("Spectral initial layout · observing seed {seed}"),
+                UiLocale::ZhCn => format!("Spectral 初始布局 · seed {seed} · cost {cost:.1}"),
+                UiLocale::En => format!("Spectral initial layout · seed {seed} · cost {cost:.1}"),
             },
             frame: Some(snapshot_frame(
                 &snapshot,
@@ -513,7 +517,7 @@ fn progress_event(
                 board,
                 schematic_metadata,
                 Some(0),
-                None,
+                Some(cost),
             )),
         },
         LayoutProgress::Annealing {
@@ -994,5 +998,36 @@ mod tests {
         assert!(rail_ties
             .iter()
             .any(|wire| wire.id == "rail-tie:preset:positive:top-bottom"));
+    }
+
+    #[test]
+    fn spectral_progress_exposes_the_post_bridge_cost() {
+        let circuit = Circuit::empty();
+        let board = Breadboard::standard();
+        let metadata = ComponentMetadataMap::new();
+        let started = Instant::now();
+        let event = progress_event(
+            7,
+            LayoutProgress::SpectralInitial {
+                seed: 42,
+                cost: 123.5,
+                snapshot: LayoutSnapshot {
+                    placements: Vec::new(),
+                    wires: Vec::new(),
+                },
+            },
+            &ProgressContext {
+                circuit: &circuit,
+                board: &board,
+                schematic_metadata: &metadata,
+                locale: UiLocale::ZhCn,
+                started: &started,
+            },
+            false,
+        );
+
+        assert_eq!(event.phase, "spectral");
+        assert!(event.message.contains("cost 123.5"));
+        assert_eq!(event.frame.expect("spectral frame").cost, Some(123.5));
     }
 }

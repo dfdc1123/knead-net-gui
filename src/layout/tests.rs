@@ -1158,6 +1158,22 @@ fn place_sa_progress_does_not_change_result() {
 
     assert_eq!(plain.placements(), observed.placements());
     let events = events.into_inner().unwrap();
+    let initial_cost = match events.first() {
+        Some(crate::layout::LayoutProgress::SpectralInitial { cost, .. }) => *cost,
+        other => panic!("first event should be the initial state, got {other:?}"),
+    };
+    let iteration_zero_cost = events
+        .iter()
+        .find_map(|event| match event {
+            crate::layout::LayoutProgress::Annealing {
+                iteration: 0,
+                current_cost,
+                ..
+            } => Some(*current_cost),
+            _ => None,
+        })
+        .expect("observed seed should report iteration zero");
+    assert_eq!(initial_cost, iteration_zero_cost);
     assert!(matches!(
         events.first(),
         Some(crate::layout::LayoutProgress::SpectralInitial { seed: 1234, .. })

@@ -54,8 +54,12 @@ pub struct AnnealMetrics {
 /// Step 3 所需的几个稳定阶段。
 #[derive(Debug, Clone)]
 pub enum LayoutProgress {
-    /// 展示 seed 的频谱初排；此时尚未开始退火。
-    SpectralInitial { seed: u64, snapshot: LayoutSnapshot },
+    /// 展示 seed 完成 bridge 初始化后的真实退火起点及其成本。
+    SpectralInitial {
+        seed: u64,
+        cost: f64,
+        snapshot: LayoutSnapshot,
+    },
     /// 展示 seed 的退火抽样帧。`iteration` 从 0 开始。
     Annealing {
         seed: u64,

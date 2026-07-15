@@ -216,26 +216,27 @@ impl<'c> super::Layout<'c> {
                     let Some((callback, _)) = progress else {
                         return;
                     };
-                    let (kind, state) = match event {
-                        sa::SimulationProgress::Initial(state) => (None, state),
+                    let (kind, current_cost, state) = match event {
+                        sa::SimulationProgress::Initial { state, cost } => (None, cost, state),
                         sa::SimulationProgress::Annealing {
                             iteration,
                             current_cost,
                             best_cost,
                             metrics,
                             state,
-                        } => (Some((iteration, current_cost, best_cost, metrics)), state),
+                        } => (Some((iteration, best_cost, metrics)), current_cost, state),
                     };
                     let snapshot = snapshot_from_state(&base_placements, &base_wires, &state);
                     match kind {
                         None => {
                             callback(LayoutProgress::SpectralInitial {
                                 seed: cfg_s.seed,
+                                cost: current_cost,
                                 snapshot,
                             });
                             initial_progress_reported.store(true, Ordering::Release);
                         }
-                        Some((iteration, current_cost, best_cost, metrics)) => {
+                        Some((iteration, best_cost, metrics)) => {
                             callback(LayoutProgress::Annealing {
                                 seed: cfg_s.seed,
                                 iteration,

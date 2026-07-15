@@ -969,7 +969,10 @@ fn can_shift_left_one(state: &SAState, board: &Breadboard, i: usize) -> bool {
 // ============================================================
 
 pub(super) enum SimulationProgress {
-    Initial(SAState),
+    Initial {
+        state: SAState,
+        cost: f64,
+    },
     Annealing {
         iteration: usize,
         current_cost: f64,
@@ -1065,11 +1068,6 @@ pub(super) fn simulate(
     let observer = control
         .as_ref()
         .and_then(|control| control.observer.as_ref());
-    if config.use_spectral
-        && let Some(observer) = observer
-    {
-        (observer.callback)(SimulationProgress::Initial(state.clone()));
-    }
     // 从 board 抽 power net ids (绑定的正 / 负极), 然后填桥接字段。
     // 无绑定时 power_net_ids 为空, `populate_bridgeable_info` 内调用的
     // `propose_bridged_pairs` 返空 Vec, 没人会被标 bridgeable, Toggle 不会触发。
@@ -1099,6 +1097,14 @@ pub(super) fn simulate(
         config.bridge_policy,
     )?;
     let mut current_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
+    if config.use_spectral
+        && let Some(observer) = observer
+    {
+        (observer.callback)(SimulationProgress::Initial {
+            state: state.clone(),
+            cost: current_cost,
+        });
+    }
     #[cfg(profile_sa)]
     {
         PROF_INIT_NS.fetch_add(
@@ -2447,6 +2453,58 @@ mod tests {
         .unwrap();
 
         assert_eq!(outcome.state.bridged, vec![false]);
+    }
+
+    #[test]
+    fn initial_progress_reports_the_post_bridge_state() {
+        let (circuit, board) = bridgable_fixture();
+        let initial_states = std::sync::Mutex::new(Vec::new());
+        let callback = |progress| {
+            if let SimulationProgress::Initial { state, cost } = progress {
+                initial_states.lock().unwrap().push((state, cost));
+            }
+        };
+
+        simulate(
+            vec![ComponentId(0)],
+            &circuit,
+            &board,
+            &SAConfig {
+                max_iters: 0,
+                use_spectral: true,
+                bridge_policy: BridgePolicy::Forced,
+                ..SAConfig::default()
+            },
+            &crate::layout::problem::AnnealProblem::default(),
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+            Some(SimulationControl {
+                observer: Some(SimulationObserver {
+                    sample_every: 1,
+                    callback: &callback,
+                }),
+                cancellation: None,
+            }),
+        )
+        .unwrap();
+
+        let initial_states = initial_states.into_inner().unwrap();
+        assert_eq!(initial_states.len(), 1);
+        let (state, reported_cost) = &initial_states[0];
+        assert_eq!(state.bridged, vec![true]);
+        assert!(!state.bridged_pin_pairs[0].is_empty());
+        assert_eq!(
+            *reported_cost,
+            crate::layout::cost::cost_with_problem(
+                state,
+                &circuit,
+                &board,
+                &crate::layout::problem::AnnealProblem::default(),
+                &SAConfig::default().weights,
+            )
+        );
     }
 
     #[test]
