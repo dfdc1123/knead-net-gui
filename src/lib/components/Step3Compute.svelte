@@ -238,7 +238,7 @@
 
         <div class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           <div inert class="h-full overflow-hidden">
-            <BreadboardPreview {preset} {cols} {frame} {upperHalfOnly} panCanvas={false} />
+            <BreadboardPreview {preset} {cols} {frame} {upperHalfOnly} panCanvas={false} solidWires={phase === "done"} />
           </div>
           {#if !frame}
             <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-base-200/75">

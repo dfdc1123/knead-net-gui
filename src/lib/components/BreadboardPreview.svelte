@@ -17,6 +17,7 @@
     frame,
     zoom = 1,
     panCanvas = true,
+    solidWires = false,
     selected = null,
     completedWireIds = [],
     tieNegativeRails = true,
@@ -29,6 +30,7 @@
     frame?: LayoutFrame | null;
     zoom?: number;
     panCanvas?: boolean;
+    solidWires?: boolean;
     selected?: CircuitSelection | null;
     completedWireIds?: string[];
     tieNegativeRails?: boolean;
@@ -826,9 +828,9 @@
               fill="none"
               stroke={wire.kind === "air" ? "var(--color-neutral)" : wire.color ?? "var(--color-primary)"}
               stroke-width={(selected?.type === "wire" && selected.id === wire.id) || (selected?.type === "net" && selected.id === wire.net_id) ? 5 : completed ? 3 : wire.kind === "rail-tie" ? 2.8 : wire.kind === "routed" ? 2.2 : 1.2}
-              stroke-dasharray={wire.kind === "air" || !completed ? "5 4" : undefined}
+              stroke-dasharray={solidWires ? undefined : wire.kind === "air" || !completed ? "5 4" : undefined}
               stroke-linecap="round"
-              opacity={selected ? ((selected.type === "wire" && selected.id === wire.id) || (selected.type === "net" && selected.id === wire.net_id) ? 1 : 0.14) : completed ? 0.95 : 0.38}
+              opacity={selected ? ((selected.type === "wire" && selected.id === wire.id) || (selected.type === "net" && selected.id === wire.net_id) ? 1 : 0.14) : solidWires ? 0.95 : completed ? 0.95 : 0.38}
               pointer-events="none"
             />
             <!-- 用更宽的透明路径承接鼠标事件，细线仍然容易选中。 -->
