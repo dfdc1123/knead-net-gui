@@ -4,7 +4,7 @@ Knead Net 是一个实验性的桌面工具，用来把 KiCad 电路工程转换
 
 它会读取 KiCad 的 PCB 连接与封装信息，自动选择元件摆位并生成跳线方案；如果工程中包含同名原理图，还可以在原理图、面包板和装配清单之间联动查看元件与网络。
 
-> 项目仍处于早期预览阶段。目前可以从源码运行，首个可下载安装的 release 即将提供。
+> 项目仍处于早期预览阶段。Windows 用户可从 [GitHub Releases](https://github.com/dfdc1123/knead-net-gui/releases) 下载并安装最新版。
 
 ## 软件截图
 
@@ -45,6 +45,12 @@ Knead Net 是一个实验性的桌面工具，用来把 KiCad 电路工程转换
 5. 在装配视图中对照原理图、面包板和清单完成搭建。
 
 `.kicad_pcb` 是进行布局计算的必要输入；同名的 `.kicad_sch` 用于原理图预览和联动，但不是必需的。两个文件需要直接位于所选文件夹中。
+
+## 下载与安装
+
+Windows 用户请在 [GitHub Releases](https://github.com/dfdc1123/knead-net-gui/releases) 的 Assets 中下载 `*-setup.exe` 并运行安装程序。
+
+首次运行时，Windows 可能显示 SmartScreen 提示，因为应用尚未进行代码签名；请确认发布者和下载来源为本项目后继续。
 
 ## 从源码运行
 
@@ -103,8 +109,12 @@ knead-net-gui/
 └── Cargo.toml
 ```
 
+## 许可证
+
+本项目采用 [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）发布。
+
 ## 当前限制
 
 - 项目仍在开发中，复杂电路和少见封装可能无法得到理想布局。
 - 结果导出功能尚未完成。
-- 暂无可下载安装的构建；release 即将提供。
+- Windows 安装包通过 GitHub Releases 提供；其他平台的安装包尚未发布。

@@ -4,7 +4,8 @@ resolver = "2"
 
 [package]
 name = "knead-net"
-version = "0.1.0"
+version = "0.0.9"
+license = "GPL-3.0-only"
 edition = "2024"
 
 [dependencies]
