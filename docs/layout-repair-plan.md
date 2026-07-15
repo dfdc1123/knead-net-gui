@@ -364,6 +364,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R3. 建立事务性 SA write-back
 
+- 实施状态：**已完成**（2026-07-15）。T13 已先复现非法 best state 在返回错误前污染 placements、并提前发布 `PlacementComplete`；现在 best state 会先与原有 wires 组成临时 `Layout` 做完整验证，通过后才原子替换 placements，失败时 placements/wires 和完成事件均保持不变。
 - 对应：A13，且先为后续修复提供失败隔离。
 - 依赖：R2 的错误集合稳定。
 - 最小失败测试：T13。

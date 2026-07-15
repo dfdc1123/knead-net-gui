@@ -542,6 +542,114 @@ fn place_sa_produces_valid_layout() {
     assert!(layout.placement(ComponentId(1)).is_some());
 }
 
+#[test]
+fn place_sa_validation_failure_is_transactional_and_emits_no_completion() {
+    use std::sync::Mutex;
+
+    let circuit = Box::leak(Box::new(Circuit {
+        components: vec![
+            Component {
+                id: ComponentId(0),
+                ref_: "FIXED".into(),
+                kind: "TESTPOINT".into(),
+                value: None,
+                pins: vec![PinId(0)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            },
+            Component {
+                id: ComponentId(1),
+                ref_: "MOVABLE".into(),
+                kind: "TESTPOINT".into(),
+                value: None,
+                pins: vec![PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            },
+        ],
+        pins: vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(1),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            },
+        ],
+        nets: vec![Net {
+            id: NetId(0),
+            name: "WIRE".into(),
+            pins: Vec::new(),
+        }],
+        footprints: vec![Footprint {
+            id: FootprintId(0),
+            name: "1p".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        }],
+    }));
+    let board = Breadboard::new(3, 1);
+    let mut layout = Layout::new(circuit);
+    layout.place(
+        ComponentId(0),
+        Placement::OnBoard {
+            position: Position { x: 0, y: 0 },
+            rotation: Rotation::R0,
+        },
+    );
+    layout.add_wire(Wire {
+        id: WireId(0),
+        net: NetId(0),
+        from: board.at(1, 0).unwrap(),
+        to: board.at(2, 0).unwrap(),
+    });
+    layout.validate(&board).expect("调用前布局必须合法");
+    let placements_before = layout.placements().to_vec();
+    let wires_before = layout.wires().to_vec();
+    let events = Mutex::new(Vec::new());
+
+    let result = layout.place_sa_with_progress(
+        &board,
+        &SAConfig {
+            max_iters: 0,
+            n_seeds: 1,
+            use_spectral: false,
+            ..SAConfig::default()
+        },
+        ProgressOptions::default(),
+        |event| events.lock().unwrap().push(event),
+    );
+
+    assert!(result.is_err(), "候选与固定元件重叠时必须验证失败");
+    assert_eq!(layout.placements(), placements_before);
+    assert_eq!(layout.wires().len(), wires_before.len());
+    for (actual, before) in layout.wires().iter().zip(&wires_before) {
+        assert_eq!(
+            (actual.id, actual.net, actual.from, actual.to),
+            (before.id, before.net, before.from, before.to)
+        );
+    }
+    assert!(
+        events
+            .into_inner()
+            .unwrap()
+            .iter()
+            .all(|event| !matches!(event, LayoutProgress::PlacementComplete { .. })),
+        "非法候选不能发布 PlacementComplete"
+    );
+}
+
 /// 退火在固定 seed 下应可重现。
 #[test]
 fn place_sa_is_deterministic_with_seed() {

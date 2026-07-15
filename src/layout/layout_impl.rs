@@ -300,39 +300,27 @@ impl<'c> super::Layout<'c> {
             config.seed,
         );
 
+        let candidate_placements = snapshot_from_state(&base_placements, &best).placements;
+        let candidate = super::Layout {
+            circuit: self.circuit,
+            placements: candidate_placements,
+            wires: self.wires.clone(),
+        };
+        candidate.validate(board)?;
+
+        self.placements = candidate.placements;
         if let Some((callback, _)) = progress {
             callback(LayoutProgress::PlacementComplete {
                 seed: best_seed,
                 cost: best_cost,
                 cancelled: cancellation.is_some_and(CancellationToken::is_cancelled),
-                snapshot: snapshot_from_state(&base_placements, &best),
+                snapshot: LayoutSnapshot {
+                    placements: self.placements.clone(),
+                    wires: Vec::new(),
+                },
             });
         }
-
-        for (idx, &comp_id) in best.placeable.iter().enumerate() {
-            // Toggle 在 SA 中可能拾到 Bridged 模式, 这里分流写回:
-            // - bridged[idx] = true: 写 `Placement::Bridged`, pin 对取自启发式缓存
-            //   (sa::simulate 在初始化后调 `populate_bridgeable_info` 填的)。
-            // - bridged[idx] = false: 写 `Placement::OnBoard`, 照原有逻辑取 (x, y, rotation)。
-            if best.bridged[idx] {
-                let pair = best.active_bridge_pair(idx).expect(
-                    "bridged=true 必有 pin pair (sa::simulate 保证 is_bridgeable[idx] = true)",
-                );
-                self.placements[comp_id.0] = Some(Placement::Bridged {
-                    pin_holes: [pair[0], pair[1]],
-                });
-            } else {
-                self.placements[comp_id.0] = Some(Placement::OnBoard {
-                    position: Position {
-                        x: best.x[idx],
-                        y: best.y[idx],
-                    },
-                    rotation: best.rotation[idx],
-                });
-            }
-        }
-
-        self.validate(board)
+        Ok(())
     }
 
     /// 在当前合法 placement 上路由、替换已有 wires，并报告最终快照。
