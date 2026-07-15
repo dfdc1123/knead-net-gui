@@ -195,7 +195,7 @@ impl<'c> super::Layout<'c> {
         let display_seed = progress
             .map_or(0, |(_, options)| options.display_seed)
             .min(n_seeds - 1);
-        let results: Vec<(f64, u64, SAState)> = (0..n_seeds as u64)
+        let seed_results: Vec<Result<(f64, u64, SAState), LayoutError>> = (0..n_seeds as u64)
             .into_par_iter()
             .filter_map(|s| {
                 // 取消后尚未开始的非观察 seed 无需再做 spectral/bridge 初始化。
@@ -254,7 +254,7 @@ impl<'c> super::Layout<'c> {
                         cancellation: cancellation_flag,
                     },
                 );
-                let state_s = sa::simulate(
+                let state_s = match sa::simulate(
                     placeable.clone(),
                     self.circuit,
                     board,
@@ -262,7 +262,10 @@ impl<'c> super::Layout<'c> {
                     &problem,
                     &preprocess,
                     control,
-                );
+                ) {
+                    Ok(state) => state,
+                    Err(error) => return Some(Err(error)),
+                };
                 let cost_s = crate::layout::cost::cost_with_problem(
                     &state_s,
                     self.circuit,
@@ -277,9 +280,13 @@ impl<'c> super::Layout<'c> {
                         total: n_seeds,
                     });
                 }
-                Some((cost_s, cfg_s.seed, state_s))
+                Some(Ok((cost_s, cfg_s.seed, state_s)))
             })
             .collect();
+        let results: Vec<(f64, u64, SAState)> = seed_results
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .map_err(|error| vec![error])?;
         let per_seed_costs: Vec<f64> = results.iter().map(|(c, _, _)| *c).collect();
         let per_seed_states: Vec<SAState> = results.iter().map(|(_, _, s)| s.clone()).collect();
         let (best_cost, best_seed, best) = results

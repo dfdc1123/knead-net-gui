@@ -382,6 +382,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R5. 统一 preprocess-aware 合法初始化器并返回 `Result`
 
+- 实施状态：**已完成**（2026-07-15）。T02 已先复现 greedy 用 R0 找位后事后旋成 R90 导致 pin 越界，以及板满时 panic；现在 rotation/y-lock 在搜索前确定，greedy 与 spectral 共用同一 pin/bbox/blocked/rail/fixed-geometry predicate，zero-iteration 只能得到合法初态或 `NoLegalInitialPlacement`，并行 seed 会把初始化错误结构化返回。
 - 对应：A2；覆盖初始化、zero iteration 和小型 spectral fallback。
 - 依赖：R4，因为 first-fit 必须同时避开固定几何。
 - 最小失败测试：T02，再对 `use_spectral=false/true(n<=2)/true(n>2)` 跑同一 legality assertion。

@@ -753,29 +753,13 @@ pub(super) fn simulate(
     problem: &crate::layout::problem::AnnealProblem,
     preprocess: &crate::layout::preprocess::PreprocessResult,
     control: Option<SimulationControl<'_>>,
-) -> SAState {
+) -> Result<SAState, crate::layout::LayoutError> {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
         SAState::from_spectral(placeable, circuit, board, config.seed, preprocess, problem)
     } else {
         SAState::from_greedy(placeable, circuit, board, preprocess, problem)
-    };
-    // 预处理: R90 预旋转 + y 锁定
-    {
-        let n = state.placeable.len();
-        state.r90_only = vec![false; n];
-        state.y_locked = vec![None; n];
-        for (i, &cid) in state.placeable.iter().enumerate() {
-            if preprocess.r90_only.contains(&cid) {
-                state.r90_only[i] = true;
-                state.rotation[i] = Rotation::R90;
-            }
-            if let Some(&ly) = preprocess.y_locked.get(&cid) {
-                state.y[i] = ly;
-                state.y_locked[i] = Some(ly);
-            }
-        }
-    }
+    }?;
     let observer = control
         .as_ref()
         .and_then(|control| control.observer.as_ref());
@@ -917,7 +901,7 @@ pub(super) fn simulate(
         }
     }
 
-    best_state
+    Ok(best_state)
 }
 
 /// 检查 SAState 里所有 y 是否在板内且非 blocked row。
@@ -1071,7 +1055,8 @@ mod tests {
                 y_locked: std::collections::HashMap::new(),
             },
             &crate::layout::problem::AnnealProblem::default(),
-        );
+        )
+        .unwrap();
         let cfg = SAConfig::default();
         let mut rng = fastrand::Rng::with_seed(0);
         let b = board();
@@ -1248,7 +1233,8 @@ mod tests {
                 y_locked: std::collections::HashMap::new(),
             },
             &crate::layout::problem::AnnealProblem::default(),
-        );
+        )
+        .unwrap();
         populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
         assert!(state.is_bridgeable[0], "fixture 应能提供 bridged candidate");
         assert!(!state.bridged_pin_pairs[0].is_empty(), "cache 不该为空");
@@ -1613,7 +1599,8 @@ mod tests {
                 y_locked: std::collections::HashMap::new(),
             },
             &crate::layout::problem::AnnealProblem::default(),
-        );
+        )
+        .unwrap();
         for &y in &state.y {
             assert!(
                 !board.is_blocked(y as usize),
@@ -1650,7 +1637,8 @@ mod tests {
                 y_locked: std::collections::HashMap::new(),
             },
             None,
-        );
+        )
+        .unwrap();
         let best_cost = cost(&best, &circuit, &board(), &[], &Weights::default());
         assert!(
             best_cost <= initial_cost,
@@ -1677,7 +1665,8 @@ mod tests {
                 y_locked: std::collections::HashMap::new(),
             },
             None,
-        );
+        )
+        .unwrap();
         // SA 输出本身就是 final 位置 (compact 删了, cost 里的 compactness 替代)
         let xs = best.x.clone();
         // 检查 pin 不撞

@@ -69,14 +69,16 @@ pub fn spectral_debug_positions(
     }
 
     // 调试用: 用一个固定 seed 让跨进程可复现。调成 0 / 1 / 42 跟生产不同。
-    let state = SAState::from_spectral(
+    let Ok(state) = SAState::from_spectral(
         placeable,
         circuit,
         board,
         0xDEAD_BEEF,
         preprocess,
         &problem::AnnealProblem::default(),
-    );
+    ) else {
+        return (vec![], vec![], vec![None; circuit.components().len()]);
+    };
     let n = state.n();
 
     // 打印表格 (按 round 后的 x 排序)
@@ -133,6 +135,8 @@ pub enum ColumnEndpoint {
 pub enum LayoutError {
     /// Component 没有 footprint
     NoFootprint { component: ComponentId },
+    /// preprocess-aware 初始化器找不到任何合法姿态/孔位。
+    NoLegalInitialPlacement { component: ComponentId },
     /// Bridged 只能完整表示恰好两脚的元件。
     InvalidBridgedPinCount {
         component: ComponentId,

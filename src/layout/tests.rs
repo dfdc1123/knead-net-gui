@@ -771,6 +771,158 @@ fn spectral_initialization_with_more_than_two_components_avoids_fixed_geometry()
 }
 
 #[test]
+fn greedy_initialization_applies_preprocessed_rotation_before_searching() {
+    let circuit = Box::leak(Box::new(Circuit {
+        components: vec![Component {
+            id: ComponentId(0),
+            ref_: "J1".into(),
+            kind: "CONNECTOR".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        }],
+        pins: vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: Some(NetId(0)),
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                physical_pin_index: 1,
+                net: Some(NetId(1)),
+            },
+        ],
+        nets: vec![
+            Net {
+                id: NetId(0),
+                name: "A".into(),
+                pins: vec![PinId(0)],
+            },
+            Net {
+                id: NetId(1),
+                name: "B".into(),
+                pins: vec![PinId(1)],
+            },
+        ],
+        footprints: vec![Footprint {
+            id: FootprintId(0),
+            name: "vertical-2p".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 0, y: 2 },
+                },
+            ],
+        }],
+    }));
+    let board = Breadboard::new(3, 3);
+    for use_spectral in [false, true] {
+        let mut layout = Layout::new(circuit);
+        layout
+            .place_sa(
+                &board,
+                &SAConfig {
+                    max_iters: 0,
+                    n_seeds: 1,
+                    use_spectral,
+                    ..SAConfig::default()
+                },
+            )
+            .expect("R90 必须在 first-fit 搜索前生效");
+        assert_eq!(
+            layout.placement(ComponentId(0)),
+            Some(Placement::OnBoard {
+                position: Position { x: 2, y: 0 },
+                rotation: Rotation::R90,
+            }),
+            "use_spectral={use_spectral}"
+        );
+    }
+}
+
+#[test]
+fn initialization_returns_error_instead_of_panicking_when_board_is_full() {
+    let circuit = Box::leak(Box::new(Circuit {
+        components: vec![Component {
+            id: ComponentId(0),
+            ref_: "R1".into(),
+            kind: "R".into(),
+            value: None,
+            pins: vec![PinId(0), PinId(1)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        }],
+        pins: vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                physical_pin_index: 1,
+                net: None,
+            },
+        ],
+        nets: Vec::new(),
+        footprints: vec![Footprint {
+            id: FootprintId(0),
+            name: "2p".into(),
+            pins: vec![
+                PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                },
+                PhysicalPin {
+                    name: "2".into(),
+                    offset: Position { x: 1, y: 0 },
+                },
+            ],
+        }],
+    }));
+    let board = Breadboard::new(1, 1);
+    let mut layout = Layout::new(circuit);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        layout.place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 0,
+                n_seeds: 1,
+                use_spectral: false,
+                ..SAConfig::default()
+            },
+        )
+    }))
+    .expect("装不下必须返回结构化错误而不是 panic");
+    assert_eq!(
+        result.unwrap_err(),
+        vec![LayoutError::NoLegalInitialPlacement {
+            component: ComponentId(0),
+        }]
+    );
+    assert!(layout.placements().iter().all(Option::is_none));
+}
+
+#[test]
 fn place_sa_initialization_avoids_fixed_bridged_body() {
     let circuit = Box::leak(Box::new(Circuit {
         components: vec![

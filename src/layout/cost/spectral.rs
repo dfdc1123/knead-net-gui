@@ -1,13 +1,14 @@
 //! 频谱布局 (Fiedler 向量) 辅助函数。
 
-use std::collections::HashSet;
-
 use fastrand;
 
-use crate::circuit::{Circuit, ComponentId, NetId};
+use crate::circuit::{Circuit, ComponentId};
 use crate::layout::breadboard::Breadboard;
+use crate::layout::placement::Rotation;
 use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
+
+use super::state::{InitialGeometry, InitialOccupancy};
 
 /// 幂迭代求 Fiedler 向量
 pub(super) fn compute_fiedler(l: &[Vec<f64>], n: usize, seed: u64) -> Vec<f64> {
@@ -99,11 +100,16 @@ pub(super) fn grid_fill_2d(
     circuit: &Circuit,
     preprocess: &PreprocessResult,
     problem: &AnnealProblem,
-) -> (Vec<i32>, Vec<i32>) {
+) -> Result<(Vec<i32>, Vec<i32>), crate::layout::LayoutError> {
     let n = placeable.len();
     let valid_rows: Vec<i32> = (0..board.rows() as i32)
         .filter(|&r| !board.is_blocked(r as usize))
         .collect();
+    if valid_rows.is_empty() {
+        return Err(crate::layout::LayoutError::NoLegalInitialPlacement {
+            component: placeable[0],
+        });
+    }
     let n_rows = valid_rows.len().max(1);
 
     let v2_min = v2.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -145,49 +151,15 @@ pub(super) fn grid_fill_2d(
 
     let mut x = vec![0i32; n];
     let mut y = vec![0i32; n];
-    let mut occupied: HashSet<(i32, i32)> = problem.fixed_geometry.occupied_cells.clone();
-    let mut col_owner = problem.fixed_geometry.rail_owners.clone();
+    let mut occupancy = InitialOccupancy::new(problem);
 
     for &idx in &order {
         let comp_id = placeable[idx];
         let component = &circuit.components[comp_id.0];
-        let fid = component.footprint.expect("placeable 必有 footprint");
-        let footprint = &circuit.footprints[fid.0];
-
         let r90 = preprocess.r90_only.contains(&comp_id);
         let is_y_locked = preprocess.y_locked.contains_key(&comp_id);
-
-        // pin info with rotation
-        let pin_info: Vec<(i32, i32, Option<NetId>)> = component
-            .pins
-            .iter()
-            .map(|&pin_id| {
-                let pin = &circuit.pins[pin_id.0];
-                let physical = footprint.physical_pin_for(pin).expect("footprint 缺 pin");
-                let (ox, oy) = if r90 {
-                    (-physical.offset.y, physical.offset.x)
-                } else {
-                    (physical.offset.x, physical.offset.y)
-                };
-                (ox, oy, pin.net)
-            })
-            .collect();
-
-        // bbox with rotation
-        let (min_x, max_x, min_y, max_y) = footprint.pins().iter().fold(
-            (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
-            |(lx, rx, ly, ry), p| {
-                let (ox, oy) = if r90 {
-                    (-p.offset.y, p.offset.x)
-                } else {
-                    (p.offset.x, p.offset.y)
-                };
-                (lx.min(ox), rx.max(ox), ly.min(oy), ry.max(oy))
-            },
-        );
-        let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
-            .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
-            .collect();
+        let rotation = if r90 { Rotation::R90 } else { Rotation::R0 };
+        let geometry = InitialGeometry::new(component, circuit, rotation);
 
         // search
         let mut best: Option<(i32, i32)> = None;
@@ -222,85 +194,19 @@ pub(super) fn grid_fill_2d(
                 };
 
                 for &try_y in &try_ys {
-                    // OOB / blocked (skip blocked rows for y_locked)
-                    let oob_or_blocked = bbox_cells.iter().any(|&(ox, oy)| {
-                        let ax = try_x + ox;
-                        let ay = try_y + oy;
-                        ax < 0
-                            || ax >= cols
-                            || ay < 0
-                            || ay >= board.rows() as i32
-                            || (!is_y_locked && board.is_blocked(ay as usize))
-                    });
-                    if oob_or_blocked {
-                        continue;
+                    if occupancy.try_reserve(board, &geometry, try_x, try_y, is_y_locked) {
+                        best = Some((try_x, try_y));
+                        break 'search;
                     }
-
-                    // collision
-                    let collides = bbox_cells.iter().any(|&(ox, oy)| {
-                        let ay = try_y + oy;
-                        if is_y_locked && board.is_blocked(ay as usize) {
-                            return false;
-                        }
-                        occupied.contains(&(try_x + ox, ay))
-                    });
-                    if collides {
-                        continue;
-                    }
-
-                    // column conflict
-                    let col_conflict = pin_info.iter().any(|&(lx, ly, pin_net)| {
-                        let abs_x = try_x + lx;
-                        let abs_y = try_y + ly;
-                        if abs_x < 0
-                            || abs_x >= cols
-                            || abs_y < 0
-                            || abs_y >= board.rows() as i32
-                            || board.is_blocked(abs_y as usize)
-                        {
-                            return true;
-                        }
-                        let rail_id = board.effective_rail_id_at(abs_x, abs_y);
-                        match col_owner.get(&rail_id) {
-                            Some(existing) => *existing != pin_net,
-                            None => false,
-                        }
-                    });
-                    if col_conflict {
-                        continue;
-                    }
-
-                    best = Some((try_x, try_y));
-                    break 'search;
                 }
             }
         }
 
         let (fx, fy) =
-            best.unwrap_or_else(|| panic!("板太小, 装不下元件 {} (spectral grid fill)", comp_id.0));
+            best.ok_or(crate::layout::LayoutError::NoLegalInitialPlacement { component: comp_id })?;
         x[idx] = fx;
         y[idx] = fy;
-
-        for &(ox, oy) in &bbox_cells {
-            let ay = fy + oy;
-            if !is_y_locked || !board.is_blocked(ay as usize) {
-                occupied.insert((fx + ox, ay));
-            }
-        }
-        for &(lx, ly, pin_net) in &pin_info {
-            let abs_x = fx + lx;
-            let abs_y = fy + ly;
-            if abs_x >= 0
-                && abs_x < cols
-                && abs_y >= 0
-                && abs_y < board.rows() as i32
-                && !board.is_blocked(abs_y as usize)
-            {
-                let rail_id = board.effective_rail_id_at(abs_x, abs_y);
-                col_owner.entry(rail_id).or_insert(pin_net);
-            }
-        }
     }
 
-    (x, y)
+    Ok((x, y))
 }

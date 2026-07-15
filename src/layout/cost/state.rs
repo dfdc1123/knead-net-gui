@@ -2,15 +2,123 @@
 //!
 //! `SAState` 在 simulate() 入口构造一次, SA 主循环里反复拷 (clone) 试新解, 拒绝解丢弃。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::circuit::{Circuit, ComponentId, PinId};
 use crate::layout::breadboard::{Breadboard, HoleId};
-use crate::layout::placement::Rotation;
+use crate::layout::placement::{BBox, Rotation, rotate};
 use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
 
 use super::spectral::{compute_fiedler, compute_second_evec, grid_fill_2d};
+
+pub(super) struct InitialGeometry {
+    pins: Vec<(i32, i32, Option<crate::circuit::NetId>)>,
+    bbox: BBox,
+}
+
+impl InitialGeometry {
+    pub(super) fn new(
+        component: &crate::circuit::Component,
+        circuit: &Circuit,
+        rotation: Rotation,
+    ) -> Self {
+        let footprint =
+            &circuit.footprints[component.footprint.expect("placeable 必有 footprint").raw()];
+        let mut pins = Vec::with_capacity(component.pins.len());
+        let points: Vec<crate::circuit::Position> = footprint
+            .pins()
+            .iter()
+            .map(|pin| rotate(pin.offset, rotation))
+            .collect();
+        for &pin_id in &component.pins {
+            let pin = &circuit.pins[pin_id.raw()];
+            let physical = footprint
+                .physical_pin_for(pin)
+                .expect("footprint 缺 pin (解析阶段就该爆)");
+            let offset = rotate(physical.offset, rotation);
+            pins.push((offset.x, offset.y, pin.net));
+        }
+        Self {
+            pins,
+            bbox: BBox::from_points(points).unwrap_or(BBox {
+                min_x: 0,
+                max_x: 0,
+                min_y: 0,
+                max_y: 0,
+            }),
+        }
+    }
+}
+
+pub(super) struct InitialOccupancy {
+    occupied: std::collections::HashSet<(i32, i32)>,
+    rail_owners: HashMap<u32, Option<crate::circuit::NetId>>,
+}
+
+impl InitialOccupancy {
+    pub(super) fn new(problem: &AnnealProblem) -> Self {
+        Self {
+            occupied: problem.fixed_geometry.occupied_cells.clone(),
+            rail_owners: problem.fixed_geometry.rail_owners.clone(),
+        }
+    }
+
+    pub(super) fn try_reserve(
+        &mut self,
+        board: &Breadboard,
+        geometry: &InitialGeometry,
+        x: i32,
+        y: i32,
+        allow_channel_crossing: bool,
+    ) -> bool {
+        let mut candidate_owners: HashMap<u32, Option<crate::circuit::NetId>> = HashMap::new();
+        for &(offset_x, offset_y, net) in &geometry.pins {
+            let Some(hole) = board.at(x + offset_x, y + offset_y) else {
+                return false;
+            };
+            let rail = board.effective_rail_id_of(hole);
+            if self
+                .rail_owners
+                .get(&rail)
+                .is_some_and(|owner| *owner != net)
+                || candidate_owners
+                    .get(&rail)
+                    .is_some_and(|owner| *owner != net)
+            {
+                return false;
+            }
+            candidate_owners.entry(rail).or_insert(net);
+        }
+
+        for offset in geometry.bbox.iter_cells() {
+            let cell_x = x + offset.x;
+            let cell_y = y + offset.y;
+            if cell_x < 0
+                || cell_x >= board.cols() as i32
+                || cell_y < 0
+                || cell_y >= board.main_rows() as i32
+            {
+                return false;
+            }
+            let has_hole = board.at(cell_x, cell_y).is_some();
+            if (!has_hole && !allow_channel_crossing)
+                || (has_hole && self.occupied.contains(&(cell_x, cell_y)))
+            {
+                return false;
+            }
+        }
+
+        for offset in geometry.bbox.iter_cells() {
+            let cell = (x + offset.x, y + offset.y);
+            if board.at(cell.0, cell.1).is_some() {
+                self.occupied.insert(cell);
+            }
+        }
+        self.rail_owners.extend(candidate_owners);
+        true
+    }
+}
 
 /// SA 内部状态: 每个元件显式持有 `(x, y, rotation)`.
 ///
@@ -129,130 +237,49 @@ impl SAState {
         board: &Breadboard,
         preprocess: &PreprocessResult,
         problem: &AnnealProblem,
-    ) -> Self {
+    ) -> Result<Self, crate::layout::LayoutError> {
         let n = placeable.len();
         let mut x = vec![0i32; n];
         let mut y = vec![0i32; n];
-        let rotation = vec![Rotation::R0; n];
-        let mut occupied: HashSet<(i32, i32)> = problem.fixed_geometry.occupied_cells.clone();
-        // effective rail → 第一个放进去的 pin / binding 的 net。
-        // None 表示该位置的 pin 未连 net (unconnected); unconnected 与 connected 互冲。
-        let mut col_owner = problem.fixed_geometry.rail_owners.clone();
+        let mut rotation = vec![Rotation::R0; n];
+        let mut r90_only = vec![false; n];
+        let mut y_locked = vec![None; n];
+        let mut occupancy = InitialOccupancy::new(problem);
 
         for idx in 0..n {
             let comp_id = placeable[idx];
             let component = &circuit.components[comp_id.0];
-            let fid = component.footprint.expect("placeable 必有 footprint");
-            let footprint = &circuit.footprints[fid.0];
-
-            // 该元件在 net 上的 pin: (本地 offset, net) — 用于列冲突检查
-            let pin_info: Vec<(i32, i32, Option<crate::circuit::NetId>)> = component
-                .pins
-                .iter()
-                .map(|&pin_id| {
-                    let pin = &circuit.pins[pin_id.0];
-                    let physical = footprint
-                        .physical_pin_for(pin)
-                        .expect("footprint 缺 pin (解析阶段就该爆)");
-                    (physical.offset.x, physical.offset.y, pin.net)
-                })
-                .collect();
-            // bbox 仍用 footprint 全部物理 pin 算 (保留原 from_greedy 行为):
-            // 即便 component 只用 1 个 pin, footprint 本体的 silk / 镂空也算"占用",
-            // 不能让别的元件挤进来。
-            let (min_x, max_x, min_y, max_y) = footprint.pins().iter().fold(
-                (i32::MAX, i32::MIN, i32::MAX, i32::MIN),
-                |(lx, rx, ly, ry), p| {
-                    (
-                        lx.min(p.offset.x),
-                        rx.max(p.offset.x),
-                        ly.min(p.offset.y),
-                        ry.max(p.offset.y),
-                    )
-                },
-            );
-            let bbox_cells: Vec<(i32, i32)> = (min_y..=max_y)
-                .flat_map(|yy| (min_x..=max_x).map(move |xx| (xx, yy)))
-                .collect();
+            let selected_rotation = if preprocess.r90_only.contains(&comp_id) {
+                r90_only[idx] = true;
+                Rotation::R90
+            } else {
+                Rotation::R0
+            };
+            rotation[idx] = selected_rotation;
+            let locked_y = preprocess.y_locked.get(&comp_id).copied();
+            y_locked[idx] = locked_y;
+            let geometry = InitialGeometry::new(component, circuit, selected_rotation);
 
             let mut found: Option<(i32, i32)> = None;
-            'outer: for try_y in 0..board.rows() as i32 {
-                if board.is_blocked(try_y as usize) {
-                    continue;
-                }
+            let try_ys: Vec<i32> =
+                locked_y.map_or_else(|| (0..board.main_rows() as i32).collect(), |y| vec![y]);
+            'outer: for try_y in try_ys {
                 for try_x in 0..board.cols() as i32 {
-                    let oob_or_blocked = bbox_cells.iter().any(|&(dx, dy)| {
-                        let x = try_x + dx;
-                        let y = try_y + dy;
-                        x < 0
-                            || x >= board.cols() as i32
-                            || y < 0
-                            || y >= board.rows() as i32
-                            || board.is_blocked(y as usize)
-                    });
-                    if oob_or_blocked {
-                        continue;
+                    if occupancy.try_reserve(board, &geometry, try_x, try_y, locked_y.is_some()) {
+                        found = Some((try_x, try_y));
+                        break 'outer;
                     }
-                    let collides = bbox_cells
-                        .iter()
-                        .any(|&(dx, dy)| occupied.contains(&(try_x + dx, try_y + dy)));
-                    if collides {
-                        continue;
-                    }
-                    // 列冲突检查: 任一 pin 落在 (col, rail_top) 上, 而该位置
-                    // 已有不同 net 的 pin (包括 None 视为一类), 则此位置不合法。
-                    let col_conflict = pin_info.iter().any(|&(lx, ly, pin_net)| {
-                        let abs_x = try_x + lx;
-                        let abs_y = try_y + ly;
-                        if abs_x < 0
-                            || abs_x >= board.cols() as i32
-                            || abs_y < 0
-                            || abs_y >= board.rows() as i32
-                            || board.is_blocked(abs_y as usize)
-                        {
-                            return true;
-                        }
-                        let rail_id = board.effective_rail_id_at(abs_x, abs_y);
-                        match col_owner.get(&rail_id) {
-                            Some(existing) => *existing != pin_net,
-                            None => false,
-                        }
-                    });
-                    if col_conflict {
-                        continue;
-                    }
-                    found = Some((try_x, try_y));
-                    break 'outer;
                 }
             }
 
-            let (fx, mut fy) = found.unwrap_or_else(|| panic!("元件 {} 装不下这块板", comp_id.0));
-            // y-locked: 覆盖为锁定值
-            if let Some(&ly) = preprocess.y_locked.get(&comp_id) {
-                fy = ly;
-            }
+            let (fx, fy) = found.ok_or(crate::layout::LayoutError::NoLegalInitialPlacement {
+                component: comp_id,
+            })?;
             x[idx] = fx;
             y[idx] = fy;
-            for &(dx, dy) in &bbox_cells {
-                occupied.insert((fx + dx, fy + dy));
-            }
-            // 记下每个 pin 占的 (col, rail_top) 及其 net
-            for &(lx, ly, pin_net) in &pin_info {
-                let abs_x = fx + lx;
-                let abs_y = fy + ly;
-                if abs_x >= 0
-                    && abs_x < board.cols() as i32
-                    && abs_y >= 0
-                    && abs_y < board.rows() as i32
-                    && !board.is_blocked(abs_y as usize)
-                {
-                    let rail_id = board.effective_rail_id_at(abs_x, abs_y);
-                    col_owner.entry(rail_id).or_insert(pin_net);
-                }
-            }
         }
 
-        Self {
+        Ok(Self {
             placeable,
             is_bridgeable: vec![false; n],
             bridged: vec![false; n],
@@ -261,9 +288,9 @@ impl SAState {
             x,
             y,
             rotation,
-            r90_only: vec![false; n],
-            y_locked: vec![None; n],
-        }
+            r90_only,
+            y_locked,
+        })
     }
 
     /// 频谱布局初排: 图拉普拉斯 2D 嵌入 → 网格填充。
@@ -285,7 +312,7 @@ impl SAState {
         seed: u64,
         preprocess: &PreprocessResult,
         problem: &AnnealProblem,
-    ) -> Self {
+    ) -> Result<Self, crate::layout::LayoutError> {
         let n = placeable.len();
         if n <= 2 {
             return Self::from_greedy(placeable, circuit, board, preprocess, problem);
@@ -349,9 +376,27 @@ impl SAState {
         // ============================================================
         // Phase 3: v₂ 值 → 目标 x, 贪心碰撞解决 → 紧凑格点
         // ============================================================
-        let (x, y) = grid_fill_2d(&v2, &v3, board, &placeable, circuit, preprocess, problem);
+        let (x, y) = grid_fill_2d(&v2, &v3, board, &placeable, circuit, preprocess, problem)?;
+        let rotation: Vec<Rotation> = placeable
+            .iter()
+            .map(|component| {
+                if preprocess.r90_only.contains(component) {
+                    Rotation::R90
+                } else {
+                    Rotation::R0
+                }
+            })
+            .collect();
+        let r90_only = placeable
+            .iter()
+            .map(|component| preprocess.r90_only.contains(component))
+            .collect();
+        let y_locked = placeable
+            .iter()
+            .map(|component| preprocess.y_locked.get(component).copied())
+            .collect();
 
-        Self {
+        Ok(Self {
             placeable,
             is_bridgeable: vec![false; n],
             bridged: vec![false; n],
@@ -359,9 +404,9 @@ impl SAState {
             active_bridge_idx: vec![0; n],
             x,
             y,
-            rotation: vec![Rotation::R0; n],
-            r90_only: vec![false; n],
-            y_locked: vec![None; n],
-        }
+            rotation,
+            r90_only,
+            y_locked,
+        })
     }
 }
