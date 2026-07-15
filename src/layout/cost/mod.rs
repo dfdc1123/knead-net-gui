@@ -33,7 +33,7 @@ mod tests;
 pub(crate) use bridge::{init_bridgeable_to_bridged, populate_bridgeable_info};
 pub(crate) use context::CostBuf;
 pub use context::{CompInfo, SAContext};
-pub(crate) use cost_fast::{cost_breakdown, cost_fast};
+pub(crate) use cost_fast::{cost_breakdown_with_problem, cost_fast};
 pub use profile::{dump_cost_profile, reset_cost_profile};
 pub use state::SAState;
 
@@ -131,4 +131,18 @@ pub fn cost(
     ctx.fill_bridged_bboxes(state, circuit, board, bridged_pins);
     let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
     cost_fast(state, circuit, board, bridged_pins, w, &ctx, &mut buf)
+}
+
+pub(crate) fn cost_with_problem(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    problem: &crate::layout::problem::AnnealProblem,
+    w: &Weights,
+) -> f64 {
+    let mut ctx = SAContext::new(circuit, &state.placeable);
+    ctx.fill_bridged_bboxes(state, circuit, board, &[]);
+    ctx.fill_problem(problem);
+    let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
+    cost_fast(state, circuit, board, &[], w, &ctx, &mut buf)
 }

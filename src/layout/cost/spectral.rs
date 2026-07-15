@@ -1,12 +1,13 @@
 //! 频谱布局 (Fiedler 向量) 辅助函数。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use fastrand;
 
 use crate::circuit::{Circuit, ComponentId, NetId};
 use crate::layout::breadboard::Breadboard;
 use crate::layout::preprocess::PreprocessResult;
+use crate::layout::problem::AnnealProblem;
 
 /// 幂迭代求 Fiedler 向量
 pub(super) fn compute_fiedler(l: &[Vec<f64>], n: usize, seed: u64) -> Vec<f64> {
@@ -94,11 +95,12 @@ pub(super) fn grid_fill_2d(
     v2: &[f64],
     v3: &[f64],
     board: &Breadboard,
-    n: usize,
     placeable: &[ComponentId],
     circuit: &Circuit,
     preprocess: &PreprocessResult,
+    problem: &AnnealProblem,
 ) -> (Vec<i32>, Vec<i32>) {
+    let n = placeable.len();
     let valid_rows: Vec<i32> = (0..board.rows() as i32)
         .filter(|&r| !board.is_blocked(r as usize))
         .collect();
@@ -143,8 +145,8 @@ pub(super) fn grid_fill_2d(
 
     let mut x = vec![0i32; n];
     let mut y = vec![0i32; n];
-    let mut occupied: HashSet<(i32, i32)> = HashSet::new();
-    let mut col_owner: HashMap<(i32, i32), Option<NetId>> = HashMap::new();
+    let mut occupied: HashSet<(i32, i32)> = problem.fixed_geometry.occupied_cells.clone();
+    let mut col_owner = problem.fixed_geometry.rail_owners.clone();
 
     for &idx in &order {
         let comp_id = placeable[idx];
@@ -258,8 +260,8 @@ pub(super) fn grid_fill_2d(
                         {
                             return true;
                         }
-                        let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
-                        match col_owner.get(&(abs_x, rail_top)) {
+                        let rail_id = board.effective_rail_id_at(abs_x, abs_y);
+                        match col_owner.get(&rail_id) {
                             Some(existing) => *existing != pin_net,
                             None => false,
                         }
@@ -294,8 +296,8 @@ pub(super) fn grid_fill_2d(
                 && abs_y < board.rows() as i32
                 && !board.is_blocked(abs_y as usize)
             {
-                let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
-                col_owner.entry((abs_x, rail_top)).or_insert(pin_net);
+                let rail_id = board.effective_rail_id_at(abs_x, abs_y);
+                col_owner.entry(rail_id).or_insert(pin_net);
             }
         }
     }

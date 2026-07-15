@@ -3,6 +3,7 @@
 
 use crate::circuit::{Circuit, ComponentId};
 use crate::layout::breadboard::{Breadboard, HoleId};
+use crate::layout::problem::AnnealProblem;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn diagnose_expensive_seeds(
@@ -10,7 +11,7 @@ pub(crate) fn diagnose_expensive_seeds(
     costs: &[f64],
     circuit: &Circuit,
     board: &Breadboard,
-    bridged_pins: &[(crate::circuit::PinId, HoleId)],
+    problem: &AnnealProblem,
     _weights: &crate::layout::cost::Weights,
     base_seed: u64,
 ) {
@@ -50,11 +51,11 @@ pub(crate) fn diagnose_expensive_seeds(
             // 分解成本: 看是哪一项贡婕的。weight 为 默认值的特例:
             // out_of_bounds / column_conflict 都是 1e6 / pin (或冲突对),
             // 其他项 通常 ≤ 几千, 所以高 cost 通常出在这两项。
-            let breakdown = crate::layout::cost::cost_breakdown(
+            let breakdown = crate::layout::cost::cost_breakdown_with_problem(
                 state,
                 circuit,
                 board,
-                bridged_pins,
+                problem,
                 &crate::layout::cost::Weights::default(),
             );
             eprintln!(
@@ -76,7 +77,7 @@ pub(crate) fn diagnose_expensive_seeds(
                 breakdown.1.rail_crossing,
                 breakdown.0,
             );
-            inspect_state_pins(state, circuit, board, bridged_pins, _weights);
+            inspect_state_pins(state, circuit, board, &[], _weights);
         }
     }
     if found {

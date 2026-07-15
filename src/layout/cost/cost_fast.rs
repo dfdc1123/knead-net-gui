@@ -7,6 +7,7 @@
 use crate::circuit::Circuit;
 use crate::layout::breadboard::Breadboard;
 use crate::layout::placement::{BBox, Rotation};
+use crate::layout::problem::AnnealProblem;
 
 use super::Weights;
 use super::context::{CostBuf, SAContext};
@@ -78,6 +79,7 @@ pub(crate) fn cost_fast(
             let rail_id = board.effective_rail_id_at(x, y);
             let hole_idx = buf.holes.len();
             buf.holes.push((x, y, rail_id));
+            buf.mst_rails.push(ctx.mst_rail(*net, rail_id));
             buf.nets.push(*net);
             buf.is_virtual.push(false);
             if rail_id == u32::MAX {
@@ -128,6 +130,7 @@ pub(crate) fn cost_fast(
         for &(x, y, rail_id, net) in &ctx.external_bridged_world {
             let hole_idx = buf.holes.len();
             buf.holes.push((x, y, rail_id));
+            buf.mst_rails.push(ctx.mst_rail(net, rail_id));
             buf.nets.push(net);
             buf.is_virtual.push(false);
             if rail_id == u32::MAX {
@@ -147,6 +150,7 @@ pub(crate) fn cost_fast(
             let rail_id = board.effective_rail_id_of(hole_id);
             let hole_idx = buf.holes.len();
             buf.holes.push((pos.x, pos.y, rail_id));
+            buf.mst_rails.push(ctx.mst_rail(pin.net, rail_id));
             buf.nets.push(pin.net);
             buf.is_virtual.push(false);
             if rail_id == u32::MAX {
@@ -158,6 +162,20 @@ pub(crate) fn cost_fast(
                     buf.net_buckets[n.0].push(hole_idx);
                 }
             }
+        }
+    }
+
+    // 1b2. 固定 OnBoard / Bridged pin 与已有 wire endpoints。
+    for &(x, y, rail_id, net) in &ctx.fixed_world {
+        let hole_idx = buf.holes.len();
+        buf.holes.push((x, y, rail_id));
+        buf.mst_rails.push(ctx.mst_rail(net, rail_id));
+        buf.nets.push(net);
+        buf.is_virtual.push(false);
+        buf.pin_idx_sorted.push(hole_idx);
+        buf.rail_map[rail_id as usize].push(net);
+        if let Some(net) = net {
+            buf.net_buckets[net.0].push(hole_idx);
         }
     }
 
@@ -175,6 +193,7 @@ pub(crate) fn cost_fast(
             for &(x, y, rail_id, net) in world_pair {
                 let hole_idx = buf.holes.len();
                 buf.holes.push((x, y, rail_id));
+                buf.mst_rails.push(ctx.mst_rail(net, rail_id));
                 buf.nets.push(net);
                 buf.is_virtual.push(false);
                 if rail_id == u32::MAX {
@@ -198,6 +217,7 @@ pub(crate) fn cost_fast(
                 let rail_id = board.effective_rail_id_of(h);
                 let hole_idx = buf.holes.len();
                 buf.holes.push((pos.x, pos.y, rail_id));
+                buf.mst_rails.push(ctx.mst_rail(pin.net, rail_id));
                 buf.nets.push(pin.net);
                 buf.is_virtual.push(false);
                 if rail_id == u32::MAX {
@@ -218,6 +238,7 @@ pub(crate) fn cost_fast(
         for (i, &(x, y, rail_id)) in ctx.power_anchor_world.iter().enumerate() {
             let net_id = ctx.power_anchor_nets[i];
             buf.holes.push((x, y, rail_id));
+            buf.mst_rails.push(ctx.mst_rail(net_id, rail_id));
             buf.nets.push(net_id);
             buf.is_virtual.push(true);
             buf.rail_map[rail_id as usize].push(net_id);
@@ -235,6 +256,7 @@ pub(crate) fn cost_fast(
                     continue;
                 }
                 buf.holes.push((pos.x, pos.y, rail_id));
+                buf.mst_rails.push(ctx.mst_rail(Some(net_id), rail_id));
                 buf.nets.push(Some(net_id));
                 buf.is_virtual.push(true);
                 buf.rail_map[rail_id as usize].push(Some(net_id));
@@ -270,6 +292,8 @@ pub(crate) fn cost_fast(
     let _t_bbox = std::time::Instant::now();
 
     // 4. bbox 碰撞
+    buf.bboxes
+        .extend(ctx.fixed_bboxes.iter().copied().map(Some));
     let mut bbox_overlap_count = 0u32;
     for i in 0..buf.bboxes.len() {
         let Some(bi) = buf.bboxes[i] else { continue };
@@ -286,6 +310,14 @@ pub(crate) fn cost_fast(
             }
         }
     }
+    let movable_bbox_count = n_comps;
+    for bbox in buf.bboxes.iter().take(movable_bbox_count).flatten() {
+        for obstacle in &ctx.fixed_point_obstacles {
+            if bbox.overlaps(obstacle) {
+                bbox_overlap_count += 1;
+            }
+        }
+    }
     cp_bbox!(_t_bbox.elapsed().as_nanos() as u64);
     let _t_mst = std::time::Instant::now();
 
@@ -296,10 +328,10 @@ pub(crate) fn cost_fast(
         if bucket.len() < 2 {
             continue;
         }
-        mst_sum += mst_wire_length_fast(bucket, &buf.holes);
+        mst_sum += mst_wire_length_fast(bucket, &buf.holes, &buf.mst_rails);
 
         if w.mst_congestion > 0.0 {
-            let degrees = mst_degrees(bucket, &buf.holes);
+            let degrees = mst_degrees(bucket, &buf.holes, &buf.mst_rails);
             let mut rail_pin_count: std::collections::HashMap<u32, usize> =
                 std::collections::HashMap::new();
             for &idx in bucket {
@@ -408,16 +440,18 @@ pub(crate) fn cost_fast(
 }
 
 /// 调试用: 返回成本的同时返回各项明细。一千成本以上的项重点看。
-pub(crate) fn cost_breakdown(
+pub(crate) fn cost_breakdown_with_problem(
     state: &SAState,
     circuit: &Circuit,
     board: &Breadboard,
-    bridged_pins: &[(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
+    problem: &AnnealProblem,
     w: &Weights,
 ) -> (f64, CostBreakdown) {
-    let ctx = SAContext::new(circuit, &state.placeable);
+    let mut ctx = SAContext::new(circuit, &state.placeable);
+    ctx.fill_bridged_bboxes(state, circuit, board, &[]);
+    ctx.fill_problem(problem);
     let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
-    cost_breakdown_inner(state, circuit, board, bridged_pins, w, &ctx, &mut buf)
+    cost_breakdown_inner(state, circuit, board, &[], w, &ctx, &mut buf)
 }
 
 /// 复制 cost_fast 但记录各项。重复是 debug 专趟代价。
@@ -466,6 +500,7 @@ fn cost_breakdown_inner(
                 .map(|h| board.effective_rail_id_of(h))
                 .unwrap_or(u32::MAX);
             buf.holes.push((x, y, rail_id));
+            buf.mst_rails.push(ctx.mst_rail(*net, rail_id));
             buf.nets.push(*net);
             buf.is_virtual.push(false);
         }
@@ -504,6 +539,7 @@ fn cost_breakdown_inner(
         let pos = board.hole(hole_id).position;
         let rail_id = board.effective_rail_id_of(hole_id);
         buf.holes.push((pos.x, pos.y, rail_id));
+        buf.mst_rails.push(ctx.mst_rail(pin.net, rail_id));
         buf.nets.push(pin.net);
         buf.is_virtual.push(false);
     }
@@ -517,9 +553,16 @@ fn cost_breakdown_inner(
             let pos = board.hole(h).position;
             let rail_id = board.effective_rail_id_of(h);
             buf.holes.push((pos.x, pos.y, rail_id));
+            buf.mst_rails.push(ctx.mst_rail(pin.net, rail_id));
             buf.nets.push(pin.net);
             buf.is_virtual.push(false);
         }
+    }
+    for &(x, y, rail_id, net) in &ctx.fixed_world {
+        buf.holes.push((x, y, rail_id));
+        buf.mst_rails.push(ctx.mst_rail(net, rail_id));
+        buf.nets.push(net);
+        buf.is_virtual.push(false);
     }
     if let Some(binding) = board.power_rail_binding() {
         let mut seen = std::collections::HashSet::new();
@@ -531,6 +574,7 @@ fn cost_breakdown_inner(
                     continue;
                 }
                 buf.holes.push((pos.x, pos.y, rail_id));
+                buf.mst_rails.push(ctx.mst_rail(Some(net_id), rail_id));
                 buf.nets.push(Some(net_id));
                 buf.is_virtual.push(true);
             }
@@ -565,6 +609,8 @@ fn cost_breakdown_inner(
         }
         j = k;
     }
+    buf.bboxes
+        .extend(ctx.fixed_bboxes.iter().copied().map(Some));
     let mut bbox_overlap_count = 0u32;
     for i in 0..buf.bboxes.len() {
         let Some(bi) = buf.bboxes[i] else { continue };
@@ -578,6 +624,13 @@ fn cost_breakdown_inner(
                 {
                     bbox_overlap_count += 1;
                 }
+            }
+        }
+    }
+    for bbox in buf.bboxes.iter().take(n_comps).flatten() {
+        for obstacle in &ctx.fixed_point_obstacles {
+            if bbox.overlaps(obstacle) {
+                bbox_overlap_count += 1;
             }
         }
     }
@@ -595,7 +648,7 @@ fn cost_breakdown_inner(
         if bucket.len() < 2 {
             continue;
         }
-        mst_sum += mst_wire_length_fast(bucket, &buf.holes);
+        mst_sum += mst_wire_length_fast(bucket, &buf.holes, &buf.mst_rails);
     }
     for (i, &net_opt) in buf.nets.iter().enumerate() {
         let (_, _, rail_id) = buf.holes[i];

@@ -154,12 +154,11 @@ impl<'c> super::Layout<'c> {
             })
             .collect();
 
-        // bridged 元件的 pin 不进 SA, 但要进 cost / 路由 (跨 rail 时)
-        let bridged_pins = self.bridged_pins();
-
         if placeable.is_empty() {
             return self.validate(board);
         }
+
+        let problem = super::problem::AnnealProblem::from_layout(self, board)?;
 
         // SA 是随机算法, 单次可能卡在 local optimum; 跑 n_seeds 次取最低 cost 的。
         //
@@ -191,6 +190,7 @@ impl<'c> super::Layout<'c> {
         use rayon::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let base_placements = self.placements.clone();
+        let base_wires = self.wires.clone();
         let completed_seeds = AtomicUsize::new(0);
         let display_seed = progress
             .map_or(0, |(_, options)| options.display_seed)
@@ -223,7 +223,7 @@ impl<'c> super::Layout<'c> {
                             state,
                         } => (Some((iteration, current_cost, best_cost)), state),
                     };
-                    let snapshot = snapshot_from_state(&base_placements, &state);
+                    let snapshot = snapshot_from_state(&base_placements, &base_wires, &state);
                     match kind {
                         None => callback(LayoutProgress::SpectralInitial {
                             seed: cfg_s.seed,
@@ -259,15 +259,15 @@ impl<'c> super::Layout<'c> {
                     self.circuit,
                     board,
                     &cfg_s,
-                    &bridged_pins,
+                    &problem,
                     &preprocess,
                     control,
                 );
-                let cost_s = crate::layout::cost::cost(
+                let cost_s = crate::layout::cost::cost_with_problem(
                     &state_s,
                     self.circuit,
                     board,
-                    &bridged_pins,
+                    &problem,
                     &config.weights,
                 );
                 let completed = completed_seeds.fetch_add(1, Ordering::AcqRel) + 1;
@@ -295,31 +295,45 @@ impl<'c> super::Layout<'c> {
             &per_seed_costs,
             self.circuit,
             board,
-            &bridged_pins,
+            &problem,
             &config.weights,
             config.seed,
         );
 
-        let candidate_placements = snapshot_from_state(&base_placements, &best).placements;
+        let candidate_placements =
+            snapshot_from_state(&base_placements, &base_wires, &best).placements;
+        self.commit_sa_candidate(board, candidate_placements, |layout| {
+            if let Some((callback, _)) = progress {
+                callback(LayoutProgress::PlacementComplete {
+                    seed: best_seed,
+                    cost: best_cost,
+                    cancelled: cancellation.is_some_and(CancellationToken::is_cancelled),
+                    snapshot: LayoutSnapshot {
+                        placements: layout.placements.clone(),
+                        wires: layout.wires.clone(),
+                    },
+                });
+            }
+        })
+    }
+
+    pub(super) fn commit_sa_candidate<F>(
+        &mut self,
+        board: &Breadboard,
+        placements: Vec<Option<Placement>>,
+        after_commit: F,
+    ) -> Result<(), Vec<LayoutError>>
+    where
+        F: FnOnce(&Self),
+    {
         let candidate = super::Layout {
             circuit: self.circuit,
-            placements: candidate_placements,
+            placements,
             wires: self.wires.clone(),
         };
         candidate.validate(board)?;
-
         self.placements = candidate.placements;
-        if let Some((callback, _)) = progress {
-            callback(LayoutProgress::PlacementComplete {
-                seed: best_seed,
-                cost: best_cost,
-                cancelled: cancellation.is_some_and(CancellationToken::is_cancelled),
-                snapshot: LayoutSnapshot {
-                    placements: self.placements.clone(),
-                    wires: Vec::new(),
-                },
-            });
-        }
+        after_commit(self);
         Ok(())
     }
 
@@ -385,6 +399,7 @@ impl<'c> super::Layout<'c> {
 
 fn snapshot_from_state(
     base: &[Option<Placement>],
+    wires: &[Wire],
     state: &crate::layout::cost::SAState,
 ) -> LayoutSnapshot {
     let mut placements = base.to_vec();
@@ -405,7 +420,7 @@ fn snapshot_from_state(
     }
     LayoutSnapshot {
         placements,
-        wires: Vec::new(),
+        wires: wires.to_vec(),
     }
 }
 

@@ -750,15 +750,15 @@ pub(super) fn simulate(
     circuit: &Circuit,
     board: &Breadboard,
     config: &SAConfig,
-    bridged_pins: &[(crate::circuit::PinId, super::breadboard::HoleId)],
+    problem: &crate::layout::problem::AnnealProblem,
     preprocess: &crate::layout::preprocess::PreprocessResult,
     control: Option<SimulationControl<'_>>,
 ) -> SAState {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
-        SAState::from_spectral(placeable, circuit, board, config.seed, preprocess)
+        SAState::from_spectral(placeable, circuit, board, config.seed, preprocess, problem)
     } else {
-        SAState::from_greedy(placeable, circuit, board, preprocess)
+        SAState::from_greedy(placeable, circuit, board, preprocess, problem)
     };
     // 预处理: R90 预旋转 + y 锁定
     {
@@ -794,7 +794,8 @@ pub(super) fn simulate(
     populate_bridgeable_info(&mut state, circuit, board, &power_net_ids);
     // 预计算 context (footprint pin offset, bbox) 和 reusable buffers
     let mut ctx = SAContext::new(circuit, &state.placeable);
-    ctx.fill_bridged_bboxes(&state, circuit, board, bridged_pins);
+    ctx.fill_bridged_bboxes(&state, circuit, board, &[]);
+    ctx.fill_problem(problem);
     let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
     // Aggressive init: 默认所有 bridgeable 都走桥接, cache 里挑 cost 最低的 pair。
     // 不做 safety net; SA 后续可以 ToggleBridging 翻回去。
@@ -802,20 +803,12 @@ pub(super) fn simulate(
         &mut state,
         circuit,
         board,
-        bridged_pins,
+        &[],
         &config.weights,
         &ctx,
         &mut buf,
     );
-    let mut current_cost = cost_fast(
-        &state,
-        circuit,
-        board,
-        bridged_pins,
-        &config.weights,
-        &ctx,
-        &mut buf,
-    );
+    let mut current_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
     let mut t = config.t0;
@@ -878,15 +871,7 @@ pub(super) fn simulate(
             let mut best_idx = state.active_bridge_idx[*i];
             for (j, _) in state.bridged_pin_pairs[*i].iter().enumerate() {
                 state.active_bridge_idx[*i] = j;
-                let c = cost_fast(
-                    &state,
-                    circuit,
-                    board,
-                    bridged_pins,
-                    &config.weights,
-                    &ctx,
-                    &mut buf,
-                );
+                let c = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
                 if c < best_cost {
                     best_cost = c;
                     best_idx = j;
@@ -897,15 +882,7 @@ pub(super) fn simulate(
         }
         #[cfg(profile_sa)]
         let t_cost_start = std::time::Instant::now();
-        let new_cost = cost_fast(
-            &state,
-            circuit,
-            board,
-            bridged_pins,
-            &config.weights,
-            &ctx,
-            &mut buf,
-        );
+        let new_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
         #[cfg(profile_sa)]
         {
             prof_cost_add!(t_cost_start.elapsed().as_nanos() as u64);
@@ -1093,6 +1070,7 @@ mod tests {
                 r90_only: std::collections::HashSet::new(),
                 y_locked: std::collections::HashMap::new(),
             },
+            &crate::layout::problem::AnnealProblem::default(),
         );
         let cfg = SAConfig::default();
         let mut rng = fastrand::Rng::with_seed(0);
@@ -1269,6 +1247,7 @@ mod tests {
                 r90_only: std::collections::HashSet::new(),
                 y_locked: std::collections::HashMap::new(),
             },
+            &crate::layout::problem::AnnealProblem::default(),
         );
         populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
         assert!(state.is_bridgeable[0], "fixture 应能提供 bridged candidate");
@@ -1633,6 +1612,7 @@ mod tests {
                 r90_only: std::collections::HashSet::new(),
                 y_locked: std::collections::HashMap::new(),
             },
+            &crate::layout::problem::AnnealProblem::default(),
         );
         for &y in &state.y {
             assert!(
@@ -1664,7 +1644,7 @@ mod tests {
             &circuit,
             &board(),
             &config,
-            &[],
+            &crate::layout::problem::AnnealProblem::default(),
             &crate::layout::preprocess::PreprocessResult {
                 r90_only: std::collections::HashSet::new(),
                 y_locked: std::collections::HashMap::new(),
@@ -1691,7 +1671,7 @@ mod tests {
             &circuit,
             &board(),
             &config,
-            &[],
+            &crate::layout::problem::AnnealProblem::default(),
             &crate::layout::preprocess::PreprocessResult {
                 r90_only: std::collections::HashSet::new(),
                 y_locked: std::collections::HashMap::new(),

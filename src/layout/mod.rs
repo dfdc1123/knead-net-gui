@@ -16,6 +16,7 @@ pub mod occupancy;
 pub mod placement;
 pub mod prepare;
 pub mod preprocess;
+mod problem;
 pub mod progress;
 pub mod routing;
 pub mod sa;
@@ -68,7 +69,14 @@ pub fn spectral_debug_positions(
     }
 
     // 调试用: 用一个固定 seed 让跨进程可复现。调成 0 / 1 / 42 跟生产不同。
-    let state = SAState::from_spectral(placeable, circuit, board, 0xDEAD_BEEF, preprocess);
+    let state = SAState::from_spectral(
+        placeable,
+        circuit,
+        board,
+        0xDEAD_BEEF,
+        preprocess,
+        &problem::AnnealProblem::default(),
+    );
     let n = state.n();
 
     // 打印表格 (按 round 后的 x 排序)

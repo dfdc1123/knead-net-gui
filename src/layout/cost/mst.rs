@@ -16,19 +16,24 @@
 /// 这是 wire 长度的下界 — 实际走线可能更长 (绕障碍), 但 SA 用它做优化目标。
 #[cfg(test)]
 pub(crate) fn mst_wire_length(pins: &[(i32, i32, u32)]) -> f64 {
-    mst_wire_length_fast(&(0..pins.len()).collect::<Vec<_>>(), pins)
+    let rails: Vec<u32> = pins.iter().map(|pin| pin.2).collect();
+    mst_wire_length_fast(&(0..pins.len()).collect::<Vec<_>>(), pins, &rails)
 }
 
 /// 快速版本: 使用 index 引用 buf.holes 而不是复制数据。
 /// 对于 ≤3 pins 用直接公式, ≥4 用 Kruskal (本地向量, 不借用 buf)。
-pub(super) fn mst_wire_length_fast(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
+pub(super) fn mst_wire_length_fast(
+    indices: &[usize],
+    holes: &[(i32, i32, u32)],
+    mst_rails: &[u32],
+) -> f64 {
     let n = indices.len();
     match n {
         0..=1 => 0.0,
         2 => {
             let a = holes[indices[0]];
             let b = holes[indices[1]];
-            if a.2 == b.2 {
+            if mst_rails[indices[0]] == mst_rails[indices[1]] {
                 0.0
             } else {
                 ((a.0 - b.0).abs() + (a.1 - b.1).abs()) as f64
@@ -39,17 +44,17 @@ pub(super) fn mst_wire_length_fast(indices: &[usize], holes: &[(i32, i32, u32)])
             let p0 = holes[indices[0]];
             let p1 = holes[indices[1]];
             let p2 = holes[indices[2]];
-            let d01 = if p0.2 == p1.2 {
+            let d01 = if mst_rails[indices[0]] == mst_rails[indices[1]] {
                 0
             } else {
                 (p0.0 - p1.0).abs() + (p0.1 - p1.1).abs()
             };
-            let d02 = if p0.2 == p2.2 {
+            let d02 = if mst_rails[indices[0]] == mst_rails[indices[2]] {
                 0
             } else {
                 (p0.0 - p2.0).abs() + (p0.1 - p2.1).abs()
             };
-            let d12 = if p1.2 == p2.2 {
+            let d12 = if mst_rails[indices[1]] == mst_rails[indices[2]] {
                 0
             } else {
                 (p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()
@@ -59,14 +64,18 @@ pub(super) fn mst_wire_length_fast(indices: &[usize], holes: &[(i32, i32, u32)])
         }
         _ => {
             // 4+ pins: Kruskal with local allocations
-            mst_wire_length_fast_kruskal(indices, holes)
+            mst_wire_length_fast_kruskal(indices, holes, mst_rails)
         }
     }
 }
 
 /// Kruskal MST for ≥4 pin nets. 用栈上数组代替堆 Vec, 避免每次 malloc/free。
 /// 上限 12 pin = 66 条边, 超过则退到堆路径。
-pub(super) fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32, u32)]) -> f64 {
+pub(super) fn mst_wire_length_fast_kruskal(
+    indices: &[usize],
+    holes: &[(i32, i32, u32)],
+    mst_rails: &[u32],
+) -> f64 {
     const MAX_N: usize = 12;
     const MAX_E: usize = MAX_N * (MAX_N - 1) / 2;
     let n = indices.len();
@@ -82,7 +91,7 @@ pub(super) fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32
             let ha = holes[indices[a]];
             for b in (a + 1)..n {
                 let hb = holes[indices[b]];
-                let d = if ha.2 == hb.2 {
+                let d = if mst_rails[indices[a]] == mst_rails[indices[b]] {
                     0
                 } else {
                     (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()
@@ -98,7 +107,7 @@ pub(super) fn mst_wire_length_fast_kruskal(indices: &[usize], holes: &[(i32, i32
             let ha = holes[indices[a]];
             for b in (a + 1)..n {
                 let hb = holes[indices[b]];
-                let d = if ha.2 == hb.2 {
+                let d = if mst_rails[indices[a]] == mst_rails[indices[b]] {
                     0
                 } else {
                     (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()
@@ -171,7 +180,11 @@ pub(super) fn kruskal_union(edges: &[(i32, usize, usize)], n: usize) -> f64 {
 }
 
 /// 算 MST 并返回每个节点的度数 (用于拥塞惩罚)。
-pub(super) fn mst_degrees(indices: &[usize], holes: &[(i32, i32, u32)]) -> Vec<usize> {
+pub(super) fn mst_degrees(
+    indices: &[usize],
+    holes: &[(i32, i32, u32)],
+    mst_rails: &[u32],
+) -> Vec<usize> {
     let n = indices.len();
     let mut degree = vec![0; n];
     match n {
@@ -184,17 +197,17 @@ pub(super) fn mst_degrees(indices: &[usize], holes: &[(i32, i32, u32)]) -> Vec<u
             let p0 = holes[indices[0]];
             let p1 = holes[indices[1]];
             let p2 = holes[indices[2]];
-            let d01 = if p0.2 == p1.2 {
+            let d01 = if mst_rails[indices[0]] == mst_rails[indices[1]] {
                 0
             } else {
                 (p0.0 - p1.0).abs() + (p0.1 - p1.1).abs()
             };
-            let d02 = if p0.2 == p2.2 {
+            let d02 = if mst_rails[indices[0]] == mst_rails[indices[2]] {
                 0
             } else {
                 (p0.0 - p2.0).abs() + (p0.1 - p2.1).abs()
             };
-            let d12 = if p1.2 == p2.2 {
+            let d12 = if mst_rails[indices[1]] == mst_rails[indices[2]] {
                 0
             } else {
                 (p1.0 - p2.0).abs() + (p1.1 - p2.1).abs()
@@ -212,7 +225,7 @@ pub(super) fn mst_degrees(indices: &[usize], holes: &[(i32, i32, u32)]) -> Vec<u
                 let ha = holes[indices[a]];
                 for b in (a + 1)..n {
                     let hb = holes[indices[b]];
-                    let d = if ha.2 == hb.2 {
+                    let d = if mst_rails[indices[a]] == mst_rails[indices[b]] {
                         0
                     } else {
                         (ha.0 - hb.0).abs() + (ha.1 - hb.1).abs()

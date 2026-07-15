@@ -373,6 +373,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R4. 把已有 placement/wire 提升为 immutable problem geometry
 
+- 实施状态：**已完成**（2026-07-15）。T03 已先复现 greedy 会覆盖固定 OnBoard、固定 Bridged body 和已有 wire endpoints；新增 `AnnealProblem` 统一提取固定 pin/body、RailTie、wire endpoint/rail closure，greedy、spectral、热路径 cost、diagnostics 和 progress snapshot 现在消费同一不可变几何。已有 wire 对所属 net 收缩其连接的 effective rails，固定 OnBoard pin 也进入 MST。
 - 对应：A3。
 - 依赖：R2 保证输入 placement 可解释；R3 保证失败不污染 Layout。
 - 最小失败测试：T03，另加固定 OnBoard net 端点会改变 MST 的断言。

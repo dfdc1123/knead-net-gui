@@ -359,6 +359,7 @@ fn from_greedy_fits_2d() {
             r90_only: std::collections::HashSet::new(),
             y_locked: std::collections::HashMap::new(),
         },
+        &crate::layout::problem::AnnealProblem::default(),
     );
     assert_eq!(state.n(), 5);
     // 所有 y 都在 [0, 4]
@@ -421,6 +422,7 @@ fn from_greedy_spills_to_next_row() {
             r90_only: std::collections::HashSet::new(),
             y_locked: std::collections::HashMap::new(),
         },
+        &crate::layout::problem::AnnealProblem::default(),
     );
     // 3 个 11-col 放 row 0 占 0..33 (实际放 0, 1, 12, 3 个 footprint 总跨度)
     // 第 4 个放不下 row 0 → 走 row 1
@@ -1629,6 +1631,7 @@ fn populate_bridgeable_info_top_rail_tiebreaker() {
             r90_only: std::collections::HashSet::new(),
             y_locked: std::collections::HashMap::new(),
         },
+        &crate::layout::problem::AnnealProblem::default(),
     );
     populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 
@@ -1689,6 +1692,7 @@ fn init_bridgeable_to_bridged_flips_all() {
             r90_only: std::collections::HashSet::new(),
             y_locked: std::collections::HashMap::new(),
         },
+        &crate::layout::problem::AnnealProblem::default(),
     );
     populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 
@@ -1733,6 +1737,7 @@ fn init_bridgeable_to_bridged_picks_lowest_cost_pair() {
             r90_only: std::collections::HashSet::new(),
             y_locked: std::collections::HashMap::new(),
         },
+        &crate::layout::problem::AnnealProblem::default(),
     );
     populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
 

@@ -8,6 +8,7 @@ use super::state::SAState;
 use crate::circuit::{Circuit, ComponentId, NetId, Position};
 use crate::layout::breadboard::Breadboard;
 use crate::layout::placement::{BBox, Rotation};
+use crate::layout::problem::AnnealProblem;
 
 /// Rotation → 预计算偏移数组的下标。
 #[inline]
@@ -52,6 +53,13 @@ pub struct SAContext {
     pub power_anchor_world: Vec<(i32, i32, u32)>,
     /// 电源轨 anchor 的 net ids (顺序与 power_anchor_world 对应)
     pub power_anchor_nets: Vec<Option<NetId>>,
+    /// 固定 OnBoard / Bridged pin 与已有 wire endpoints。
+    pub fixed_world: Vec<(i32, i32, u32, Option<NetId>)>,
+    /// 固定元件 body bbox；既参与 collision，也参与整体 compactness。
+    pub fixed_bboxes: Vec<BBox>,
+    /// wire / RailTie endpoint 的点状 bbox，只参与 collision。
+    pub fixed_point_obstacles: Vec<BBox>,
+    fixed_problem: Option<AnnealProblem>,
 }
 
 impl SAContext {
@@ -116,7 +124,43 @@ impl SAContext {
             external_bridged_world: Vec::new(),
             power_anchor_world: Vec::new(),
             power_anchor_nets: Vec::new(),
+            fixed_world: Vec::new(),
+            fixed_bboxes: Vec::new(),
+            fixed_point_obstacles: Vec::new(),
+            fixed_problem: None,
         }
+    }
+
+    pub(crate) fn fill_problem(&mut self, problem: &AnnealProblem) {
+        debug_assert!(problem.fixed_wires.iter().all(|wire| {
+            problem.mst_rail(Some(wire.net), wire.from_rail)
+                == problem.mst_rail(Some(wire.net), wire.to_rail)
+        }));
+        self.fixed_world = problem
+            .fixed_geometry
+            .endpoints
+            .iter()
+            .map(|endpoint| {
+                (
+                    endpoint.position.x,
+                    endpoint.position.y,
+                    endpoint.effective_rail,
+                    endpoint.net,
+                )
+            })
+            .collect();
+        self.fixed_bboxes = problem.fixed_geometry.bboxes.clone();
+        self.fixed_point_obstacles = problem.fixed_geometry.point_obstacles.clone();
+        self.fixed_problem = Some(problem.clone());
+    }
+
+    #[inline]
+    pub fn mst_rail(&self, net: Option<NetId>, physical_rail: u32) -> u32 {
+        self.fixed_problem
+            .as_ref()
+            .map_or(physical_rail, |problem| {
+                problem.mst_rail(net, physical_rail)
+            })
     }
 
     /// 给 bridgeable 元件填 bridged_bboxes + bridged_pair_world 预计算。
@@ -197,6 +241,8 @@ impl SAContext {
 /// HashMap 的 hash + Eq + bucket 跳转在这个热点上比直接数组索引慢几倍。
 pub(crate) struct CostBuf {
     pub holes: Vec<(i32, i32, u32)>,
+    /// net-specific rail closure；已有 wire 连接的两个 rail 在对应 net 上共享代表值。
+    pub mst_rails: Vec<u32>,
     pub nets: Vec<Option<NetId>>,
     pub is_virtual: Vec<bool>,
     pub bboxes: Vec<Option<BBox>>,
@@ -214,6 +260,7 @@ impl CostBuf {
     pub fn new(num_nets: usize, num_rails: usize, main_rows: usize) -> Self {
         Self {
             holes: Vec::new(),
+            mst_rails: Vec::new(),
             nets: Vec::new(),
             is_virtual: Vec::new(),
             bboxes: Vec::new(),
@@ -227,6 +274,7 @@ impl CostBuf {
     /// 清理所有 buffer 以便下一轮 cost 计算复用
     pub(super) fn clear(&mut self) {
         self.holes.clear();
+        self.mst_rails.clear();
         self.nets.clear();
         self.is_virtual.clear();
         self.bboxes.clear();

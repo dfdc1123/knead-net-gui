@@ -8,6 +8,7 @@ use crate::circuit::{Circuit, ComponentId, PinId};
 use crate::layout::breadboard::{Breadboard, HoleId};
 use crate::layout::placement::Rotation;
 use crate::layout::preprocess::PreprocessResult;
+use crate::layout::problem::AnnealProblem;
 
 use super::spectral::{compute_fiedler, compute_second_evec, grid_fill_2d};
 
@@ -127,15 +128,16 @@ impl SAState {
         circuit: &Circuit,
         board: &Breadboard,
         preprocess: &PreprocessResult,
+        problem: &AnnealProblem,
     ) -> Self {
         let n = placeable.len();
         let mut x = vec![0i32; n];
         let mut y = vec![0i32; n];
         let rotation = vec![Rotation::R0; n];
-        let mut occupied: HashSet<(i32, i32)> = HashSet::new();
-        // (col, rail_top) → 第一个放进去的 pin 的 net; 后续 pin 若 net 不同则为冲突。
+        let mut occupied: HashSet<(i32, i32)> = problem.fixed_geometry.occupied_cells.clone();
+        // effective rail → 第一个放进去的 pin / binding 的 net。
         // None 表示该位置的 pin 未连 net (unconnected); unconnected 与 connected 互冲。
-        let mut col_owner: HashMap<(i32, i32), Option<crate::circuit::NetId>> = HashMap::new();
+        let mut col_owner = problem.fixed_geometry.rail_owners.clone();
 
         for idx in 0..n {
             let comp_id = placeable[idx];
@@ -210,8 +212,8 @@ impl SAState {
                         {
                             return true;
                         }
-                        let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
-                        match col_owner.get(&(abs_x, rail_top)) {
+                        let rail_id = board.effective_rail_id_at(abs_x, abs_y);
+                        match col_owner.get(&rail_id) {
                             Some(existing) => *existing != pin_net,
                             None => false,
                         }
@@ -244,8 +246,8 @@ impl SAState {
                     && abs_y < board.rows() as i32
                     && !board.is_blocked(abs_y as usize)
                 {
-                    let rail_top = board.rail_rows(abs_y).first().copied().unwrap_or(abs_y);
-                    col_owner.entry((abs_x, rail_top)).or_insert(pin_net);
+                    let rail_id = board.effective_rail_id_at(abs_x, abs_y);
+                    col_owner.entry(rail_id).or_insert(pin_net);
                 }
             }
         }
@@ -282,10 +284,11 @@ impl SAState {
         board: &Breadboard,
         seed: u64,
         preprocess: &PreprocessResult,
+        problem: &AnnealProblem,
     ) -> Self {
         let n = placeable.len();
         if n <= 2 {
-            return Self::from_greedy(placeable, circuit, board, preprocess);
+            return Self::from_greedy(placeable, circuit, board, preprocess, problem);
         }
 
         // ── comp_id → placeable_idx 映射 ──
@@ -346,7 +349,7 @@ impl SAState {
         // ============================================================
         // Phase 3: v₂ 值 → 目标 x, 贪心碰撞解决 → 紧凑格点
         // ============================================================
-        let (x, y) = grid_fill_2d(&v2, &v3, board, n, &placeable, circuit, preprocess);
+        let (x, y) = grid_fill_2d(&v2, &v3, board, &placeable, circuit, preprocess, problem);
 
         Self {
             placeable,

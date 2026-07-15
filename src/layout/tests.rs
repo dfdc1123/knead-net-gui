@@ -617,19 +617,15 @@ fn place_sa_validation_failure_is_transactional_and_emits_no_completion() {
     layout.validate(&board).expect("调用前布局必须合法");
     let placements_before = layout.placements().to_vec();
     let wires_before = layout.wires().to_vec();
-    let events = Mutex::new(Vec::new());
-
-    let result = layout.place_sa_with_progress(
-        &board,
-        &SAConfig {
-            max_iters: 0,
-            n_seeds: 1,
-            use_spectral: false,
-            ..SAConfig::default()
-        },
-        ProgressOptions::default(),
-        |event| events.lock().unwrap().push(event),
-    );
+    let committed = Mutex::new(false);
+    let mut invalid_candidate = placements_before.clone();
+    invalid_candidate[ComponentId(1).raw()] = Some(Placement::OnBoard {
+        position: Position { x: 0, y: 0 },
+        rotation: Rotation::R0,
+    });
+    let result = layout.commit_sa_candidate(&board, invalid_candidate, |_| {
+        *committed.lock().unwrap() = true;
+    });
 
     assert!(result.is_err(), "候选与固定元件重叠时必须验证失败");
     assert_eq!(layout.placements(), placements_before);
@@ -640,14 +636,324 @@ fn place_sa_validation_failure_is_transactional_and_emits_no_completion() {
             (before.id, before.net, before.from, before.to)
         );
     }
-    assert!(
-        events
-            .into_inner()
-            .unwrap()
-            .iter()
-            .all(|event| !matches!(event, LayoutProgress::PlacementComplete { .. })),
-        "非法候选不能发布 PlacementComplete"
+    assert!(!committed.into_inner().unwrap(), "非法候选不能运行完成回调");
+}
+
+#[test]
+fn place_sa_initialization_avoids_fixed_onboard_geometry() {
+    let circuit = Box::leak(Box::new(Circuit {
+        components: (0..2)
+            .map(|id| Component {
+                id: ComponentId(id),
+                ref_: format!("TP{id}"),
+                kind: "TESTPOINT".into(),
+                value: None,
+                pins: vec![PinId(id)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            })
+            .collect(),
+        pins: (0..2)
+            .map(|id| Pin {
+                id: PinId(id),
+                component: ComponentId(id),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            })
+            .collect(),
+        nets: Vec::new(),
+        footprints: vec![Footprint {
+            id: FootprintId(0),
+            name: "1p".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        }],
+    }));
+    let board = Breadboard::new(2, 1);
+    let mut layout = Layout::new(circuit);
+    layout.place(
+        ComponentId(0),
+        Placement::OnBoard {
+            position: Position { x: 0, y: 0 },
+            rotation: Rotation::R0,
+        },
     );
+
+    layout
+        .place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 0,
+                n_seeds: 1,
+                use_spectral: false,
+                ..SAConfig::default()
+            },
+        )
+        .expect("固定 OnBoard 应作为初始化障碍");
+    assert_eq!(
+        layout.placement(ComponentId(1)),
+        Some(Placement::OnBoard {
+            position: Position { x: 1, y: 0 },
+            rotation: Rotation::R0,
+        })
+    );
+}
+
+#[test]
+fn spectral_initialization_with_more_than_two_components_avoids_fixed_geometry() {
+    let circuit = Box::leak(Box::new(Circuit {
+        components: (0..4)
+            .map(|id| Component {
+                id: ComponentId(id),
+                ref_: format!("TP{id}"),
+                kind: "TESTPOINT".into(),
+                value: None,
+                pins: vec![PinId(id)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            })
+            .collect(),
+        pins: (0..4)
+            .map(|id| Pin {
+                id: PinId(id),
+                component: ComponentId(id),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            })
+            .collect(),
+        nets: Vec::new(),
+        footprints: vec![Footprint {
+            id: FootprintId(0),
+            name: "1p".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        }],
+    }));
+    let board = Breadboard::new(4, 1);
+    let mut layout = Layout::new(circuit);
+    layout.place(
+        ComponentId(0),
+        Placement::OnBoard {
+            position: Position { x: 0, y: 0 },
+            rotation: Rotation::R0,
+        },
+    );
+
+    layout
+        .place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 0,
+                n_seeds: 1,
+                use_spectral: true,
+                ..SAConfig::default()
+            },
+        )
+        .expect("n > 2 的 spectral grid fill 也必须避开 fixed geometry");
+    let mut xs = Vec::new();
+    for component in 0..4 {
+        let Some(Placement::OnBoard { position, .. }) = layout.placement(ComponentId(component))
+        else {
+            panic!("所有测试点都应为 OnBoard");
+        };
+        xs.push(position.x);
+    }
+    xs.sort_unstable();
+    assert_eq!(xs, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn place_sa_initialization_avoids_fixed_bridged_body() {
+    let circuit = Box::leak(Box::new(Circuit {
+        components: vec![
+            Component {
+                id: ComponentId(0),
+                ref_: "R1".into(),
+                kind: "R".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            },
+            Component {
+                id: ComponentId(1),
+                ref_: "TP1".into(),
+                kind: "TESTPOINT".into(),
+                value: None,
+                pins: vec![PinId(2)],
+                footprint: Some(FootprintId(1)),
+                bridgeable: false,
+            },
+        ],
+        pins: vec![
+            Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            },
+            Pin {
+                id: PinId(1),
+                component: ComponentId(0),
+                num: "2".into(),
+                pinfunction: None,
+                physical_pin_index: 1,
+                net: None,
+            },
+            Pin {
+                id: PinId(2),
+                component: ComponentId(1),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            },
+        ],
+        nets: Vec::new(),
+        footprints: vec![
+            Footprint {
+                id: FootprintId(0),
+                name: "2p".into(),
+                pins: vec![
+                    PhysicalPin {
+                        name: "1".into(),
+                        offset: Position { x: 0, y: 0 },
+                    },
+                    PhysicalPin {
+                        name: "2".into(),
+                        offset: Position { x: 2, y: 0 },
+                    },
+                ],
+            },
+            Footprint {
+                id: FootprintId(1),
+                name: "1p".into(),
+                pins: vec![PhysicalPin {
+                    name: "1".into(),
+                    offset: Position { x: 0, y: 0 },
+                }],
+            },
+        ],
+    }));
+    let board = Breadboard::new(4, 1);
+    let mut layout = Layout::new(circuit);
+    layout.place(
+        ComponentId(0),
+        Placement::Bridged {
+            pin_holes: [
+                (board.at(0, 0).unwrap(), PinId(0)),
+                (board.at(2, 0).unwrap(), PinId(1)),
+            ],
+        },
+    );
+
+    layout
+        .place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 0,
+                n_seeds: 1,
+                use_spectral: false,
+                ..SAConfig::default()
+            },
+        )
+        .expect("固定 Bridged body 的完整 bbox 应作为初始化障碍");
+    assert_eq!(
+        layout.placement(ComponentId(1)),
+        Some(Placement::OnBoard {
+            position: Position { x: 3, y: 0 },
+            rotation: Rotation::R0,
+        })
+    );
+}
+
+#[test]
+fn place_sa_initialization_avoids_existing_wire_endpoints() {
+    use std::sync::Mutex;
+
+    let circuit = Box::leak(Box::new(Circuit {
+        components: vec![Component {
+            id: ComponentId(0),
+            ref_: "TP1".into(),
+            kind: "TESTPOINT".into(),
+            value: None,
+            pins: vec![PinId(0)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        }],
+        pins: vec![Pin {
+            id: PinId(0),
+            component: ComponentId(0),
+            num: "1".into(),
+            pinfunction: None,
+            physical_pin_index: 0,
+            net: None,
+        }],
+        nets: vec![Net {
+            id: NetId(0),
+            name: "FIXED_WIRE".into(),
+            pins: Vec::new(),
+        }],
+        footprints: vec![Footprint {
+            id: FootprintId(0),
+            name: "1p".into(),
+            pins: vec![PhysicalPin {
+                name: "1".into(),
+                offset: Position { x: 0, y: 0 },
+            }],
+        }],
+    }));
+    let board = Breadboard::new(3, 1);
+    let mut layout = Layout::new(circuit);
+    layout.add_wire(Wire {
+        id: WireId(0),
+        net: NetId(0),
+        from: board.at(0, 0).unwrap(),
+        to: board.at(1, 0).unwrap(),
+    });
+
+    let events = Mutex::new(Vec::new());
+    layout
+        .place_sa_with_progress(
+            &board,
+            &SAConfig {
+                max_iters: 0,
+                n_seeds: 1,
+                use_spectral: true,
+                ..SAConfig::default()
+            },
+            ProgressOptions::default(),
+            |event| events.lock().unwrap().push(event),
+        )
+        .expect("已有 wire 两个端点都应作为初始化障碍");
+    assert_eq!(
+        layout.placement(ComponentId(0)),
+        Some(Placement::OnBoard {
+            position: Position { x: 2, y: 0 },
+            rotation: Rotation::R0,
+        })
+    );
+    for event in events.into_inner().unwrap() {
+        let snapshot = match event {
+            LayoutProgress::SpectralInitial { snapshot, .. }
+            | LayoutProgress::Annealing { snapshot, .. }
+            | LayoutProgress::PlacementComplete { snapshot, .. } => Some(snapshot),
+            LayoutProgress::SeedsProgress { .. } | LayoutProgress::RoutingComplete { .. } => None,
+        };
+        if let Some(snapshot) = snapshot {
+            assert_eq!(snapshot.wires.len(), 1, "SA progress 不能丢掉已有 wires");
+        }
+    }
 }
 
 /// 退火在固定 seed 下应可重现。
