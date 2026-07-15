@@ -217,7 +217,7 @@ impl Footprint {
 
 impl Circuit {
     /// 创建一个空电路 (0 元件, 0 pin, 0 net, 0 footprint)。
-    /// 主要给"只渲染板子几何"的场景用 (e.g. `--render-empty-boards`)。
+    /// 主要给“只渲染板子几何”的调试场景用。
     pub fn empty() -> Self {
         Self {
             components: Vec::new(),

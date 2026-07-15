@@ -1,7 +1,8 @@
 //! 性能剖析 (profiling) 钩子: `--cfg profile_cost` 时启用的 AtomicU64 计数器。
 //!
 //! 默认 `cargo build` 不开, 跑 `RUSTFLAGS='--cfg profile_cost' cargo build --release` 才生效。
-//! 主程序里调 `reset_cost_profile()` 在 SA 入口, `dump_cost_profile("prefix")` 在出口。
+//! 采样方在 SA 入口调用 `reset_cost_profile()`，在出口调用
+//! `dump_cost_profile("prefix")`。
 
 #[cfg(profile_cost)]
 pub(crate) mod cost_profile {

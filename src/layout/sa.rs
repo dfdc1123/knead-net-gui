@@ -28,8 +28,8 @@ use crate::layout::placement::Rotation;
 use crate::layout::progress::AnnealMetrics;
 
 // ============================================================
-//  Profile helpers (--profile flag 启用, 默认 noop)
-//  atomic fetch_add 在 hot path 上有 ~1% 开销; 主程序没传 --profile 时下面
+//  Profile helpers (profile_sa cfg 启用, 默认 noop)
+//  atomic fetch_add 在 hot path 上有 ~1% 开销; 未启用 profile_sa 时下面
 //  的宏都是 noop, 不污染 baseline。
 // ============================================================
 static PROF_INIT_NS: AtomicU64 = AtomicU64::new(0);

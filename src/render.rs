@@ -33,7 +33,7 @@ const CHANNEL_FRAC: f32 = 0.30; // 通道相对 row 中心的偏移 (向下)
 /// pin 覆盖关系才是 lossless / lossy 的差别。
 /// 渲染一个空板 (没元件、没接线) 到 SVG。仅画板几何 + 电源轨色带 + 所有孔。
 ///
-/// 给 `--render-empty-boards` 这类验证场景用 — 能一眼看清板子尺寸、blocked row、
+/// 给空板几何验证场景用 — 能一眼看清板子尺寸、blocked row、
 /// 电源轨 group 划分对不对。
 pub fn to_svg_board(board: &Breadboard) -> String {
     use crate::circuit::Circuit;
