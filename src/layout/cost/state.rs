@@ -11,6 +11,7 @@ use crate::layout::placement::{BBox, PlacedFootprint, Rotation, rotate};
 use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
 
+use super::force::force_hints;
 use super::legalize::{PlacementHints, legalize};
 use super::spectral::{compute_fiedler, compute_second_evec, spectral_hints};
 use super::{Weights, cost_with_problem};
@@ -472,5 +473,21 @@ impl SAState {
             .ok_or(crate::layout::LayoutError::NoLegalInitialPlacement {
                 component: placeable[0],
             })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn from_force_directed_with_weights(
+        placeable: Vec<ComponentId>,
+        circuit: &Circuit,
+        board: &Breadboard,
+        seed: u64,
+        preprocess: &PreprocessResult,
+        problem: &AnnealProblem,
+        weights: &Weights,
+    ) -> Result<Self, crate::layout::LayoutError> {
+        let hints = force_hints(&placeable, circuit, board, preprocess, seed);
+        legalize(
+            placeable, circuit, board, preprocess, problem, weights, hints,
+        )
     }
 }

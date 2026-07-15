@@ -2431,6 +2431,31 @@ mod tests {
     }
 
     #[test]
+    fn force_directed_initialization_is_seed_reproducible() {
+        let circuit = three_single_pin_circuit();
+        let preprocess = crate::layout::preprocess::PreprocessResult {
+            r90_only: std::collections::HashSet::new(),
+            y_locked: std::collections::HashMap::new(),
+        };
+        let build = || {
+            SAState::from_force_directed_with_weights(
+                vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+                &circuit,
+                &board(),
+                17,
+                &preprocess,
+                &crate::layout::problem::AnnealProblem::default(),
+                &Weights::default(),
+            )
+            .unwrap()
+        };
+
+        let first = build();
+        let second = build();
+        assert_state_fields_equal(&first, &second, "force-directed initialization");
+    }
+
+    #[test]
     fn zero_iterations_do_not_force_bridging_when_onboard_is_equally_good() {
         let (circuit, board) = bridgable_fixture();
         let config = SAConfig {
