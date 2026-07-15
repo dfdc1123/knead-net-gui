@@ -24,7 +24,7 @@ use crate::layout::cost::{
     BridgeInitContext, BridgePolicy, CostBuf, SAContext, SAState, Weights, cost_fast,
     cost_fast_if_legal, initialize_bridging, populate_bridgeable_info,
 };
-use crate::layout::placement::Rotation;
+use crate::layout::placement::{BBox, Rotation};
 use crate::layout::progress::AnnealMetrics;
 
 // ============================================================
@@ -692,6 +692,124 @@ fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backu
     }
 }
 
+/// Cheap, conservative geometry rejection for an already-applied Shift/Swap.
+/// Returning true must imply that the full hard-legality pass would reject it.
+fn has_obvious_shift_or_swap_conflict(
+    state: &SAState,
+    movement: &Move,
+    board: &Breadboard,
+    ctx: &SAContext,
+) -> bool {
+    let conflicts_at = |idx| component_has_obvious_geometry_conflict(state, idx, board, ctx);
+    match movement {
+        Move::ShiftX(idx, _) | Move::ShiftY(idx, _) => conflicts_at(*idx),
+        Move::SwapPositions(a, b) => conflicts_at(*a) || conflicts_at(*b),
+        Move::ShiftGroup(indices) => indices.iter().copied().any(conflicts_at),
+        Move::Flip(_) | Move::ToggleBridging(_) | Move::ChangeBridgeCandidate(_, _) => false,
+    }
+}
+
+fn component_has_obvious_geometry_conflict(
+    state: &SAState,
+    idx: usize,
+    board: &Breadboard,
+    ctx: &SAContext,
+) -> bool {
+    let Some(bbox) = component_world_bbox(state, idx, board, ctx) else {
+        return false;
+    };
+
+    if !state.bridged[idx] {
+        let info = &ctx.comp_infos[idx];
+        let rotation_index = match state.rotation[idx] {
+            Rotation::R0 => 0,
+            Rotation::R180 => 1,
+            Rotation::R90 => 2,
+            Rotation::R270 => 3,
+        };
+        if info.pins.iter().any(|(offsets, _)| {
+            let offset = offsets[rotation_index];
+            board
+                .at(state.x[idx] + offset.x, state.y[idx] + offset.y)
+                .is_none()
+        }) {
+            return true;
+        }
+
+        let allow_channel_crossing = state.y_locked[idx].is_some();
+        if bbox.iter_cells().any(|position| {
+            position.x < 0
+                || position.x >= board.cols() as i32
+                || position.y < 0
+                || position.y >= board.main_rows() as i32
+                || (!allow_channel_crossing && board.at(position.x, position.y).is_none())
+        }) {
+            return true;
+        }
+    }
+
+    if ctx
+        .fixed_bboxes
+        .iter()
+        .any(|fixed| bboxes_overlap_on_hole(&bbox, fixed, board))
+        || ctx
+            .fixed_point_obstacles
+            .iter()
+            .any(|obstacle| bbox.overlaps(obstacle))
+    {
+        return true;
+    }
+
+    (0..state.n()).any(|other| {
+        other != idx
+            && component_world_bbox(state, other, board, ctx)
+                .is_some_and(|other_bbox| bboxes_overlap_on_hole(&bbox, &other_bbox, board))
+    })
+}
+
+fn component_world_bbox(
+    state: &SAState,
+    idx: usize,
+    board: &Breadboard,
+    ctx: &SAContext,
+) -> Option<BBox> {
+    if !state.bridged[idx] {
+        return Some(ctx.comp_infos[idx].world_bbox(
+            state.x[idx],
+            state.y[idx],
+            state.rotation[idx],
+        ));
+    }
+
+    ctx.comp_infos[idx]
+        .bridged_bboxes
+        .as_ref()
+        .and_then(|bboxes| bboxes.get(state.active_bridge_idx[idx]).copied())
+        .or_else(|| {
+            state.active_bridge_pair(idx).map(|pair| {
+                let first = board.hole(pair[0].0).position;
+                let second = board.hole(pair[1].0).position;
+                BBox {
+                    min_x: first.x.min(second.x),
+                    max_x: first.x.max(second.x),
+                    min_y: first.y.min(second.y),
+                    max_y: first.y.max(second.y),
+                }
+            })
+        })
+}
+
+fn bboxes_overlap_on_hole(first: &BBox, second: &BBox, board: &Breadboard) -> bool {
+    if !first.overlaps(second) {
+        return false;
+    }
+    let min_x = first.min_x.max(second.min_x);
+    let max_x = first.max_x.min(second.max_x);
+    let min_y = first.min_y.max(second.min_y);
+    let max_y = first.max_y.min(second.max_y);
+    (min_y..=max_y).any(|y| (min_x..=max_x).any(|x| board.at(x, y).is_some()))
+}
+
 /// bridged 元件: 尝试在 cache 里找 (power+dx, signal+dx), 找不到时按
 /// `dx + sign(dx)` 跳 gap 再试。两次都失败 → 返 `false` (state 不变)。
 ///
@@ -1054,6 +1172,16 @@ pub(super) fn simulate(
         {
             prof_apply_add!(t_apply_start.elapsed().as_nanos() as u64);
         }
+        if has_obvious_shift_or_swap_conflict(&state, &m, board, &ctx) {
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                !state_hard_legal(&state, circuit, board, problem),
+                "geometry prefilter rejected a hard-legal move {m:?}"
+            );
+            metrics.invalid += 1;
+            backup.revert(&mut state);
+            continue;
+        }
         #[cfg(profile_sa)]
         let t_cost_start = std::time::Instant::now();
         let candidate_cost =
@@ -1354,6 +1482,96 @@ mod tests {
         assert_eq!(state.y, vec![4, 1]);
         backup.revert(&mut state);
         assert_state_fields_equal(&state, &before, "SwapPositions");
+    }
+
+    #[test]
+    fn geometry_prefilter_rejects_obvious_shift_and_swap_conflicts_before_cost() {
+        let circuit = simple_circuit();
+        let board = board();
+        let problem = crate::layout::problem::AnnealProblem::default();
+        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
+        let mut ctx = SAContext::new(&circuit, &state.placeable);
+        ctx.fill_bridged_bboxes(&state, &circuit, &board, &[]);
+        ctx.fill_problem(&problem);
+        let mut buf = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
+
+        let out_of_bounds = Move::ShiftX(0, -1);
+        let backup = apply_move(&mut state, &out_of_bounds, &board).unwrap();
+        assert!(has_obvious_shift_or_swap_conflict(
+            &state,
+            &out_of_bounds,
+            &board,
+            &ctx
+        ));
+        assert!(
+            cost_fast_if_legal(
+                &state,
+                &circuit,
+                &board,
+                &[],
+                &Weights::default(),
+                &ctx,
+                &mut buf,
+            )
+            .is_none()
+        );
+        backup.revert(&mut state);
+
+        let body_collision = Move::ShiftX(1, -2);
+        let backup = apply_move(&mut state, &body_collision, &board).unwrap();
+        assert!(has_obvious_shift_or_swap_conflict(
+            &state,
+            &body_collision,
+            &board,
+            &ctx
+        ));
+        assert!(
+            cost_fast_if_legal(
+                &state,
+                &circuit,
+                &board,
+                &[],
+                &Weights::default(),
+                &ctx,
+                &mut buf,
+            )
+            .is_none()
+        );
+        backup.revert(&mut state);
+
+        state.rotation[1] = Rotation::R180;
+        let invalid_swap = Move::SwapPositions(0, 1);
+        let backup = apply_move(&mut state, &invalid_swap, &board).unwrap();
+        assert!(has_obvious_shift_or_swap_conflict(
+            &state,
+            &invalid_swap,
+            &board,
+            &ctx
+        ));
+        backup.revert(&mut state);
+        state.rotation[1] = Rotation::R0;
+
+        let legal_shift = Move::ShiftX(1, 1);
+        let backup = apply_move(&mut state, &legal_shift, &board).unwrap();
+        assert!(!has_obvious_shift_or_swap_conflict(
+            &state,
+            &legal_shift,
+            &board,
+            &ctx
+        ));
+        assert!(
+            cost_fast_if_legal(
+                &state,
+                &circuit,
+                &board,
+                &[],
+                &Weights::default(),
+                &ctx,
+                &mut buf,
+            )
+            .is_some()
+        );
+        backup.revert(&mut state);
     }
 
     #[test]

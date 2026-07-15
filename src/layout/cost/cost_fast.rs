@@ -6,7 +6,7 @@
 
 use crate::circuit::Circuit;
 use crate::layout::breadboard::Breadboard;
-use crate::layout::placement::{BBox, Rotation};
+use crate::layout::placement::BBox;
 use crate::layout::problem::AnnealProblem;
 
 use super::Weights;
@@ -225,34 +225,7 @@ fn cost_fast_inner(
             }
         }
 
-        // BBox: translate precomputed R0 bbox according to rotation
-        let bbox_r0 = &comp_info.bbox_r0;
-        let world_bbox = match state.rotation[idx] {
-            Rotation::R0 => BBox {
-                min_x: bbox_r0.min_x + px,
-                max_x: bbox_r0.max_x + px,
-                min_y: bbox_r0.min_y + py,
-                max_y: bbox_r0.max_y + py,
-            },
-            Rotation::R180 => BBox {
-                min_x: -bbox_r0.max_x + px,
-                max_x: -bbox_r0.min_x + px,
-                min_y: -bbox_r0.max_y + py,
-                max_y: -bbox_r0.min_y + py,
-            },
-            Rotation::R90 => BBox {
-                min_x: -bbox_r0.max_y + px,
-                max_x: -bbox_r0.min_y + px,
-                min_y: bbox_r0.min_x + py,
-                max_y: bbox_r0.max_x + py,
-            },
-            Rotation::R270 => BBox {
-                min_x: bbox_r0.min_y + px,
-                max_x: bbox_r0.max_y + px,
-                min_y: -bbox_r0.max_x + py,
-                max_y: -bbox_r0.min_x + py,
-            },
-        };
+        let world_bbox = comp_info.world_bbox(px, py, state.rotation[idx]);
         let allow_channel_crossing = state.y_locked[idx].is_some();
         if world_bbox.iter_cells().any(|position| {
             position.x < 0
@@ -594,33 +567,7 @@ fn cost_breakdown_inner(
             buf.is_virtual.push(false);
         }
 
-        let bbox_r0 = &comp_info.bbox_r0;
-        let world_bbox = match state.rotation[idx] {
-            Rotation::R0 => BBox {
-                min_x: bbox_r0.min_x + px,
-                max_x: bbox_r0.max_x + px,
-                min_y: bbox_r0.min_y + py,
-                max_y: bbox_r0.max_y + py,
-            },
-            Rotation::R180 => BBox {
-                min_x: -bbox_r0.max_x + px,
-                max_x: -bbox_r0.min_x + px,
-                min_y: -bbox_r0.max_y + py,
-                max_y: -bbox_r0.min_y + py,
-            },
-            Rotation::R90 => BBox {
-                min_x: -bbox_r0.max_y + px,
-                max_x: -bbox_r0.min_y + px,
-                min_y: bbox_r0.min_x + py,
-                max_y: bbox_r0.max_x + py,
-            },
-            Rotation::R270 => BBox {
-                min_x: bbox_r0.min_y + px,
-                max_x: bbox_r0.max_y + px,
-                min_y: -bbox_r0.max_x + py,
-                max_y: -bbox_r0.min_x + py,
-            },
-        };
+        let world_bbox = comp_info.world_bbox(px, py, state.rotation[idx]);
         buf.bboxes.push(Some(world_bbox));
     }
     for &(pin_id, hole_id) in bridged_pins {

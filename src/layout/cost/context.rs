@@ -43,6 +43,38 @@ pub struct CompInfo {
     pub bridged_pair_world: Option<Vec<BridgedPair>>,
 }
 
+impl CompInfo {
+    pub(crate) fn world_bbox(&self, x: i32, y: i32, rotation: Rotation) -> BBox {
+        let bbox = &self.bbox_r0;
+        match rotation {
+            Rotation::R0 => BBox {
+                min_x: bbox.min_x + x,
+                max_x: bbox.max_x + x,
+                min_y: bbox.min_y + y,
+                max_y: bbox.max_y + y,
+            },
+            Rotation::R180 => BBox {
+                min_x: -bbox.max_x + x,
+                max_x: -bbox.min_x + x,
+                min_y: -bbox.max_y + y,
+                max_y: -bbox.min_y + y,
+            },
+            Rotation::R90 => BBox {
+                min_x: -bbox.max_y + x,
+                max_x: -bbox.min_y + x,
+                min_y: bbox.min_x + y,
+                max_y: bbox.max_x + y,
+            },
+            Rotation::R270 => BBox {
+                min_x: bbox.min_y + x,
+                max_x: bbox.max_y + x,
+                min_y: -bbox.max_x + y,
+                max_y: -bbox.min_x + y,
+            },
+        }
+    }
+}
+
 /// SA 上下文: 预计算数据 + reusable buffers。
 /// 在 simulate() 入口构造一次, 所有 cost 调用复用。
 pub struct SAContext {
