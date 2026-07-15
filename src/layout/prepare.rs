@@ -243,4 +243,39 @@ mod tests {
         assert_eq!(binding.negative, Some(NetId(0)));
         assert!(prepared.bridgeable_components.is_empty());
     }
+
+    #[test]
+    fn repeated_prepare_recomputes_bridgeability_from_current_binding() {
+        let mut circuit = power_and_signal_circuit();
+
+        let first = prepare_for_layout_with_power_nets(
+            &mut circuit,
+            super::super::Preset::Hole400.make(30),
+            Some("VCC"),
+            None,
+        );
+        assert_eq!(first.bridgeable_components, vec![ComponentId(0)]);
+        assert!(circuit.components()[0].bridgeable);
+
+        let changed = prepare_for_layout_with_power_nets(
+            &mut circuit,
+            super::super::Preset::Hole400.make(30),
+            Some("VCC"),
+            Some("SIGNAL"),
+        );
+        assert!(
+            changed.bridgeable_components.is_empty(),
+            "两只脚都属于当前 power nets 时不能残留上一次的 eligibility"
+        );
+        assert!(!circuit.components()[0].bridgeable);
+
+        let repeated = prepare_for_layout_with_power_nets(
+            &mut circuit,
+            super::super::Preset::Hole400.make(30),
+            Some("VCC"),
+            None,
+        );
+        assert_eq!(repeated.bridgeable_components, first.bridgeable_components);
+        assert!(circuit.components()[0].bridgeable);
+    }
 }

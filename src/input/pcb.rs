@@ -182,6 +182,9 @@ pub fn split_footprint_ref(footprint_ref: &str) -> (&str, &str) {
 /// 规则: 2 pin + (一 pin 属于 power net) XOR (另一 pin 属于 power net) = true。
 pub fn auto_mark_bridgeable(circuit: &mut Circuit, power_net_names: &[&str]) {
     for comp in &mut circuit.components {
+        // eligibility 是当前 power binding 的派生值；每次调用都必须从 false 重算，
+        // 不能让上一次 prepare 的 true 残留。
+        comp.bridgeable = false;
         if comp.pins.len() != 2 {
             continue;
         }
@@ -192,9 +195,7 @@ pub fn auto_mark_bridgeable(circuit: &mut Circuit, power_net_names: &[&str]) {
         let name2 = circuit.nets[n2.0].name();
         let n1_is_power = power_net_names.contains(&name1);
         let n2_is_power = power_net_names.contains(&name2);
-        if n1_is_power != n2_is_power {
-            comp.bridgeable = true;
-        }
+        comp.bridgeable = n1_is_power != n2_is_power;
     }
 }
 

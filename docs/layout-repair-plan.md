@@ -391,6 +391,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R6. 让 bridge eligibility 每次 prepare 都从零重算
 
+- 实施状态：**已完成**（2026-07-15）。T12 已先复现同一 Circuit 更换 power binding 后 `bridgeable=true` 残留；`auto_mark_bridgeable` 现在每次先清零再按当前 nets 重算，同 binding 重复 prepare 幂等。手工 override 的明确优先级是“最后一次 preparation 之后设置”。
 - 对应：A12。
 - 依赖：R5 后初始化契约稳定；必须早于 bridge policy 修复。
 - 最小失败测试：T12。

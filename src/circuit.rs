@@ -75,8 +75,8 @@ pub struct Component {
     /// 是否真的走 [`Placement::Bridged`] 由 [`Layout::place_sa`] 内的
     /// `ToggleBridging` 扰动决定。
     /// 由 pcb 解析层的 [`crate::input::pcb::auto_mark_bridgeable`]
-    /// 自动设定 (规则: 2 pin + 一腿 power net + 另一腿 signal net),
-    /// 也可以手动 override。
+    /// 按当前 power binding 从零重算 (规则: 2 pin + 一腿 power net + 另一腿 signal net)。
+    /// 若调用方需要手动 override，应在最后一次 layout preparation 之后设置。
     pub bridgeable: bool,
 }
 
