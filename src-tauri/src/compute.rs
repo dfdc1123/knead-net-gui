@@ -220,17 +220,17 @@ pub async fn start_compute(
         .map_err(|e| e.to_string())? = Some(cancellation.clone());
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        run_compute(
-            app.clone(),
+        run_compute(ComputeJob {
+            app: app.clone(),
             run_id,
-            &pcb_path,
+            pcb_path,
             schematic_metadata,
-            board_config.board,
-            board_config.positive_net,
-            board_config.negative_net,
+            board: board_config.board,
+            positive_net: board_config.positive_net,
+            negative_net: board_config.negative_net,
             request,
             cancellation,
-        )
+        })
         .inspect_err(|error| {
             let _ = app.emit(
                 PROGRESS_EVENT,
@@ -255,20 +255,33 @@ pub async fn start_compute(
     result
 }
 
-fn run_compute(
+struct ComputeJob {
     app: AppHandle,
     run_id: u64,
-    pcb_path: &str,
+    pcb_path: String,
     schematic_metadata: ComponentMetadataMap,
     board: Breadboard,
     positive_net: Option<String>,
     negative_net: Option<String>,
     request: ComputeRequest,
     cancellation: CancellationToken,
-) -> Result<(), String> {
+}
+
+fn run_compute(job: ComputeJob) -> Result<(), String> {
+    let ComputeJob {
+        app,
+        run_id,
+        pcb_path,
+        schematic_metadata,
+        board,
+        positive_net,
+        negative_net,
+        request,
+        cancellation,
+    } = job;
     let locale = request.locale;
     let started = Instant::now();
-    let text = fs::read_to_string(pcb_path).map_err(|e| {
+    let text = fs::read_to_string(&pcb_path).map_err(|e| {
         format!(
             "{}: {e}",
             locale.text("读取 PCB 失败", "Failed to read PCB")
