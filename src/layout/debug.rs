@@ -121,7 +121,7 @@ fn inspect_state_pins(
             if let Some(pair) = state.active_bridge_pair(idx) {
                 for &(hole_id, pin_id) in &pair {
                     let pos = board.hole(hole_id).position;
-                    let rail_id = board.rail_id_of(hole_id);
+                    let rail_id = board.effective_rail_id_of(hole_id);
                     let net = circuit.pins[pin_id.0].net;
                     all_pins.push(PinInfo {
                         comp_id,
@@ -154,7 +154,7 @@ fn inspect_state_pins(
                 let abs_y = py + offset.y;
                 let rail_id = board
                     .at(abs_x, abs_y)
-                    .map(|h| board.rail_id_of(h))
+                    .map(|h| board.effective_rail_id_of(h))
                     .unwrap_or(u32::MAX);
                 all_pins.push(PinInfo {
                     comp_id,
@@ -171,7 +171,7 @@ fn inspect_state_pins(
     // 加上 手动 Bridged 的 pin (放在 Layout 里的, 从 Layout.bridged_pins() 推进)。
     for &(pin_id, hole_id) in bridged_pins {
         let pos = board.hole(hole_id).position;
-        let rail_id = board.rail_id_of(hole_id);
+        let rail_id = board.effective_rail_id_of(hole_id);
         all_pins.push(PinInfo {
             comp_id: circuit.pins[pin_id.0].component,
             pin_num: circuit.pins[pin_id.0].num.clone(),
@@ -186,7 +186,7 @@ fn inspect_state_pins(
         for (polarity, net_id) in binding.iter() {
             if let Some(anchor) = board.power_rail_anchor(polarity) {
                 let pos = board.hole(anchor).position;
-                let rail_id = board.rail_id_of(anchor);
+                let rail_id = board.effective_rail_id_of(anchor);
                 all_pins.push(PinInfo {
                     comp_id: ComponentId(0), // dummy; 虚拟 pin 由 pin_num 标识
                     pin_num: format!("<virtual anchor {:?}>", polarity),

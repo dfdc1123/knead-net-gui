@@ -651,7 +651,7 @@ fn snapshot_frame(
         });
     }
 
-    let wires = if snapshot.wires.is_empty() {
+    let mut wires = if snapshot.wires.is_empty() {
         air_wires(circuit, &pin_holes)
     } else {
         snapshot
@@ -668,6 +668,38 @@ fn snapshot_frame(
             })
             .collect()
     };
+    wires.extend(board.rail_ties().iter().map(|tie| {
+        let polarity = board
+            .power_rail_of(tie.from)
+            .expect("preset RailTie endpoint must be on a power rail")
+            .polarity;
+        let bound_net = board.power_rail_binding().and_then(|binding| {
+            binding
+                .iter()
+                .find_map(|(candidate, net)| (candidate == polarity).then_some(net))
+        });
+        let bound_name = bound_net
+            .filter(|net| net.raw() < circuit.nets().len())
+            .map(|net| circuit.nets()[net.raw()].name().to_string());
+        let polarity_name = match polarity {
+            knead_net::Polarity::Negative => "negative",
+            knead_net::Polarity::Positive => "positive",
+        };
+        LayoutWire {
+            id: format!("rail-tie:{}", tie.key),
+            from: display_hole(board, tie.from),
+            to: display_hole(board, tie.to),
+            color: match polarity {
+                knead_net::Polarity::Negative => "#2f6fbd",
+                knead_net::Polarity::Positive => "#c83434",
+            },
+            kind: "rail-tie",
+            net_id: bound_name
+                .clone()
+                .unwrap_or_else(|| format!("power-rail-{polarity_name}")),
+            net_name: bound_name.unwrap_or_else(|| format!("{polarity_name} power-rail tie")),
+        }
+    }));
 
     LayoutFrame {
         parts,
@@ -887,5 +919,36 @@ mod tests {
             assert_eq!(config.cool_rate, 0.99999);
             assert!(config.use_spectral);
         }
+    }
+
+    #[test]
+    fn snapshot_frame_exposes_preset_rail_ties() {
+        let circuit = Circuit::empty();
+        let board = Breadboard::standard();
+        let metadata = ComponentMetadataMap::new();
+        let frame = snapshot_frame(
+            &LayoutSnapshot {
+                placements: Vec::new(),
+                wires: Vec::new(),
+            },
+            &circuit,
+            &board,
+            &metadata,
+            None,
+            None,
+        );
+
+        let rail_ties: Vec<_> = frame
+            .wires
+            .iter()
+            .filter(|wire| wire.kind == "rail-tie")
+            .collect();
+        assert_eq!(rail_ties.len(), 2);
+        assert!(rail_ties
+            .iter()
+            .any(|wire| wire.id == "rail-tie:preset:negative:top-bottom"));
+        assert!(rail_ties
+            .iter()
+            .any(|wire| wire.id == "rail-tie:preset:positive:top-bottom"));
     }
 }

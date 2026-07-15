@@ -841,9 +841,9 @@ fn bridged_cross_rail_to_main_routes_correctly() {
         positive: Some(NetId(0)),
         negative: Some(NetId(0)),
     });
-    // pin 1 (主区) 在 (5, 0), pin 2 (负极轨) 在 (0, -4)
+    // pin 1 (主区) 在 (5, 0), pin 2 (负极轨) 在 (1, -4)；x=0 被默认 tie 占用。
     let h_main = board.at(5, 0).unwrap();
-    let h_rail = board.at(0, -4).unwrap();
+    let h_rail = board.at(1, -4).unwrap();
     let placement = Placement::Bridged {
         pin_holes: [(h_main, PinId(0)), (h_rail, PinId(1))],
     };
@@ -858,19 +858,19 @@ fn bridged_cross_rail_to_main_routes_correctly() {
     };
     let wires = router.route(circuit, &board, &occ, &layout.bridged_pins());
 
-    // 验证: 没有任何 wire 走到 (0, -4) (rail 端点已经被 pin 占, 不能 wire)
+    // 验证: 没有任何 wire 走到 (1, -4) (rail 端点已经被 pin 占, 不能 wire)
     for w in &wires {
         let p1 = board.hole(w.from).position;
         let p2 = board.hole(w.to).position;
-        // 都不该是 (0, -4) 这个孔
+        // 都不该是 (1, -4) 这个孔
         assert!(
-            !(p1.x == 0 && p1.y == -4),
-            "wire 端点不该在 rail 孔 (rail 上都是短接, 0, -4): {:?}",
+            !(p1.x == 1 && p1.y == -4),
+            "wire 端点不该在已占用 rail 孔 (1, -4): {:?}",
             p1
         );
         assert!(
-            !(p2.x == 0 && p2.y == -4),
-            "wire 端点不该在 rail 孔 (rail 上都是短接, 0, -4): {:?}",
+            !(p2.x == 1 && p2.y == -4),
+            "wire 端点不该在已占用 rail 孔 (1, -4): {:?}",
             p2
         );
     }
@@ -941,7 +941,7 @@ fn bridged_body_cells_are_marked_blocked() {
         negative: Some(NetId(0)),
     });
     let h_main = board.at(5, 0).unwrap();
-    let h_rail = board.at(0, -4).unwrap();
+    let h_rail = board.at(1, -4).unwrap();
     let placement = Placement::Bridged {
         pin_holes: [(h_main, PinId(0)), (h_rail, PinId(1))],
     };
@@ -953,8 +953,8 @@ fn bridged_body_cells_are_marked_blocked() {
     assert!(matches!(occ.occupant_at(h_main), Some(Occupant::Pin(_))));
     assert!(matches!(occ.occupant_at(h_rail), Some(Occupant::Pin(_))));
 
-    // body 中间 (1..=4, 0) 这些 main board 格应是 Blocked (R1)
-    for x in 1..=4 {
+    // body 中间 (2..=4, 0) 这些 main board 格应是 Blocked (R1)
+    for x in 2..=4 {
         let h = board.at(x, 0).unwrap();
         assert!(
             matches!(occ.occupant_at(h), Some(Occupant::Blocked(_))),
@@ -963,7 +963,7 @@ fn bridged_body_cells_are_marked_blocked() {
         );
     }
     // body 在 rail 行 (-4) 那些格也应是 Blocked
-    for x in 1..=4 {
+    for x in 2..=4 {
         let h = board.at(x, -4).unwrap();
         assert!(
             matches!(occ.occupant_at(h), Some(Occupant::Blocked(_))),
@@ -971,7 +971,7 @@ fn bridged_body_cells_are_marked_blocked() {
             occ.occupant_at(h)
         );
     }
-    // (0, -3) / (0, -2) / (0, -1) 是 gap row, 不存在 hole, 不检查
+    // (1, -3) / (1, -2) / (1, -1) 是 gap row, 不存在 hole, 不检查
 }
 
 /// 关键: 2D 状态下, 18 元件 30x5 板不应再出 OOB (以前 sequential x 会塞不下)

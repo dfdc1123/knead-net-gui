@@ -81,7 +81,8 @@ pub(crate) fn propose_bridged_pairs(
     let matching: Vec<HoleId> = all_power_holes
         .iter()
         .copied()
-        .filter(|h| matching_rail_ids.contains(&board.rail_id_of(*h)))
+        .filter(|h| matching_rail_ids.contains(&board.effective_rail_id_of(*h)))
+        .filter(|h| board.rail_tie_at(*h).is_none())
         .collect();
 
     let mut out = Vec::new();
@@ -132,8 +133,10 @@ pub(super) fn collect_matching_rail_ids(
         if net_id != pin_net {
             continue;
         }
-        if let Some(anchor) = board.power_rail_anchor(polarity) {
-            ids.insert(board.rail_id_of(anchor));
+        if let Some(anchors) = board.power_rail_anchors(polarity) {
+            for anchor in anchors {
+                ids.insert(board.effective_rail_id_of(anchor));
+            }
         }
     }
     ids

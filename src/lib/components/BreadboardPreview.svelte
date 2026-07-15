@@ -60,6 +60,31 @@
     return result;
   }
 
+  function presetRailTies(kind: BreadboardPreset): LayoutWire[] {
+    if (kind === "hole170") return [];
+    const col = kind === "hole800" ? 2 : 0;
+    return [
+      {
+        id: "rail-tie:preset:negative:top-bottom",
+        from: { region: "rail-top", col, row: 0 },
+        to: { region: "rail-bottom", col, row: 0 },
+        color: "#2f6fbd",
+        kind: "rail-tie",
+        net_id: "power-rail-negative",
+        net_name: "negative power-rail tie",
+      },
+      {
+        id: "rail-tie:preset:positive:top-bottom",
+        from: { region: "rail-top", col, row: 1 },
+        to: { region: "rail-bottom", col, row: 1 },
+        color: "#c83434",
+        kind: "rail-tie",
+        net_id: "power-rail-positive",
+        net_name: "positive power-rail tie",
+      },
+    ];
+  }
+
   let safeCols = $derived(Math.max(1, Math.trunc(Number(cols) || 1)));
   let isMini = $derived(preset === "hole170");
   let xInset = $derived(isMini ? 12.2 : 18.2);
@@ -193,7 +218,13 @@
     return plans;
   }
 
-  let plannedWires = $derived(planWires(frame?.wires ?? []));
+  let visibleWires = $derived.by(() => {
+    const wires = frame?.wires ?? [];
+    return wires.some((wire) => wire.kind === "rail-tie")
+      ? wires
+      : [...wires, ...presetRailTies(preset)];
+  });
+  let plannedWires = $derived(planWires(visibleWires));
 
   function wirePath(plan: PlannedWire) {
     const { from, to } = plan;
@@ -739,7 +770,7 @@
       </g>
     {/if}
 
-    {#if frame}
+    {#if frame || plannedWires.length > 0}
       <g aria-label={ui.boardPreview.wires}>
         {#each plannedWires as planned (planned.wire.id)}
           {@const wire = planned.wire}
@@ -758,9 +789,9 @@
             <path
               d={path}
               fill="none"
-              stroke={wire.kind === "routed" ? wire.color ?? "var(--color-primary)" : "var(--color-neutral)"}
-              stroke-width={(selected?.type === "wire" && selected.id === wire.id) || (selected?.type === "net" && selected.id === wire.net_id) ? 5 : completed ? 3 : wire.kind === "routed" ? 2.2 : 1.2}
-              stroke-dasharray={wire.kind !== "routed" || !completed ? "5 4" : undefined}
+              stroke={wire.kind === "air" ? "var(--color-neutral)" : wire.color ?? "var(--color-primary)"}
+              stroke-width={(selected?.type === "wire" && selected.id === wire.id) || (selected?.type === "net" && selected.id === wire.net_id) ? 5 : completed ? 3 : wire.kind === "rail-tie" ? 2.8 : wire.kind === "routed" ? 2.2 : 1.2}
+              stroke-dasharray={wire.kind === "air" || !completed ? "5 4" : undefined}
               stroke-linecap="round"
               opacity={selected ? ((selected.type === "wire" && selected.id === wire.id) || (selected.type === "net" && selected.id === wire.net_id) ? 1 : 0.14) : completed ? 0.95 : 0.38}
               pointer-events="none"
@@ -778,6 +809,7 @@
         {/each}
       </g>
 
+      {#if frame}
       <g aria-label={ui.boardPreview.components}>
         {#each frame.parts as part (part.id)}
           {@const bounds = partBounds(part)}
@@ -968,6 +1000,7 @@
             </g>
           </g>
         {/if}
+      {/if}
       {/if}
     {/if}
   </svg>

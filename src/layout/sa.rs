@@ -1382,17 +1382,17 @@ mod tests {
         let (_circuit, board) = bridgable_fixture();
         let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
 
-        // 找到一个 power x=0 的候选 (起点 left edge), dx=-1 越界;
-        // dx+sign(dx) = -2 依然越界。 两跳都不命中 → 拒绝。
-        let target0 = state.bridged_pin_pairs[0]
+        // x=0 被 preset RailTie 占用，不在 catalog。找到最左 x=1 候选，
+        // dx=-2 及 gap fallback -3 都越界，必须拒绝。
+        let target1 = state.bridged_pin_pairs[0]
             .iter()
-            .position(|pair| board.hole(pair[0].0).position.x == 0)
-            .expect("应能找到 power x=0 的候选");
-        state.active_bridge_idx[0] = target0;
+            .position(|pair| board.hole(pair[0].0).position.x == 1)
+            .expect("应能找到最左可用 power x=1 的候选");
+        state.active_bridge_idx[0] = target1;
         let active_before = state.active_bridge_idx[0];
 
-        let ok = try_bridged_shift_x(&mut state, &board, 0, -1);
-        assert!(!ok, "dx = -1 越界 + 跳 dx = -2 依然越界, 必须返 false");
+        let ok = try_bridged_shift_x(&mut state, &board, 0, -2);
+        assert!(!ok, "dx = -2 越界 + fallback 依然越界, 必须返 false");
         assert_eq!(
             state.active_bridge_idx[0], active_before,
             "active_bridge_idx 不应被改"
@@ -1449,16 +1449,16 @@ mod tests {
         assert!(!can_shift_left_one(&state, &board, 0));
 
         // Bridged 模式: cache 里有 (power.x-1, signal.x-1) → 可;
-        // 没有 (起点为 x=0 dx=-1 越界) → 不可。
+        // x=0 是 RailTie 端点，不在 cache；最左可用 x=1 不可左移。
         state.bridged[0] = true;
-        let target0 = state.bridged_pin_pairs[0]
+        let target1 = state.bridged_pin_pairs[0]
             .iter()
-            .position(|pair| board.hole(pair[0].0).position.x == 0)
-            .expect("power x=0 candidate");
-        state.active_bridge_idx[0] = target0;
+            .position(|pair| board.hole(pair[0].0).position.x == 1)
+            .expect("power x=1 candidate");
+        state.active_bridge_idx[0] = target1;
         assert!(
             !can_shift_left_one(&state, &board, 0),
-            "bridged 起点 x=0 无 -1 cache 命中"
+            "bridged 起点 x=1 的左侧是固定 RailTie 端点，无 cache 命中"
         );
 
         // 切到非 gap 边缘的 bridge (power x=3, 同 group):

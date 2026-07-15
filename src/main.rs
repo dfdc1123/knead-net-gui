@@ -299,6 +299,7 @@ fn main() {
                 }
             }
             Occupant::Wire(wire_id) => format!("wire #{}", wire_id.raw()),
+            Occupant::RailTie(tie_id) => format!("rail tie #{}", tie_id.raw()),
             Occupant::Blocked(cid) => {
                 let comp = &circuit.components()[cid.raw()];
                 format!("body of {}", comp.ref_())

@@ -128,7 +128,7 @@ impl Router for PathFinderRouter {
                 .filter_map(|p| {
                     let h = pin_hole.get(p)?;
                     let pos = board.hole(*h).position;
-                    let rail_id = board.rail_id_of(*h);
+                    let rail_id = board.effective_rail_id_of(*h);
                     Some((pos.x, pos.y, rail_id))
                 })
                 .collect();
@@ -144,7 +144,7 @@ impl Router for PathFinderRouter {
                 && (net.0) < net_pins.len()
             {
                 let pos = board.hole(hole_id).position;
-                let rail_id = board.rail_id_of(hole_id);
+                let rail_id = board.effective_rail_id_of(hole_id);
                 net_pins[net.0].push((pos.x, pos.y, rail_id));
                 net_pins[net.0].sort_by_key(|&(x, y, r)| (r, x, y));
                 net_pins[net.0].dedup_by_key(|&mut (_, _, r)| r);
@@ -154,15 +154,16 @@ impl Router for PathFinderRouter {
         // ── 注入 power rail anchor ──
         if let Some(binding) = board.power_rail_binding() {
             for (polarity, net_id) in binding.iter() {
-                if (net_id.0) < net_pins.len()
-                    && let Some(anchor) = board.power_rail_anchor(polarity)
-                {
-                    let pos = board.hole(anchor).position;
-                    let rail_id = board.rail_id_of(anchor);
-                    net_pins[net_id.0].push((pos.x, pos.y, rail_id));
-                    net_pins[net_id.0].sort_by_key(|&(x, y, r)| (r, x, y));
-                    net_pins[net_id.0].dedup_by_key(|&mut (_, _, r)| r);
+                if (net_id.0) >= net_pins.len() {
+                    continue;
                 }
+                for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
+                    let pos = board.hole(anchor).position;
+                    let rail_id = board.effective_rail_id_of(anchor);
+                    net_pins[net_id.0].push((pos.x, pos.y, rail_id));
+                }
+                net_pins[net_id.0].sort_by_key(|&(x, y, r)| (r, x, y));
+                net_pins[net_id.0].dedup_by_key(|&mut (_, _, r)| r);
             }
         }
 
@@ -178,7 +179,7 @@ impl Router for PathFinderRouter {
                     let Some(&hole) = pin_hole.get(pin_id) else {
                         continue;
                     };
-                    let rail = board.rail_id_of(hole);
+                    let rail = board.effective_rail_id_of(hole);
                     comp_pin_rails
                         .entry((pin.component(), pin.num().to_string()))
                         .or_default()
@@ -438,8 +439,14 @@ fn assign_and_negotiate(
 fn find_hub_rails(wires: &[(HoleId, HoleId)], board: &Breadboard) -> HashMap<u32, Vec<usize>> {
     let mut rail_wires: HashMap<u32, Vec<usize>> = HashMap::new();
     for (wi, &(ha, hb)) in wires.iter().enumerate() {
-        rail_wires.entry(board.rail_id_of(ha)).or_default().push(wi);
-        rail_wires.entry(board.rail_id_of(hb)).or_default().push(wi);
+        rail_wires
+            .entry(board.effective_rail_id_of(ha))
+            .or_default()
+            .push(wi);
+        rail_wires
+            .entry(board.effective_rail_id_of(hb))
+            .or_default()
+            .push(wi);
     }
     rail_wires.retain(|_, v| v.len() >= 2);
     rail_wires
@@ -489,7 +496,7 @@ fn negotiate_rail(args: NegotiateRailArgs<'_>) -> bool {
     for &wi in wire_indices {
         if wi >= edge_pairs_len {
             let (ha, hb) = wires[wi];
-            if board.rail_id_of(ha) == rail_id {
+            if board.effective_rail_id_of(ha) == rail_id {
                 relay_holes.insert(ha);
             } else {
                 relay_holes.insert(hb);
@@ -508,7 +515,7 @@ fn negotiate_rail(args: NegotiateRailArgs<'_>) -> bool {
     let mut ctxs: Vec<WireCtx> = Vec::with_capacity(k);
     for &wi in &native_indices {
         let (ha, hb) = wires[wi];
-        if board.rail_id_of(ha) == rail_id {
+        if board.effective_rail_id_of(ha) == rail_id {
             let tother = board.hole(hb);
             ctxs.push(WireCtx {
                 wire_idx: wi,
@@ -720,13 +727,17 @@ fn optimize_solo_endpoints(
     // 先统计每个 rail 有几根线
     let mut rail_count: HashMap<u32, usize> = HashMap::new();
     for &(ha, hb) in wires.iter() {
-        *rail_count.entry(board.rail_id_of(ha)).or_default() += 1;
-        *rail_count.entry(board.rail_id_of(hb)).or_default() += 1;
+        *rail_count
+            .entry(board.effective_rail_id_of(ha))
+            .or_default() += 1;
+        *rail_count
+            .entry(board.effective_rail_id_of(hb))
+            .or_default() += 1;
     }
 
     for w in wires.iter_mut() {
-        let ra = board.rail_id_of(w.0);
-        let rb = board.rail_id_of(w.1);
+        let ra = board.effective_rail_id_of(w.0);
+        let rb = board.effective_rail_id_of(w.1);
 
         // 如果 col A 只有这根线, 优化 A 端
         if rail_count.get(&ra).copied().unwrap_or(0) == 1 {
@@ -772,8 +783,14 @@ fn find_congested_main_rail(
 ) -> Option<(u32, Vec<usize>)> {
     let mut rail_wires: HashMap<u32, Vec<usize>> = HashMap::new();
     for (wi, &(ha, hb)) in wires.iter().enumerate() {
-        rail_wires.entry(board.rail_id_of(ha)).or_default().push(wi);
-        rail_wires.entry(board.rail_id_of(hb)).or_default().push(wi);
+        rail_wires
+            .entry(board.effective_rail_id_of(ha))
+            .or_default()
+            .push(wi);
+        rail_wires
+            .entry(board.effective_rail_id_of(hb))
+            .or_default()
+            .push(wi);
     }
 
     for (&rail_id, indices) in &rail_wires {
@@ -781,7 +798,10 @@ fn find_congested_main_rail(
             continue;
         }
         // 只处理 main rail
-        let hole = board.holes().iter().find(|h| h.rail_id == rail_id)?;
+        let hole = board
+            .holes()
+            .iter()
+            .find(|h| board.effective_rail_id_of(h.id) == rail_id)?;
         if !matches!(hole.region, super::Region::MainRail) {
             continue;
         }
@@ -815,7 +835,7 @@ fn expand_congested_rail(
     let anchor = board
         .holes()
         .iter()
-        .find(|h| h.rail_id == rail_id)
+        .find(|h| board.effective_rail_id_of(h.id) == rail_id)
         .expect("congested rail must exist");
     let hub_col = anchor.position.x;
     let hub_row = anchor.position.y;
@@ -835,7 +855,7 @@ fn expand_congested_rail(
     let Some(empty_hole) = board.at(empty_col, row_lo) else {
         return false;
     };
-    let empty_rail_id = board.rail_id_of(empty_hole);
+    let empty_rail_id = board.effective_rail_id_of(empty_hole);
 
     // 拉 relay 线: hub ↔ 空列
     let hub_hole = holes[0];
@@ -850,15 +870,15 @@ fn expand_congested_rail(
     let mut cands: Vec<MoveCand> = Vec::new();
     for &wi in wire_indices {
         let (ha, hb) = wires[wi];
-        let target_rail = if board.rail_id_of(ha) == rail_id {
-            board.rail_id_of(hb)
+        let target_rail = if board.effective_rail_id_of(ha) == rail_id {
+            board.effective_rail_id_of(hb)
         } else {
-            board.rail_id_of(ha)
+            board.effective_rail_id_of(ha)
         };
         let target_col = board
             .holes()
             .iter()
-            .find(|h| h.rail_id == target_rail)
+            .find(|h| board.effective_rail_id_of(h.id) == target_rail)
             .map(|h| h.position.x)
             .unwrap_or(hub_col);
         cands.push(MoveCand {
@@ -878,7 +898,7 @@ fn expand_congested_rail(
     for cand in cands.iter().take(to_move) {
         let wi = cand.wire_idx;
         let (ha, hb) = wires[wi];
-        let is_from_hub = board.rail_id_of(ha) == rail_id;
+        let is_from_hub = board.effective_rail_id_of(ha) == rail_id;
         let other = if is_from_hub { hb } else { ha };
         let new_hole = pick_best_hole_in_rail(empty_rail_id, other, board, occupancy, history);
         if is_from_hub {
@@ -1005,11 +1025,15 @@ fn best_wire(
 
 /// 一个短路集合 (vertical rail 或 power rail) 的所有空孔。
 fn empty_holes_in_rail(rail_id: u32, board: &Breadboard, occupancy: &Occupancy) -> Vec<HoleId> {
-    let Some(anchor) = board.holes().iter().find(|h| h.rail_id == rail_id) else {
+    let Some(anchor) = board
+        .holes()
+        .iter()
+        .find(|h| board.effective_rail_id_of(h.id) == rail_id)
+    else {
         return Vec::new();
     };
     board
-        .connected_to(anchor.id)
+        .effectively_connected_to(anchor.id)
         .into_iter()
         .filter(|&id| occupancy.can_place_pin(id))
         .collect()
@@ -1027,7 +1051,7 @@ mod tests {
         PinId, Position,
     };
     use crate::layout::Layout;
-    use crate::layout::breadboard::PowerRailBinding;
+    use crate::layout::breadboard::{PowerRailBinding, standard_power_rails};
     use crate::layout::placement::{Placement, Rotation};
 
     fn board() -> Breadboard {
@@ -1514,6 +1538,20 @@ mod tests {
         assert!(
             dx + dy <= 8,
             "jumper 长度应该合理, dx={dx} dy={dy}, main={main_pos:?} rail={rail_pos:?}"
+        );
+
+        let untied_board = Breadboard::with_power_rails(30, 12, [5, 6], standard_power_rails(30))
+            .with_power_rail_binding(PowerRailBinding {
+                positive: None,
+                negative: Some(NetId(0)),
+            });
+        let untied_occupancy = layout.occupancy(&untied_board).unwrap();
+        let untied_wires =
+            PathFinderRouter::default().route(circuit, &untied_board, &untied_occupancy, &[]);
+        assert_eq!(
+            untied_wires.len(),
+            2,
+            "无 RailTie 时同一 binding 必须分别连接 top/bottom 两个 islands"
         );
     }
 

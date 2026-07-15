@@ -625,7 +625,7 @@
                             aria-hidden="true"
                           ></span>
                           <span class="truncate text-sm font-medium {completed ? 'line-through opacity-60' : ''}">
-                            {ui.step4.wireLabel(wireNumber)} · {wire.net_name || wire.net_id || ui.common.placeholder}
+                            {wire.kind === "rail-tie" ? ui.step4.railTieLabel(wireNumber) : ui.step4.wireLabel(wireNumber)} · {wire.net_name || wire.net_id || ui.common.placeholder}
                           </span>
                         </span>
                         <span class="mt-0.5 block font-mono text-xs text-base-content/55">

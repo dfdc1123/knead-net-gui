@@ -146,8 +146,8 @@ impl SAContext {
                     max_y: p0.y.max(p1.y),
                 });
                 // pin world (x, y, rail_id, net) × 2
-                let r0 = board.rail_id_of(pair[0].0);
-                let r1 = board.rail_id_of(pair[1].0);
+                let r0 = board.effective_rail_id_of(pair[0].0);
+                let r1 = board.effective_rail_id_of(pair[1].0);
                 let n0 = circuit.pins[pair[0].1.0].net;
                 let n1 = circuit.pins[pair[1].1.0].net;
                 worlds.push([(p0.x, p0.y, r0, n0), (p1.x, p1.y, r1, n1)]);
@@ -161,7 +161,7 @@ impl SAContext {
         for &(pin_id, hole_id) in bridged_pins {
             let pin = &circuit.pins[pin_id.0];
             let pos = board.hole(hole_id).position;
-            let rail_id = board.rail_id_of(hole_id);
+            let rail_id = board.effective_rail_id_of(hole_id);
             self.external_bridged_world
                 .push((pos.x, pos.y, rail_id, pin.net));
         }
@@ -170,10 +170,14 @@ impl SAContext {
         self.power_anchor_world.clear();
         self.power_anchor_nets.clear();
         if let Some(binding) = board.power_rail_binding() {
+            let mut seen = std::collections::HashSet::new();
             for (polarity, net_id) in binding.iter() {
-                if let Some(anchor) = board.power_rail_anchor(polarity) {
+                for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
                     let pos = board.hole(anchor).position;
-                    let rail_id = board.rail_id_of(anchor);
+                    let rail_id = board.effective_rail_id_of(anchor);
+                    if !seen.insert((rail_id, net_id)) {
+                        continue;
+                    }
                     self.power_anchor_world.push((pos.x, pos.y, rail_id));
                     self.power_anchor_nets.push(Some(net_id));
                 }

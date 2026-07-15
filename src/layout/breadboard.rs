@@ -5,14 +5,15 @@
 //!    中间可能有物理占位的 blocked row (面包板中央通道的简化)。
 //!    同列内一段连续的非 blocked 行是**纵向 rail** (面包板内部纵向短接)。
 //! 2. **power rails** — 板子上下两端各一组横条。每组两条 (上面负极, 下面正极),
-//!    每条由若干个 group 组成, 每个 group 内的孔横向短接 (面包板内部短接)。
+//!    每条由若干个 5 孔 group 组成。group 只是孔位分组; 同一整行由连续导体
+//!    天然短接。
 //!
 //! 短路关系用 `rail_id` 统一表达:
 //! - main board 内的纵向 rail: 每个 (col, vertical_rail_top) 一个 rail_id
-//! - power rail 行: 同一**极性**的所有行 (top + bottom 两行) 共享一个 rail_id
-//!   (负 1 个, 正 1 个)
+//! - power rail: 每条完整的 top/bottom 行各有一个 rail_id
 //!
-//! 两个孔 `rail_id` 相同就内部短接 (距离 0), 不同就走 Manhattan。
+//! `rail_id` 只表示板内导体。top/bottom 的外部短接由显式 [`RailTie`] 表示;
+//! 算法消费者通过 effective-connectivity 查询同时考虑两者。
 //!
 //! 坐标空间 (以下图示基于 `Breadboard::standard()` 配置 (30×12 main, blocked_rows=[5,6]);
 //! 其它尺寸板的 row / col 数不同但电源轨排布结构一致):
@@ -73,6 +74,60 @@ pub enum Polarity {
     Negative,
 }
 
+/// 面包板内部一片连续导体的稳定标识。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ConductiveIslandId(u32);
+
+impl ConductiveIslandId {
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// 布局内一条外部电源轨短接线的索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RailTieId(usize);
+
+impl RailTieId {
+    pub fn raw(self) -> usize {
+        self.0
+    }
+}
+
+/// RailTie 的来源只影响展示与“恢复默认值”，不影响电气语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RailTieSource {
+    Preset,
+    User,
+}
+
+/// 显式连接两个 conductive islands 的真实外部导体。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailTie {
+    pub id: RailTieId,
+    /// 用于 GUI/serialization 的稳定语义 id。
+    pub key: String,
+    pub from: HoleId,
+    pub to: HoleId,
+    pub source: RailTieSource,
+    pub label: Option<String>,
+}
+
+impl RailTie {
+    pub fn contacts(&self) -> [HoleId; 2] {
+        [self.from, self.to]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RailTieError {
+    UnknownHole { hole: HoleId },
+    NonPowerRail { hole: HoleId },
+    SameIsland { from: HoleId, to: HoleId },
+    DuplicateEndpoint { hole: HoleId },
+    DuplicateKey { key: String },
+}
+
 /// 板上一个孔的全部元数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hole {
@@ -84,14 +139,14 @@ pub struct Hole {
     pub rail_id: u32,
 }
 
-/// 一条电源轨 (一行 5+5+5+5+5 横向短接的孔)。
+/// 一条完整电源轨行；所有 group 位于同一片连续导体上。
 #[derive(Debug, Clone)]
 pub struct PowerRail {
     /// 这条轨在板坐标空间里的 y 值 (例如 -1, -2, 12, 13)
     pub y: i32,
     pub polarity: Polarity,
-    /// 短接的列范围列表, 通常 5 个 group, 每个 group 5 孔。
-    /// `groups[0].end() + 1 == groups[1].start()` 中间是 1 个空孔断开。
+    /// 有插孔的列范围列表, 通常 5 个 group, 每个 group 5 孔。
+    /// group 间的 1 格没有插孔，但底层导体仍连续。
     pub groups: Vec<RangeInclusive<i32>>,
 }
 
@@ -214,6 +269,9 @@ pub struct Breadboard {
     main_blocked_rows: BTreeSet<usize>,
     power_rails: Option<PowerRails>,
     power_rail_binding: Option<PowerRailBinding>,
+    rail_ties: Vec<RailTie>,
+    /// physical island id -> RailTie 闭包的稳定代表 id。
+    effective_rail_ids: Vec<u32>,
     holes: Vec<Hole>,
     /// `(y - at_y_min) * cols + x` → HoleId. 预分配的 flat grid,比 HashMap 快几倍,
     /// 拿掉 cost_fast 里的 `board.at(x,y)` 热点的 hash 开销。out-of-bounds / blocked
@@ -308,19 +366,17 @@ impl Breadboard {
         let mut at_grid: Vec<Option<HoleId>> = vec![None; grid_rows * cols];
         let mut next_rail_id: u32 = 0;
 
-        // 1. 电源轨的 rail_id 分配 + 孔枚举
+        // 1. 电源轨的 physical-island rail_id 分配 + 孔枚举
         if let Some(pr) = &power_rails {
-            // 同一极性的所有行 (top + bottom) 共享一个 rail_id
-            // (用户约定: 上下两条先简化, 短接 + 同一个 net)
-            // 我们用 negative / positive 各一个 rail_id
+            // 保持旧 HoleId 枚举次序 (negative 再 positive)，但每条完整行分别分配
+            // physical island id。同行 group 共享 id；top/bottom 不共享。
             for &polarity in &[Polarity::Negative, Polarity::Positive] {
-                let rail_id = next_rail_id;
-                next_rail_id += 1;
-                // 遍历所有 4 行, 找到极性匹配的
                 for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
                     if rail.polarity != polarity {
                         continue;
                     }
+                    let rail_id = next_rail_id;
+                    next_rail_id += 1;
                     for x in rail.columns() {
                         let pos = Position { x, y: rail.y };
                         let id = HoleId(holes.len());
@@ -380,7 +436,7 @@ impl Breadboard {
                 at_grid[((y as i32 - at_y_min) as usize) * cols + x] = Some(id);
             }
         }
-        let _ = next_rail_id + (vertical_rails.len() as u32) * (cols as u32);
+        let num_rails = next_rail_id + (vertical_rails.len() as u32) * (cols as u32);
 
         Self {
             cols,
@@ -388,6 +444,8 @@ impl Breadboard {
             main_blocked_rows,
             power_rails,
             power_rail_binding: None,
+            rail_ties: Vec::new(),
+            effective_rail_ids: (0..num_rails).collect(),
             holes,
             at_grid,
             at_y_min,
@@ -403,7 +461,7 @@ impl Breadboard {
     /// 上下各一组 5×5 横向短接的电源轨 (极性按用户约定: 远离 main 是负, 靠近是正)。
     pub fn standard() -> Self {
         let power_rails = standard_power_rails(30);
-        Self::with_power_rails(30, 12, [5, 6], power_rails)
+        Self::with_power_rails(30, 12, [5, 6], power_rails).with_default_power_rail_ties()
     }
 
     // ============================================================
@@ -423,6 +481,7 @@ impl Breadboard {
     /// 改 `cols` 后电源轨自动按 6-col 节拍重新生成 (5 孔 + 1 空), 最后一组可能被裁短。
     pub fn preset_400(cols: usize) -> Self {
         Self::with_power_rails(cols, 12, [5, 6], standard_power_rails(cols as i32))
+            .with_default_power_rail_ties()
     }
 
     /// 800 孔预设: `cols` 列 × 12 行 main (10 行可用 + 2 行中央 blocked),
@@ -431,6 +490,7 @@ impl Breadboard {
     /// 改 `cols` 后电源轨在 [2, cols-2) 区间按 6-col 节拍重新生成。
     pub fn preset_800(cols: usize) -> Self {
         Self::with_power_rails(cols, 12, [5, 6], wide_power_rails_800(cols as i32))
+            .with_default_power_rail_ties()
     }
 
     /// 返回正极电源轨允许绑定的 net 名字列表。
@@ -549,11 +609,10 @@ impl Breadboard {
         (top..=bottom).map(|r| r as i32).collect()
     }
 
-    /// 跟 `id` 内部短接的所有 HoleId (含自身)。
+    /// 跟 `id` 由板内铜片天然短接的所有 HoleId (含自身)。
     ///
     /// - MainRail 孔: 同列同 vertical rail 的所有孔
-    /// - PowerRail 孔: 同一 rail_id 的所有孔 (即同极性的所有 4 行, 因为我们把
-    ///   同一极性的所有行合并到同一个 rail_id 里)
+    /// - PowerRail 孔: 同一完整电源轨行的所有孔（跨 group，但不跨 top/bottom）
     pub fn connected_to(&self, id: HoleId) -> Vec<HoleId> {
         let target_rail = self.holes[id.0].rail_id;
         self.holes
@@ -561,6 +620,148 @@ impl Breadboard {
             .filter(|h| h.rail_id == target_rail)
             .map(|h| h.id)
             .collect()
+    }
+
+    /// 跟 `id` 通过板内铜片和当前全部 RailTie 有效连通的所有 HoleId。
+    pub fn effectively_connected_to(&self, id: HoleId) -> Vec<HoleId> {
+        let target = self.effective_rail_id_of(id);
+        self.holes
+            .iter()
+            .filter(|hole| self.effective_rail_id_of(hole.id) == target)
+            .map(|hole| hole.id)
+            .collect()
+    }
+
+    /// 当前显式 RailTie。preset tie 与用户 tie 的电气语义相同。
+    pub fn rail_ties(&self) -> &[RailTie] {
+        &self.rail_ties
+    }
+
+    /// 某孔是否被 RailTie 端点占用。
+    pub fn rail_tie_at(&self, hole: HoleId) -> Option<RailTieId> {
+        self.rail_ties
+            .iter()
+            .find(|tie| tie.from == hole || tie.to == hole)
+            .map(|tie| tie.id)
+    }
+
+    /// 新增一条用户 RailTie；成功后立即更新 effective connectivity。
+    pub fn add_user_rail_tie(
+        &mut self,
+        key: impl Into<String>,
+        from: HoleId,
+        to: HoleId,
+        label: Option<String>,
+    ) -> Result<RailTieId, RailTieError> {
+        self.push_rail_tie(key.into(), from, to, RailTieSource::User, label)
+    }
+
+    /// 按稳定 key 删除 RailTie；删除成功后立即更新 effective connectivity。
+    pub fn remove_rail_tie(&mut self, key: &str) -> Option<RailTie> {
+        let index = self.rail_ties.iter().position(|tie| tie.key == key)?;
+        let tie = self.rail_ties.remove(index);
+        self.rebuild_effective_rail_ids();
+        Some(tie)
+    }
+
+    /// 清除所有 preset/user ties，保留裸板 physical islands。
+    pub fn without_rail_ties(mut self) -> Self {
+        self.rail_ties.clear();
+        self.rebuild_effective_rail_ids();
+        self
+    }
+
+    fn push_rail_tie(
+        &mut self,
+        key: String,
+        from: HoleId,
+        to: HoleId,
+        source: RailTieSource,
+        label: Option<String>,
+    ) -> Result<RailTieId, RailTieError> {
+        for hole in [from, to] {
+            if hole.raw() >= self.holes.len() {
+                return Err(RailTieError::UnknownHole { hole });
+            }
+            if self.region_of(hole) != Region::PowerRail {
+                return Err(RailTieError::NonPowerRail { hole });
+            }
+            if self.rail_tie_at(hole).is_some() {
+                return Err(RailTieError::DuplicateEndpoint { hole });
+            }
+        }
+        if self.rail_id_of(from) == self.rail_id_of(to) {
+            return Err(RailTieError::SameIsland { from, to });
+        }
+        if self.rail_ties.iter().any(|tie| tie.key == key) {
+            return Err(RailTieError::DuplicateKey { key });
+        }
+        let id = RailTieId(
+            self.rail_ties
+                .iter()
+                .map(|tie| tie.id.raw())
+                .max()
+                .map_or(0, |max| max + 1),
+        );
+        self.rail_ties.push(RailTie {
+            id,
+            key,
+            from,
+            to,
+            source,
+            label,
+        });
+        self.rebuild_effective_rail_ids();
+        Ok(id)
+    }
+
+    fn with_default_power_rail_ties(mut self) -> Self {
+        for polarity in [Polarity::Negative, Polarity::Positive] {
+            let Some([from, to]) = self.power_rail_anchors(polarity) else {
+                continue;
+            };
+            let polarity_name = match polarity {
+                Polarity::Negative => "negative",
+                Polarity::Positive => "positive",
+            };
+            self.push_rail_tie(
+                format!("preset:{polarity_name}:top-bottom"),
+                from,
+                to,
+                RailTieSource::Preset,
+                Some("default power-rail tie".to_owned()),
+            )
+            .expect("preset RailTie geometry must be valid");
+        }
+        self
+    }
+
+    fn rebuild_effective_rail_ids(&mut self) {
+        let mut parents: Vec<u32> = (0..self.effective_rail_ids.len() as u32).collect();
+
+        fn find(parents: &mut [u32], mut node: u32) -> u32 {
+            while parents[node as usize] != node {
+                let parent = parents[node as usize];
+                parents[node as usize] = parents[parent as usize];
+                node = parents[node as usize];
+            }
+            node
+        }
+
+        for tie in &self.rail_ties {
+            let from = self.rail_id_of(tie.from);
+            let to = self.rail_id_of(tie.to);
+            let from_root = find(&mut parents, from);
+            let to_root = find(&mut parents, to);
+            if from_root != to_root {
+                let representative = from_root.min(to_root);
+                let other = from_root.max(to_root);
+                parents[other as usize] = representative;
+            }
+        }
+        for island in 0..parents.len() {
+            self.effective_rail_ids[island] = find(&mut parents, island as u32);
+        }
     }
 
     /// 给定一个 hole, 如果它在电源轨上, 返回它所属的 PowerRail; 否则 None。
@@ -594,9 +795,9 @@ impl Breadboard {
 
     /// 给定极性, 返回该 rail 上的一个 anchor `HoleId` (用作虚拟 pin 位置)。
     ///
-    /// 选 top strip 里极性匹配那一行**构造时第一个插入**的孔 (当前实现下是 col 0,
-    /// 因为 holes 按 sorted x 顺序插入)。因为同 rail 的所有孔内部短接, anchor 选
-    /// 哪个孔都对, 这里只是稳定起见。
+    /// 选 top strip 里极性匹配那一行**构造时第一个插入**的孔。此方法只为兼容
+    /// 需要单个展示位置的调用者；需要表达逐 island binding 时应使用
+    /// [`Self::power_rail_anchors`]。
     /// 返回 `None` 表示: 没装 power rail, 或该极性在配置里不存在。
     pub fn power_rail_anchor(&self, polarity: Polarity) -> Option<HoleId> {
         let pr = self.power_rails.as_ref()?;
@@ -607,9 +808,28 @@ impl Breadboard {
             .map(|h| h.id)
     }
 
+    /// 给定极性，返回 top/bottom 两条独立 power-rail island 的稳定 anchor。
+    pub fn power_rail_anchors(&self, polarity: Polarity) -> Option<[HoleId; 2]> {
+        let pr = self.power_rails.as_ref()?;
+        let top_y = pr.top.rows.iter().find(|r| r.polarity == polarity)?.y;
+        let bottom_y = pr.bottom.rows.iter().find(|r| r.polarity == polarity)?.y;
+        let top = self.holes.iter().find(|h| h.position.y == top_y)?.id;
+        let bottom = self.holes.iter().find(|h| h.position.y == bottom_y)?.id;
+        Some([top, bottom])
+    }
+
     /// 给定一个 hole, 返回它的 rail_id。
     pub fn rail_id_of(&self, id: HoleId) -> u32 {
         self.holes[id.0].rail_id
+    }
+
+    /// 给定孔，返回它在当前 RailTie 闭包中的 effective component id。
+    pub fn effective_rail_id_of(&self, id: HoleId) -> u32 {
+        self.effective_rail_ids[self.rail_id_of(id) as usize]
+    }
+
+    pub fn conductive_island_of(&self, id: HoleId) -> ConductiveIslandId {
+        ConductiveIslandId(self.rail_id_of(id))
     }
 
     /// 热路径辅助: 一次 `at + rail_id_of` 合并。越界 / blocked / gap 返 `u32::MAX`。
@@ -626,6 +846,17 @@ impl Breadboard {
                 .get_unchecked(idx)
                 .map(|h| self.holes.get_unchecked(h.0).rail_id)
                 .unwrap_or(u32::MAX)
+        }
+    }
+
+    /// `rail_id_at` 的 effective-connectivity 版本。
+    #[inline]
+    pub fn effective_rail_id_at(&self, x: i32, y: i32) -> u32 {
+        let island = self.rail_id_at(x, y);
+        if island == u32::MAX {
+            u32::MAX
+        } else {
+            self.effective_rail_ids[island as usize]
         }
     }
 
@@ -689,7 +920,7 @@ fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize 
     count
 }
 
-/// 默认电源轨配置: `cols` 参数化; 按 6-col 节拍生成 (5 连续孔 + 1 空孔断开)。
+/// 默认电源轨配置: `cols` 参数化; 按 6-col 节拍生成 (5 连续孔 + 1 个无插孔位置)。
 /// `cols=30` 时 5 组 5 孔; `cols=50` 时 9 组 (最后一组 2 孔); `cols=60` 时 10 组。
 /// y 坐标固定为 -4 / -3 (top) 和 14 / 15 (bottom)。
 ///
@@ -702,10 +933,10 @@ fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize 
 /// 主区 (y=0..11) 到 rail 之间各有 2 行 gap (y=-2,-1 和 y=12,13), 不可插线,
 /// 跟中央通道同款。
 ///
-/// 同一极性 (负或正) 的 top + bottom 两条**合并**为同一个 rail_id
-/// (用户约定: 上下两组先简化, 短接 + 同一个 net)。
+/// 每条完整电源轨行是独立 conductive island；preset 构造器另行物化两条
+/// top/bottom RailTie。
 pub fn standard_power_rails(cols: i32) -> PowerRails {
-    // 按 6-col 节拍重复 (5 个连续孔 + 1 个空孔断开): 0-4, 6-10, 12-16, ...
+    // 按 6-col 节拍重复 (5 个连续孔 + 1 个无插孔位置): 0-4, 6-10, 12-16, ...
     // 最后一组可能被裁短 (e.g. cols=50 时最后一组是 48-49 而不是 48-52)。
     // 原来错误: 这个参数被当成 `_cols` 忽略, groups 硬编码 5 组只覆盖前 30 列。
     let mut groups: Vec<RangeInclusive<i32>> = Vec::new();
@@ -948,22 +1179,102 @@ mod tests {
         let connected = b.connected_to(a);
         let ids: std::collections::HashSet<_> = connected.into_iter().collect();
         assert!(ids.contains(&c), "同 power rail 行的孔应该短接");
-        // 用户约定: 同极性的 top + bottom 合并到同一 rail_id,
-        // 所以连通集 = 25 (top) + 25 (bottom) = 50
-        assert_eq!(ids.len(), 50);
+        assert_eq!(ids.len(), 25, "physical island 只包含当前完整电源轨行");
     }
 
     #[test]
-    fn power_rail_top_negative_and_bottom_negative_share_rail() {
+    fn power_rows_are_distinct_islands_without_explicit_ties() {
+        let b = Breadboard::with_power_rails(30, 12, [5, 6], standard_power_rails(30));
+        let top_left = b.at(0, -4).unwrap();
+        let top_across_group_gap = b.at(10, -4).unwrap();
+        let bottom_same_polarity = b.at(0, 14).unwrap();
+
+        let connected: std::collections::HashSet<_> =
+            b.connected_to(top_left).into_iter().collect();
+
+        assert!(
+            connected.contains(&top_across_group_gap),
+            "同一电源轨行跨 5 孔 group 必须天然导通"
+        );
+        assert!(
+            !connected.contains(&bottom_same_polarity),
+            "没有显式 RailTie 时 top/bottom 必须是独立 conductive islands"
+        );
+        assert_eq!(connected.len(), 25, "单条 400 preset 电源轨行有 25 个孔");
+    }
+
+    #[test]
+    fn preset_power_rail_ties_connect_top_and_bottom_effectively() {
         let b = board_full();
-        // 用户约定: 上下两条同极性 shorted
         let top_neg = b.at(0, -4).unwrap();
         let bot_neg = b.at(0, 14).unwrap();
-        let connected = b.connected_to(top_neg);
-        let ids: std::collections::HashSet<_> = connected.into_iter().collect();
-        assert!(ids.contains(&bot_neg));
-        // 25 + 25 = 50 孔 (top 25 + bottom 25)
-        assert_eq!(ids.len(), 50);
+        let physical: std::collections::HashSet<_> = b.connected_to(top_neg).into_iter().collect();
+        let effective: std::collections::HashSet<_> =
+            b.effectively_connected_to(top_neg).into_iter().collect();
+
+        assert!(!physical.contains(&bot_neg));
+        assert!(effective.contains(&bot_neg));
+        assert_eq!(physical.len(), 25);
+        assert_eq!(effective.len(), 50);
+        assert_eq!(b.rail_ties().len(), 2);
+        assert_eq!(b.rail_ties()[0].key, "preset:negative:top-bottom");
+        assert_eq!(b.rail_ties()[1].key, "preset:positive:top-bottom");
+        assert_eq!(b.rail_ties()[0].source, RailTieSource::Preset);
+    }
+
+    #[test]
+    fn preset_800_has_exactly_two_top_bottom_ties() {
+        let b = Breadboard::preset_800(63);
+        assert_eq!(b.rail_ties().len(), 2);
+        for polarity in [Polarity::Negative, Polarity::Positive] {
+            let [top, bottom] = b.power_rail_anchors(polarity).unwrap();
+            assert_ne!(b.conductive_island_of(top), b.conductive_island_of(bottom));
+            assert_eq!(b.effective_rail_id_of(top), b.effective_rail_id_of(bottom));
+        }
+    }
+
+    #[test]
+    fn removing_and_restoring_a_tie_updates_effective_connectivity() {
+        let mut b = Breadboard::standard();
+        let [top, bottom] = b.power_rail_anchors(Polarity::Negative).unwrap();
+        assert_eq!(b.effective_rail_id_of(top), b.effective_rail_id_of(bottom));
+
+        let removed = b
+            .remove_rail_tie("preset:negative:top-bottom")
+            .expect("negative preset tie");
+        assert_ne!(b.effective_rail_id_of(top), b.effective_rail_id_of(bottom));
+
+        let id = b
+            .add_user_rail_tie("user:negative:top-bottom", top, bottom, None)
+            .expect("restored user tie");
+        assert_eq!(b.effective_rail_id_of(top), b.effective_rail_id_of(bottom));
+        assert_eq!(b.rail_tie_at(top), Some(id));
+        assert_eq!(removed.source, RailTieSource::Preset);
+        assert_eq!(
+            b.rail_ties()
+                .iter()
+                .find(|tie| tie.id == id)
+                .unwrap()
+                .source,
+            RailTieSource::User
+        );
+    }
+
+    #[test]
+    fn rail_tie_rejects_same_island_and_duplicate_endpoints() {
+        let mut b = Breadboard::with_power_rails(30, 12, [5, 6], standard_power_rails(30));
+        let top_a = b.at(0, -4).unwrap();
+        let top_b = b.at(10, -4).unwrap();
+        let bottom = b.at(0, 14).unwrap();
+        assert!(matches!(
+            b.add_user_rail_tie("invalid", top_a, top_b, None),
+            Err(RailTieError::SameIsland { .. })
+        ));
+        b.add_user_rail_tie("valid", top_a, bottom, None).unwrap();
+        assert!(matches!(
+            b.add_user_rail_tie("duplicate", top_a, b.at(0, -3).unwrap(), None),
+            Err(RailTieError::DuplicateEndpoint { hole }) if hole == top_a
+        ));
     }
 
     #[test]

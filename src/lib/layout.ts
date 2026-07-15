@@ -47,8 +47,8 @@ export type LayoutWire = {
   from: BreadboardHole;
   to: BreadboardHole;
   color?: string;
-  /** Air wires describe unrouted nets; routed wires describe the final result. */
-  kind?: "air" | "routed";
+  /** Air wires are unrouted hints; rail ties are explicit fixed power-rail jumpers. */
+  kind?: "air" | "routed" | "rail-tie";
   net_id?: string;
   net_name?: string;
 };

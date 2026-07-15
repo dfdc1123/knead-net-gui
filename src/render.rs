@@ -85,7 +85,7 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
         );
     }
 
-    // 画电源轨: 红/蓝色色带 + 5 组 5 孔断开的样式
+    // 画电源轨: 红/蓝色色带 + 5 孔视觉分组；同一整行的底层导体连续。
     if let Some(pr) = board.power_rails() {
         for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
             let rail_y = MARGIN + (rail.y + y_offset) as f32 * CELL_Y;
@@ -163,13 +163,37 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
         }
     }
 
-    // 2) 接线 (同行 → Z 形通道, 跨行 → 直线)
+    // 2) preset 电源轨短接线（固定、显式、可见）
+    for tie in board.rail_ties() {
+        let from = board.hole(tie.from);
+        let to = board.hole(tie.to);
+        let (x1, y1) = hole_px_from_pos(Position {
+            x: from.position.x,
+            y: from.position.y + y_offset,
+        });
+        let (x2, y2) = hole_px_from_pos(Position {
+            x: to.position.x,
+            y: to.position.y + y_offset,
+        });
+        let color = match board.power_rail_of(tie.from).map(|rail| rail.polarity) {
+            Some(Polarity::Positive) => "#dc2626",
+            _ => "#2563eb",
+        };
+        let mid_y = (y1 + y2) / 2.0;
+        let _ = writeln!(
+            out,
+            r#"<path d="M {x1:.1} {y1:.1} C {x1:.1} {mid_y:.1}, {x2:.1} {mid_y:.1}, {x2:.1} {y2:.1}" fill="none" stroke="{color}" stroke-width="2.8" stroke-linecap="round"><title>{}</title></path>"#,
+            html_escape(&tie.key)
+        );
+    }
+
+    // 3) 普通接线 (同行 → Z 形通道, 跨行 → 直线)
     let plans = plan_wires(board, layout.wires(), y_offset);
     for plan in &plans {
         draw_wire(&mut out, plan, circuit);
     }
 
-    // 3) 所有孔
+    // 4) 所有孔
     for hole in board.holes() {
         let (cx, cy) = hole_px_from_pos(Position {
             x: hole.position.x,
@@ -179,6 +203,7 @@ pub fn to_svg(circuit: &Circuit, board: &Breadboard, layout: &Layout) -> String 
         let (fill, stroke): (&str, &str) = match occ.occupant_at(hole.id) {
             Some(Occupant::Pin(_)) => ("#2563eb", "#1e3a8a"),
             Some(Occupant::Wire(_)) => ("#16a34a", "#14532d"),
+            Some(Occupant::RailTie(_)) => ("#d97706", "#78350f"),
             // 被元件本体占据 — 用同元件的 hue 但 fill-opacity 为 1.0
             // (bbox 的 fill-opacity=0.18 让颜色淡化, 这里反过来更鲜),
             // 让“本体覆盖区”一眼能跟空孔 / 单纯 pin 区分开。

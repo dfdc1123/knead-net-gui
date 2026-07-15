@@ -9,7 +9,7 @@ use crate::circuit::{ComponentId, PinId};
 
 use super::Layout;
 use super::LayoutError;
-use super::breadboard::{Breadboard, HoleId};
+use super::breadboard::{Breadboard, HoleId, RailTieId};
 use super::routing::Wire;
 
 /// 一个孔的占有者. 面包板一孔径约束: 至多 1 个 occupant。
@@ -19,6 +19,8 @@ pub enum Occupant {
     Pin(PinId),
     /// 线插在此孔。`Wire` 只有 `from` 和 `to` 两个接触点 (没有中间点)。
     Wire(super::routing::WireId),
+    /// 显式电源轨短接线的固定端点。
+    RailTie(RailTieId),
     /// 被元件本体占据的孔 (在元件包围盒内, 但不是 pin)。
     /// 线不能插在 Blocked 孔上 (没有物理空间), 别的元件也不能把本体伸进来。
     Blocked(ComponentId),
@@ -31,11 +33,17 @@ pub struct Occupancy {
 }
 
 impl Occupancy {
-    /// 全部空的 occupancy, 大小跟 board 孔数一致。
+    /// 没有元件和普通 wire 的 occupancy；固定 RailTie 端点已占用。
     pub fn empty(board: &Breadboard) -> Self {
-        Self {
+        let mut occupancy = Self {
             at: vec![None; board.len()],
+        };
+        for tie in board.rail_ties() {
+            for hole in tie.contacts() {
+                occupancy.at[hole.raw()] = Some(Occupant::RailTie(tie.id));
+            }
         }
+        occupancy
     }
 
     /// 构造严格 occupancy. 任何非法状态都返回 `Err`, 不返回部分 occupancy。
@@ -107,6 +115,11 @@ impl Occupancy {
                             pin: ph.pin,
                             hole,
                         },
+                        Occupant::RailTie(_) => LayoutError::PinCollision {
+                            component: component.id,
+                            pin: ph.pin,
+                            hole,
+                        },
                     });
                     continue;
                 }
@@ -115,7 +128,7 @@ impl Occupancy {
                 let pin = &layout.circuit().pins[ph.pin.0];
                 let pos = board.hole(hole).position;
                 // rail_id 统一处理纵向 rail + 电源轨横向 rail
-                let rail_id = board.rail_id_of(hole);
+                let rail_id = board.effective_rail_id_of(hole);
                 by_rail
                     .entry(rail_id)
                     .or_default()
@@ -164,6 +177,7 @@ impl Occupancy {
                                 wire: super::routing::WireId(0), // wire id 查不到, 占位
                                 hole,
                             },
+                            Occupant::RailTie(tie) => LayoutError::RailTieConflict { tie, hole },
                         });
                         continue;
                     }
@@ -193,13 +207,17 @@ impl Occupancy {
                             wire: wire.id,
                             hole,
                         },
+                        Occupant::RailTie(_) => LayoutError::WireConflict {
+                            wire: wire.id,
+                            hole,
+                        },
                     });
                     continue;
                 }
                 occupied.insert(hole);
                 occ.at[hole.0] = Some(Occupant::Wire(wire.id));
                 let pos = board.hole(hole).position;
-                let rail_id = board.rail_id_of(hole);
+                let rail_id = board.effective_rail_id_of(hole);
                 by_rail
                     .entry(rail_id)
                     .or_default()
@@ -278,16 +296,22 @@ impl Occupancy {
                     let Some(hole) = board.at(pos.x, pos.y) else {
                         continue;
                     };
-                    occ.at[hole.0] = Some(Occupant::Blocked(component.id));
+                    if !matches!(occ.at[hole.0], Some(Occupant::RailTie(_))) {
+                        occ.at[hole.0] = Some(Occupant::Blocked(component.id));
+                    }
                 }
             }
             for ph in placed.pin_holes {
-                occ.at[ph.hole.0] = Some(Occupant::Pin(ph.pin));
+                if !matches!(occ.at[ph.hole.0], Some(Occupant::RailTie(_))) {
+                    occ.at[ph.hole.0] = Some(Occupant::Pin(ph.pin));
+                }
             }
         }
         for w in layout.wires() {
             for h in w.contacts() {
-                occ.at[h.0] = Some(Occupant::Wire(w.id));
+                if !matches!(occ.at[h.0], Some(Occupant::RailTie(_))) {
+                    occ.at[h.0] = Some(Occupant::Wire(w.id));
+                }
             }
         }
         occ
@@ -301,6 +325,114 @@ impl Occupancy {
     /// wire 两端孔当前是否都为空。
     pub fn can_add_wire(&self, wire: &Wire) -> bool {
         self.at[wire.from.0].is_none() && self.at[wire.to.0].is_none()
+    }
+}
+
+#[cfg(test)]
+mod rail_tie_tests {
+    use super::*;
+    use crate::circuit::{
+        Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin,
+        PinId, Position,
+    };
+    use crate::layout::breadboard::standard_power_rails;
+    use crate::layout::placement::Placement;
+
+    #[test]
+    fn preset_rail_tie_endpoints_are_fixed_occupied_geometry() {
+        let board = Breadboard::standard();
+        let occupancy = Occupancy::empty(&board);
+
+        assert_eq!(board.rail_ties().len(), 2);
+        for tie in board.rail_ties() {
+            for hole in tie.contacts() {
+                assert_eq!(occupancy.occupant_at(hole), Some(Occupant::RailTie(tie.id)));
+            }
+        }
+    }
+
+    #[test]
+    fn validation_uses_the_same_effective_connectivity_as_rail_ties() {
+        let circuit = Box::leak(Box::new(Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "X1".into(),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(0), PinId(1)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            }],
+            pins: vec![
+                Pin {
+                    id: PinId(0),
+                    component: ComponentId(0),
+                    num: "1".into(),
+                    pinfunction: None,
+                    physical_pin_index: 0,
+                    net: Some(NetId(0)),
+                },
+                Pin {
+                    id: PinId(1),
+                    component: ComponentId(0),
+                    num: "2".into(),
+                    pinfunction: None,
+                    physical_pin_index: 1,
+                    net: Some(NetId(1)),
+                },
+            ],
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "A".into(),
+                    pins: vec![PinId(0)],
+                },
+                Net {
+                    id: NetId(1),
+                    name: "B".into(),
+                    pins: vec![PinId(1)],
+                },
+            ],
+            footprints: vec![Footprint {
+                id: FootprintId(0),
+                name: "2p".into(),
+                pins: vec![
+                    PhysicalPin {
+                        name: "1".into(),
+                        offset: Position { x: 0, y: 0 },
+                    },
+                    PhysicalPin {
+                        name: "2".into(),
+                        offset: Position { x: 1, y: 0 },
+                    },
+                ],
+            }],
+        }));
+        let raw = Breadboard::with_power_rails(30, 12, [5, 6], standard_power_rails(30));
+        let preset = Breadboard::standard();
+        let mut layout = Layout::new(circuit);
+        layout.place(
+            ComponentId(0),
+            Placement::Bridged {
+                pin_holes: [
+                    (raw.at(1, -4).unwrap(), PinId(0)),
+                    (raw.at(1, 14).unwrap(), PinId(1)),
+                ],
+            },
+        );
+
+        assert!(
+            layout.occupancy(&raw).is_ok(),
+            "无 tie 时 top/bottom 不同 net 不应互相短路"
+        );
+        let errors = layout
+            .occupancy(&preset)
+            .expect_err("preset tie 应让 top/bottom 的不同 net 产生冲突");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error, LayoutError::ColumnConflict { .. }))
+        );
     }
 }
 

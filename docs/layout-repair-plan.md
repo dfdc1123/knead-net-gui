@@ -347,6 +347,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R1. 纠正 conductive-island / RailTie 基础模型
 
+- 实施状态：**已完成**（2026-07-15）。T09 已先证明旧实现会在无 tie 时错误连接 top/bottom；修复后 physical island、effective connectivity、默认 tie 占孔、cost、router、validation 和 GUI frame 使用同一语义。
 - 对应：A9；为 A5、A3、A7 的最终语义打基础。
 - 最小失败测试：T09；旧的“同 polarity 全共享 rail_id”测试必须按 R0 决定替换，不能简单删除断言。
 - 允许修改范围：`src/layout/{breadboard,mod,routing,prepare}.rs`，以及因新连通 API 必须同步的 `src/layout/cost/{mst,context,cost_fast,bridge}.rs`；若 R0 选择显式 ties，可改 `src-tauri/src/{lib,compute}.rs`、`src/lib/components/{Step2SelectBoard,BreadboardPreview,Step4Result}.svelte` 和 `src/lib/i18n.ts`。不得改 SA move/temperature。

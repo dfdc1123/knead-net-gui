@@ -21,8 +21,9 @@ pub mod routing;
 pub mod sa;
 
 pub use breadboard::{
-    Breadboard, Hole, HoleId, Polarity, PowerRail, PowerRailBinding, PowerRails, PowerStrip,
-    Preset, Region, standard_power_rails, wide_power_rails_800,
+    Breadboard, ConductiveIslandId, Hole, HoleId, Polarity, PowerRail, PowerRailBinding,
+    PowerRails, PowerStrip, Preset, RailTie, RailTieError, RailTieId, RailTieSource, Region,
+    standard_power_rails, wide_power_rails_800,
 };
 pub use cost::Weights;
 pub use occupancy::{Occupancy, Occupant};
@@ -158,6 +159,8 @@ pub enum LayoutError {
         b: ComponentId,
         hole: HoleId,
     },
+    /// 元件本体占用了固定 RailTie 的端点。
+    RailTieConflict { tie: RailTieId, hole: HoleId },
 }
 
 /// 顶层布局: 持有 Circuit 引用 + 每个 component 的 placement + 所有 wire。

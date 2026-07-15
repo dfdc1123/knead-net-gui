@@ -75,7 +75,7 @@ pub(crate) fn cost_fast(
             let offset = offsets[ri];
             let x = px + offset.x;
             let y = py + offset.y;
-            let rail_id = board.rail_id_at(x, y);
+            let rail_id = board.effective_rail_id_at(x, y);
             let hole_idx = buf.holes.len();
             buf.holes.push((x, y, rail_id));
             buf.nets.push(*net);
@@ -144,7 +144,7 @@ pub(crate) fn cost_fast(
         for &(pin_id, hole_id) in bridged_pins {
             let pin = &circuit.pins[pin_id.0];
             let pos = board.hole(hole_id).position;
-            let rail_id = board.rail_id_of(hole_id);
+            let rail_id = board.effective_rail_id_of(hole_id);
             let hole_idx = buf.holes.len();
             buf.holes.push((pos.x, pos.y, rail_id));
             buf.nets.push(pin.net);
@@ -195,7 +195,7 @@ pub(crate) fn cost_fast(
             for &(h, pin_id) in &pair {
                 let pin = &circuit.pins[pin_id.0];
                 let pos = board.hole(h).position;
-                let rail_id = board.rail_id_of(h);
+                let rail_id = board.effective_rail_id_of(h);
                 let hole_idx = buf.holes.len();
                 buf.holes.push((pos.x, pos.y, rail_id));
                 buf.nets.push(pin.net);
@@ -226,10 +226,14 @@ pub(crate) fn cost_fast(
             }
         }
     } else if let Some(binding) = board.power_rail_binding() {
+        let mut seen = std::collections::HashSet::new();
         for (polarity, net_id) in binding.iter() {
-            if let Some(anchor) = board.power_rail_anchor(polarity) {
+            for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
                 let pos = board.hole(anchor).position;
-                let rail_id = board.rail_id_of(anchor);
+                let rail_id = board.effective_rail_id_of(anchor);
+                if !seen.insert((rail_id, net_id)) {
+                    continue;
+                }
                 buf.holes.push((pos.x, pos.y, rail_id));
                 buf.nets.push(Some(net_id));
                 buf.is_virtual.push(true);
@@ -307,7 +311,7 @@ pub(crate) fn cost_fast(
                 let total_holes = board
                     .holes()
                     .iter()
-                    .filter(|h| h.rail_id == rail_id)
+                    .filter(|h| board.effective_rail_id_of(h.id) == rail_id)
                     .count();
                 let capacity = total_holes.saturating_sub(pins_on_rail);
                 if degrees[i] > capacity {
@@ -459,7 +463,7 @@ fn cost_breakdown_inner(
             let y = py + offset.y;
             let rail_id = board
                 .at(x, y)
-                .map(|h| board.rail_id_of(h))
+                .map(|h| board.effective_rail_id_of(h))
                 .unwrap_or(u32::MAX);
             buf.holes.push((x, y, rail_id));
             buf.nets.push(*net);
@@ -498,7 +502,7 @@ fn cost_breakdown_inner(
     for &(pin_id, hole_id) in bridged_pins {
         let pin = &circuit.pins[pin_id.0];
         let pos = board.hole(hole_id).position;
-        let rail_id = board.rail_id_of(hole_id);
+        let rail_id = board.effective_rail_id_of(hole_id);
         buf.holes.push((pos.x, pos.y, rail_id));
         buf.nets.push(pin.net);
         buf.is_virtual.push(false);
@@ -511,17 +515,21 @@ fn cost_breakdown_inner(
         for &(h, pin_id) in &pair {
             let pin = &circuit.pins[pin_id.0];
             let pos = board.hole(h).position;
-            let rail_id = board.rail_id_of(h);
+            let rail_id = board.effective_rail_id_of(h);
             buf.holes.push((pos.x, pos.y, rail_id));
             buf.nets.push(pin.net);
             buf.is_virtual.push(false);
         }
     }
     if let Some(binding) = board.power_rail_binding() {
+        let mut seen = std::collections::HashSet::new();
         for (polarity, net_id) in binding.iter() {
-            if let Some(anchor) = board.power_rail_anchor(polarity) {
+            for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
                 let pos = board.hole(anchor).position;
-                let rail_id = board.rail_id_of(anchor);
+                let rail_id = board.effective_rail_id_of(anchor);
+                if !seen.insert((rail_id, net_id)) {
+                    continue;
+                }
                 buf.holes.push((pos.x, pos.y, rail_id));
                 buf.nets.push(Some(net_id));
                 buf.is_virtual.push(true);

@@ -7,8 +7,9 @@ use crate::circuit::{
     Position,
 };
 use crate::layout::Breadboard;
-use crate::layout::breadboard::{PowerRailBinding, Region};
-use crate::layout::placement::Rotation;
+use crate::layout::breadboard::{PowerRailBinding, Region, standard_power_rails};
+use crate::layout::cost::bridge::collect_matching_rail_ids;
+use crate::layout::placement::{Placement, Rotation};
 
 /// 1 列宽, 1 个 pin, R0/R180 等价的 footprint (没有第二个 pin 区分方向)。
 fn one_pin_fp() -> Footprint {
@@ -482,7 +483,7 @@ fn pin(b: &Breadboard, x: i32, y: i32) -> (i32, i32, u32) {
     let id = b
         .at(x, y)
         .unwrap_or_else(|| panic!("测试 pin ({x},{y}) 不在板上"));
-    (x, y, b.rail_id_of(id))
+    (x, y, b.effective_rail_id_of(id))
 }
 
 // ============================================================
@@ -498,12 +499,42 @@ fn mst_same_power_rail_row_is_zero() {
     assert_eq!(len, 0.0, "同 power rail 行内应该 shorted, MST = 0");
 }
 
-/// 同极性 top + bottom (用户约定: 短接 + 同一 net) → MST = 0
+/// preset 用显式 RailTie 连接同极性 top + bottom → MST = 0
 #[test]
 fn mst_top_and_bottom_same_polarity_is_zero() {
     let b = Breadboard::standard();
     let len = mst_wire_length(&[pin(&b, 0, -4), pin(&b, 0, 14)]);
     assert_eq!(len, 0.0, "上下两条同极性应该 shorted, MST = 0");
+}
+
+#[test]
+fn mst_top_and_bottom_without_tie_uses_physical_distance() {
+    let b = Breadboard::with_power_rails(30, 12, [5, 6], standard_power_rails(30));
+    let len = mst_wire_length(&[pin(&b, 0, -4), pin(&b, 0, 14)]);
+    assert_eq!(
+        len, 18.0,
+        "没有 RailTie 时 top/bottom 必须按两个独立 islands 计算"
+    );
+}
+
+#[test]
+fn bound_power_net_matches_each_untied_power_row() {
+    let raw = Breadboard::with_power_rails(30, 12, [5, 6], standard_power_rails(30))
+        .with_power_rail_binding(PowerRailBinding {
+            positive: Some(NetId(0)),
+            negative: None,
+        });
+    let preset = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+        positive: Some(NetId(0)),
+        negative: None,
+    });
+
+    assert_eq!(collect_matching_rail_ids(&raw, Some(NetId(0))).len(), 2);
+    assert_eq!(
+        collect_matching_rail_ids(&preset, Some(NetId(0))).len(),
+        1,
+        "preset tie 应把上下轨归入同一 effective component"
+    );
 }
 
 /// 正负极 → MST = Manhattan (不短接)
@@ -1412,7 +1443,30 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
     )
     .expect("启发式应返 pair");
 
-    // X1 放在 (0, 0) — 与 bridged body 的 col 0 重叠
+    let placed = Placement::Bridged { pin_holes: pair }
+        .apply(
+            &circuit.components[0],
+            &circuit.footprints[0],
+            &board,
+            &circuit.pins,
+        )
+        .expect("候选应可应用");
+    let pin_holes: std::collections::HashSet<_> =
+        placed.pin_holes.iter().map(|pin| pin.hole).collect();
+    let overlap_pos = placed
+        .bbox
+        .expect("Bridged body 应有 bbox")
+        .iter_cells()
+        .find(|position| {
+            position.y >= 0
+                && board
+                    .at(position.x, position.y)
+                    .is_some_and(|hole| !pin_holes.contains(&hole))
+        })
+        .expect("bridge body 应覆盖至少一个 main-board 非 pin 孔");
+    let clear_x = (overlap_pos.x + 10).min(board.cols() as i32 - 1);
+
+    // X1 放到实际 bridged body cell 上。
     let state_overlap = SAState {
         r90_only: vec![false; 4],
         y_locked: vec![None; 4],
@@ -1421,12 +1475,12 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
         bridged: vec![true, false],
         bridged_pin_pairs: vec![vec![pair], Vec::new()],
         active_bridge_idx: vec![0, 0],
-        x: vec![0, 0],
-        y: vec![0, 0],
+        x: vec![0, overlap_pos.x],
+        y: vec![0, overlap_pos.y],
         rotation: vec![Rotation::R0, Rotation::R0],
     };
 
-    // X1 放在 (5, 0) — 避开 bridged body
+    // X1 向右移开 bridged body。
     let state_clear = SAState {
         r90_only: vec![false; 4],
         y_locked: vec![None; 4],
@@ -1435,8 +1489,8 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
         bridged: vec![true, false],
         bridged_pin_pairs: vec![vec![pair], Vec::new()],
         active_bridge_idx: vec![0, 0],
-        x: vec![0, 5],
-        y: vec![0, 0],
+        x: vec![0, clear_x],
+        y: vec![0, overlap_pos.y],
         rotation: vec![Rotation::R0, Rotation::R0],
     };
 
