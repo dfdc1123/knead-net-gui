@@ -394,23 +394,17 @@ fn cost_fast_inner(
                 buf.net_buckets[n.0].push(buf.holes.len() - 1);
             }
         }
-    } else if let Some(binding) = board.power_rail_binding() {
-        let mut seen = std::collections::HashSet::new();
-        for (polarity, net_id) in binding.iter() {
-            for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
-                let pos = board.hole(anchor).position;
-                let rail_id = board.effective_rail_id_of(anchor);
-                if !seen.insert((rail_id, net_id)) {
-                    continue;
-                }
-                buf.holes.push((pos.x, pos.y, rail_id));
-                buf.mst_rails.push(ctx.mst_rail(Some(net_id), rail_id));
-                buf.nets.push(Some(net_id));
-                buf.is_virtual.push(true);
-                buf.pin_owners.push(None);
-                buf.rail_map[rail_id as usize].push(Some(net_id));
-                buf.net_buckets[net_id.0].push(buf.holes.len() - 1);
-            }
+    } else {
+        for (anchor, net_id) in board.bound_power_rail_anchors() {
+            let pos = board.hole(anchor).position;
+            let rail_id = board.effective_rail_id_of(anchor);
+            buf.holes.push((pos.x, pos.y, rail_id));
+            buf.mst_rails.push(ctx.mst_rail(Some(net_id), rail_id));
+            buf.nets.push(Some(net_id));
+            buf.is_virtual.push(true);
+            buf.pin_owners.push(None);
+            buf.rail_map[rail_id as usize].push(Some(net_id));
+            buf.net_buckets[net_id.0].push(buf.holes.len() - 1);
         }
     }
 
@@ -659,21 +653,13 @@ fn cost_breakdown_inner(
         buf.nets.push(net);
         buf.is_virtual.push(false);
     }
-    if let Some(binding) = board.power_rail_binding() {
-        let mut seen = std::collections::HashSet::new();
-        for (polarity, net_id) in binding.iter() {
-            for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
-                let pos = board.hole(anchor).position;
-                let rail_id = board.effective_rail_id_of(anchor);
-                if !seen.insert((rail_id, net_id)) {
-                    continue;
-                }
-                buf.holes.push((pos.x, pos.y, rail_id));
-                buf.mst_rails.push(ctx.mst_rail(Some(net_id), rail_id));
-                buf.nets.push(Some(net_id));
-                buf.is_virtual.push(true);
-            }
-        }
+    for (anchor, net_id) in board.bound_power_rail_anchors() {
+        let pos = board.hole(anchor).position;
+        let rail_id = board.effective_rail_id_of(anchor);
+        buf.holes.push((pos.x, pos.y, rail_id));
+        buf.mst_rails.push(ctx.mst_rail(Some(net_id), rail_id));
+        buf.nets.push(Some(net_id));
+        buf.is_virtual.push(true);
     }
     let mut oob_count = 0u32;
     for &(_, _, rail_id) in &buf.holes {

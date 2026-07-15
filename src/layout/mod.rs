@@ -23,14 +23,15 @@ pub mod sa;
 
 pub use breadboard::{
     Breadboard, ConductiveIslandId, Hole, HoleId, Polarity, PowerRail, PowerRailBinding,
-    PowerRails, PowerStrip, Preset, RailTie, RailTieError, RailTieId, RailTieSource, Region,
-    standard_power_rails, wide_power_rails_800,
+    PowerRailBindings, PowerRailSide, PowerRails, PowerStrip, Preset, RailTie, RailTieError,
+    RailTieId, RailTieSource, Region, standard_power_rails, wide_power_rails_800,
 };
 pub use cost::{BridgeInitial, BridgePolicy, Weights};
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{BBox, PinHole, PlacedFootprint, Placement, Rotation};
 pub use prepare::{
-    LayoutPreparation, PowerRailMatch, prepare_for_layout, prepare_for_layout_with_power_nets,
+    LayoutPreparation, PowerRailMatch, prepare_for_layout,
+    prepare_for_layout_with_individual_power_nets, prepare_for_layout_with_power_nets,
 };
 pub use progress::{
     AnnealMetrics, CancellationToken, LayoutProgress, LayoutSnapshot, ProgressOptions,

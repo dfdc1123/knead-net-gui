@@ -74,6 +74,13 @@ pub enum Polarity {
     Negative,
 }
 
+/// 电源轨位于主插接区的哪一侧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PowerRailSide {
+    Top,
+    Bottom,
+}
+
 /// 面包板内部一片连续导体的稳定标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConductiveIslandId(u32);
@@ -193,12 +200,53 @@ pub struct PowerRails {
 /// - net 的 MST 必然包含 rail, 强制算上从主区到 rail 的 jumper 长度
 /// - 路由器必会生成一根 wire 把 rail 连到主区最近 pin
 /// - 如果同 rail 出现别的 net 的 pin, occupancy 的 rail 冲突检查会逮到
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PowerRailBinding {
     /// 正极 rail 绑定的 net (例: `+12V` / `5V` / `VCC`)
     pub positive: Option<NetId>,
     /// 负极 rail 绑定的 net (例: `GND`)
     pub negative: Option<NetId>,
+}
+
+/// 上下四条物理电源轨各自的网络绑定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerRailBindings {
+    pub top: PowerRailBinding,
+    pub bottom: PowerRailBinding,
+}
+
+impl PowerRailBindings {
+    /// 兼容旧行为：同一极性的上下轨使用相同绑定。
+    pub fn mirrored(binding: PowerRailBinding) -> Self {
+        Self {
+            top: binding,
+            bottom: binding,
+        }
+    }
+
+    /// 按上负、上正、下负、下正的稳定顺序遍历实际绑定。
+    pub fn iter(&self) -> impl Iterator<Item = (PowerRailSide, Polarity, NetId)> {
+        [
+            (PowerRailSide::Top, Polarity::Negative, self.top.negative),
+            (PowerRailSide::Top, Polarity::Positive, self.top.positive),
+            (
+                PowerRailSide::Bottom,
+                Polarity::Negative,
+                self.bottom.negative,
+            ),
+            (
+                PowerRailSide::Bottom,
+                Polarity::Positive,
+                self.bottom.positive,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(side, polarity, net)| net.map(|net| (side, polarity, net)))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.top.is_empty() && self.bottom.is_empty()
+    }
 }
 
 impl PowerRailBinding {
@@ -268,6 +316,8 @@ pub struct Breadboard {
     main_rows: usize,
     main_blocked_rows: BTreeSet<usize>,
     power_rails: Option<PowerRails>,
+    power_rail_bindings: Option<PowerRailBindings>,
+    /// 仅当上下绑定相同时提供，保留旧的逐极性查询 API。
     power_rail_binding: Option<PowerRailBinding>,
     rail_ties: Vec<RailTie>,
     /// physical island id -> RailTie 闭包的稳定代表 id。
@@ -443,6 +493,7 @@ impl Breadboard {
             main_rows,
             main_blocked_rows,
             power_rails,
+            power_rail_bindings: None,
             power_rail_binding: None,
             rail_ties: Vec::new(),
             effective_rail_ids: (0..num_rails).collect(),
@@ -717,7 +768,7 @@ impl Breadboard {
 
     fn with_default_power_rail_ties(mut self) -> Self {
         for polarity in [Polarity::Negative, Polarity::Positive] {
-            let Some([from, to]) = self.power_rail_anchors(polarity) else {
+            let Some([from, to]) = self.rightmost_power_rail_anchors(polarity) else {
                 continue;
             };
             let polarity_name = match polarity {
@@ -734,6 +785,16 @@ impl Breadboard {
             .expect("preset RailTie geometry must be valid");
         }
         self
+    }
+
+    fn rightmost_power_rail_anchors(&self, polarity: Polarity) -> Option<[HoleId; 2]> {
+        let pr = self.power_rails.as_ref()?;
+        let anchor = |strip: &PowerStrip| {
+            let rail = strip.rows.iter().find(|rail| rail.polarity == polarity)?;
+            let x = rail.columns().max()?;
+            self.at(x, rail.y)
+        };
+        Some([anchor(&pr.top)?, anchor(&pr.bottom)?])
     }
 
     fn rebuild_effective_rail_ids(&mut self) {
@@ -784,13 +845,52 @@ impl Breadboard {
     /// `binding` 中存在的 `NetId` 必须有效 (即 `< circuit.nets().len()`),
     /// 否则 cost / 路由时会静默忽略 (找不到 net)。
     pub fn with_power_rail_binding(mut self, binding: PowerRailBinding) -> Self {
+        self.power_rail_bindings = Some(PowerRailBindings::mirrored(binding));
         self.power_rail_binding = Some(binding);
+        self
+    }
+
+    /// 分别设置上、下两组电源轨绑定。
+    pub fn with_power_rail_bindings(mut self, bindings: PowerRailBindings) -> Self {
+        for (polarity_name, top, bottom) in [
+            ("negative", bindings.top.negative, bindings.bottom.negative),
+            ("positive", bindings.top.positive, bindings.bottom.positive),
+        ] {
+            if top != bottom {
+                self.remove_rail_tie(&format!("preset:{polarity_name}:top-bottom"));
+            }
+        }
+        self.power_rail_binding = (bindings.top == bindings.bottom).then_some(bindings.top);
+        self.power_rail_bindings = Some(bindings);
         self
     }
 
     /// 当前是否设置了电源轨绑定。
     pub fn power_rail_binding(&self) -> Option<&PowerRailBinding> {
         self.power_rail_binding.as_ref()
+    }
+
+    /// 当前逐物理电源轨设置的绑定。
+    pub fn power_rail_bindings(&self) -> Option<&PowerRailBindings> {
+        self.power_rail_bindings.as_ref()
+    }
+
+    /// 返回所有已绑定物理电源轨的 anchor 与网络，并按 effective rail 去重。
+    pub fn bound_power_rail_anchors(&self) -> Vec<(HoleId, NetId)> {
+        let Some(bindings) = self.power_rail_bindings() else {
+            return Vec::new();
+        };
+        let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (side, polarity, net) in bindings.iter() {
+            let Some(anchor) = self.power_rail_anchor_on(side, polarity) else {
+                continue;
+            };
+            if seen.insert((self.effective_rail_id_of(anchor), net)) {
+                result.push((anchor, net));
+            }
+        }
+        result
     }
 
     /// 给定极性, 返回该 rail 上的一个 anchor `HoleId` (用作虚拟 pin 位置)。
@@ -810,12 +910,24 @@ impl Breadboard {
 
     /// 给定极性，返回 top/bottom 两条独立 power-rail island 的稳定 anchor。
     pub fn power_rail_anchors(&self, polarity: Polarity) -> Option<[HoleId; 2]> {
+        Some([
+            self.power_rail_anchor_on(PowerRailSide::Top, polarity)?,
+            self.power_rail_anchor_on(PowerRailSide::Bottom, polarity)?,
+        ])
+    }
+
+    /// 返回某一侧、某一极性物理电源轨的稳定 anchor。
+    pub fn power_rail_anchor_on(&self, side: PowerRailSide, polarity: Polarity) -> Option<HoleId> {
         let pr = self.power_rails.as_ref()?;
-        let top_y = pr.top.rows.iter().find(|r| r.polarity == polarity)?.y;
-        let bottom_y = pr.bottom.rows.iter().find(|r| r.polarity == polarity)?.y;
-        let top = self.holes.iter().find(|h| h.position.y == top_y)?.id;
-        let bottom = self.holes.iter().find(|h| h.position.y == bottom_y)?.id;
-        Some([top, bottom])
+        let strip = match side {
+            PowerRailSide::Top => &pr.top,
+            PowerRailSide::Bottom => &pr.bottom,
+        };
+        let target_y = strip.rows.iter().find(|rail| rail.polarity == polarity)?.y;
+        self.holes
+            .iter()
+            .find(|hole| hole.position.y == target_y)
+            .map(|hole| hole.id)
     }
 
     /// 给定一个 hole, 返回它的 rail_id。
@@ -1220,6 +1332,22 @@ mod tests {
         assert_eq!(b.rail_ties()[0].key, "preset:negative:top-bottom");
         assert_eq!(b.rail_ties()[1].key, "preset:positive:top-bottom");
         assert_eq!(b.rail_ties()[0].source, RailTieSource::Preset);
+    }
+
+    #[test]
+    fn preset_power_rail_ties_use_the_rightmost_available_column() {
+        for board in [Preset::Hole400.make(30), Preset::Hole800.make(63)] {
+            let rightmost = board.power_rails().unwrap().top.rows[0]
+                .columns()
+                .max()
+                .unwrap();
+
+            assert_eq!(board.rail_ties().len(), 2);
+            for tie in board.rail_ties() {
+                assert_eq!(board.hole(tie.from).position.x, rightmost);
+                assert_eq!(board.hole(tie.to).position.x, rightmost);
+            }
+        }
     }
 
     #[test]

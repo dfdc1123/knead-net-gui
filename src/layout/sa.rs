@@ -856,8 +856,8 @@ pub(super) fn simulate(
     // 无绑定时 power_net_ids 为空, `populate_bridgeable_info` 内调用的
     // `propose_bridged_pairs` 返空 Vec, 没人会被标 bridgeable, Toggle 不会触发。
     let power_net_ids: Vec<NetId> = board
-        .power_rail_binding()
-        .map(|binding| binding.iter().map(|(_, net)| net).collect())
+        .power_rail_bindings()
+        .map(|bindings| bindings.iter().map(|(_, _, net)| net).collect())
         .unwrap_or_default();
     if config.bridge_policy != BridgePolicy::Disabled {
         populate_bridgeable_info(&mut state, circuit, board, &power_net_ids);
@@ -1568,17 +1568,26 @@ mod tests {
         state.x[0] = -1; // 越界, 也不可左移
         assert!(!can_shift_left_one(&state, &board, 0));
 
-        // Bridged 模式: cache 里有 (power.x-1, signal.x-1) → 可;
-        // x=0 是 RailTie 端点，不在 cache；最左可用 x=1 不可左移。
+        // Bridged 模式: 默认 RailTie 已移到最右，x=0 现在是最左合法候选。
         state.bridged[0] = true;
+        let target0 = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 0)
+            .expect("power x=0 candidate");
+        state.active_bridge_idx[0] = target0;
+        assert!(
+            !can_shift_left_one(&state, &board, 0),
+            "bridged 起点 x=0 已在物理边界，不能继续左移"
+        );
+
         let target1 = state.bridged_pin_pairs[0]
             .iter()
             .position(|pair| board.hole(pair[0].0).position.x == 1)
             .expect("power x=1 candidate");
         state.active_bridge_idx[0] = target1;
         assert!(
-            !can_shift_left_one(&state, &board, 0),
-            "bridged 起点 x=1 的左侧是固定 RailTie 端点，无 cache 命中"
+            can_shift_left_one(&state, &board, 0),
+            "bridged 起点 x=1 应能命中左侧 x=0 candidate"
         );
 
         // 切到非 gap 边缘的 bridge (power x=3, 同 group):

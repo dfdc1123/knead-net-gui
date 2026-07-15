@@ -152,19 +152,15 @@ impl Router for PathFinderRouter {
         }
 
         // ── 注入 power rail anchor ──
-        if let Some(binding) = board.power_rail_binding() {
-            for (polarity, net_id) in binding.iter() {
-                if (net_id.0) >= net_pins.len() {
-                    continue;
-                }
-                for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
-                    let pos = board.hole(anchor).position;
-                    let rail_id = board.effective_rail_id_of(anchor);
-                    net_pins[net_id.0].push((pos.x, pos.y, rail_id));
-                }
-                net_pins[net_id.0].sort_by_key(|&(x, y, r)| (r, x, y));
-                net_pins[net_id.0].dedup_by_key(|&mut (_, _, r)| r);
+        for (anchor, net_id) in board.bound_power_rail_anchors() {
+            if (net_id.0) >= net_pins.len() {
+                continue;
             }
+            let pos = board.hole(anchor).position;
+            let rail_id = board.effective_rail_id_of(anchor);
+            net_pins[net_id.0].push((pos.x, pos.y, rail_id));
+            net_pins[net_id.0].sort_by_key(|&(x, y, r)| (r, x, y));
+            net_pins[net_id.0].dedup_by_key(|&mut (_, _, r)| r);
         }
 
         // ── 检测元件内部跳线 ──

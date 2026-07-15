@@ -178,21 +178,17 @@ fn inspect_state_pins(
         });
     }
     // Power rail 虚拟 pin (绑定 net 在 anchor 位置) — 跟 cost_fast 一样注入。
-    if let Some(binding) = board.power_rail_binding() {
-        for (polarity, net_id) in binding.iter() {
-            if let Some(anchor) = board.power_rail_anchor(polarity) {
-                let pos = board.hole(anchor).position;
-                let rail_id = board.effective_rail_id_of(anchor);
-                all_pins.push(PinInfo {
-                    comp_id: ComponentId(0), // dummy; 虚拟 pin 由 pin_num 标识
-                    pin_num: format!("<virtual anchor {:?}>", polarity),
-                    x: pos.x,
-                    y: pos.y,
-                    rail_id,
-                    net: Some(net_id),
-                });
-            }
-        }
+    for (anchor, net_id) in board.bound_power_rail_anchors() {
+        let pos = board.hole(anchor).position;
+        let rail_id = board.effective_rail_id_of(anchor);
+        all_pins.push(PinInfo {
+            comp_id: ComponentId(0), // dummy; 虚拟 pin 由 pin_num 标识
+            pin_num: "<virtual power-rail anchor>".to_owned(),
+            x: pos.x,
+            y: pos.y,
+            rail_id,
+            net: Some(net_id),
+        });
     }
 
     // 阅 OOB pin

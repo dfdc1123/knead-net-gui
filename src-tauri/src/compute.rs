@@ -226,8 +226,10 @@ pub async fn start_compute(
             pcb_path,
             schematic_metadata,
             board: board_config.board,
-            positive_net: board_config.positive_net,
-            negative_net: board_config.negative_net,
+            top_positive_net: board_config.top_positive_net,
+            top_negative_net: board_config.top_negative_net,
+            bottom_positive_net: board_config.bottom_positive_net,
+            bottom_negative_net: board_config.bottom_negative_net,
             request,
             cancellation,
         })
@@ -261,8 +263,10 @@ struct ComputeJob {
     pcb_path: String,
     schematic_metadata: ComponentMetadataMap,
     board: Breadboard,
-    positive_net: Option<String>,
-    negative_net: Option<String>,
+    top_positive_net: Option<String>,
+    top_negative_net: Option<String>,
+    bottom_positive_net: Option<String>,
+    bottom_negative_net: Option<String>,
     request: ComputeRequest,
     cancellation: CancellationToken,
 }
@@ -274,8 +278,10 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
         pcb_path,
         schematic_metadata,
         board,
-        positive_net,
-        negative_net,
+        top_positive_net,
+        top_negative_net,
+        bottom_positive_net,
+        bottom_negative_net,
         request,
         cancellation,
     } = job;
@@ -294,29 +300,41 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
             e.message
         )
     })?;
-    for (polarity_zh, polarity_en, selected) in [
-        ("正极", "positive", positive_net.as_deref()),
-        ("负极", "negative", negative_net.as_deref()),
+    for (rail_zh, rail_en, selected) in [
+        ("上方正极", "top positive", top_positive_net.as_deref()),
+        ("上方负极", "top negative", top_negative_net.as_deref()),
+        (
+            "下方正极",
+            "bottom positive",
+            bottom_positive_net.as_deref(),
+        ),
+        (
+            "下方负极",
+            "bottom negative",
+            bottom_negative_net.as_deref(),
+        ),
     ] {
         if let Some(name) = selected {
             if !circuit.nets().iter().any(|net| net.name() == name) {
                 return Err(format!(
                     "{}: {name}",
                     match locale {
-                        UiLocale::ZhCn => format!("所选{polarity_zh}电源轨网络已不存在"),
+                        UiLocale::ZhCn => format!("所选{rail_zh}电源轨网络已不存在"),
                         UiLocale::En => {
-                            format!("The selected {polarity_en} power-rail net no longer exists")
+                            format!("The selected {rail_en} power-rail net no longer exists")
                         }
                     }
                 ));
             }
         }
     }
-    let board = knead_net::prepare_for_layout_with_power_nets(
+    let board = knead_net::prepare_for_layout_with_individual_power_nets(
         &mut circuit,
         board,
-        positive_net.as_deref(),
-        negative_net.as_deref(),
+        top_positive_net.as_deref(),
+        top_negative_net.as_deref(),
+        bottom_positive_net.as_deref(),
+        bottom_negative_net.as_deref(),
     )
     .board;
     let mut layout = Layout::new(&circuit);
@@ -689,11 +707,13 @@ fn snapshot_frame(
             .power_rail_of(tie.from)
             .expect("preset RailTie endpoint must be on a power rail")
             .polarity;
-        let bound_net = board.power_rail_binding().and_then(|binding| {
-            binding
-                .iter()
-                .find_map(|(candidate, net)| (candidate == polarity).then_some(net))
-        });
+        let tie_rail = board.effective_rail_id_of(tie.from);
+        let bound_net = board
+            .bound_power_rail_anchors()
+            .into_iter()
+            .find_map(|(anchor, net)| {
+                (board.effective_rail_id_of(anchor) == tie_rail).then_some(net)
+            });
         let bound_name = bound_net
             .filter(|net| net.raw() < circuit.nets().len())
             .map(|net| circuit.nets()[net.raw()].name().to_string());

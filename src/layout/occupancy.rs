@@ -72,14 +72,8 @@ impl Occupancy {
             std::collections::BTreeMap::new();
         let mut bound_by_rail: std::collections::BTreeMap<u32, NetId> =
             std::collections::BTreeMap::new();
-        if let Some(binding) = board.power_rail_binding() {
-            for (polarity, net) in binding.iter() {
-                if let Some(anchors) = board.power_rail_anchors(polarity) {
-                    for anchor in anchors {
-                        bound_by_rail.insert(board.effective_rail_id_of(anchor), net);
-                    }
-                }
-            }
+        for (anchor, net) in board.bound_power_rail_anchors() {
+            bound_by_rail.insert(board.effective_rail_id_of(anchor), net);
         }
 
         for (idx, placement_opt) in layout.placements().iter().enumerate() {

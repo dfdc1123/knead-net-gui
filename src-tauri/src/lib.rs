@@ -51,8 +51,10 @@ pub(crate) struct AppState {
 pub(crate) struct BreadboardConfig {
     pub(crate) preset: String,
     pub(crate) board: knead_net::layout::Breadboard,
-    pub(crate) positive_net: Option<String>,
-    pub(crate) negative_net: Option<String>,
+    pub(crate) top_positive_net: Option<String>,
+    pub(crate) top_negative_net: Option<String>,
+    pub(crate) bottom_positive_net: Option<String>,
+    pub(crate) bottom_negative_net: Option<String>,
 }
 
 // ─────────────── Step 1: 选目录 + 渲染 .sch ───────────────
@@ -185,6 +187,14 @@ struct PowerNetOptions {
     negative_net: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct PowerNetSelection {
+    top_positive_net: Option<String>,
+    top_negative_net: Option<String>,
+    bottom_positive_net: Option<String>,
+    bottom_negative_net: Option<String>,
+}
+
 fn power_net_options_for(
     circuit: &knead_net::Circuit,
     board: &knead_net::layout::Breadboard,
@@ -240,8 +250,7 @@ fn set_breadboard(
     state: tauri::State<AppState>,
     preset: String,
     cols: usize,
-    positive_net: Option<String>,
-    negative_net: Option<String>,
+    power_nets: PowerNetSelection,
     locale: UiLocale,
 ) -> Result<BreadboardInfo, String> {
     let p = preset_from_str(&preset)
@@ -267,11 +276,19 @@ fn set_breadboard(
         has_power_rails: board.power_rails().is_some(),
     };
     let has_power_rails = board.power_rails().is_some();
+    let PowerNetSelection {
+        top_positive_net,
+        top_negative_net,
+        bottom_positive_net,
+        bottom_negative_net,
+    } = power_nets;
     *state.breadboard_cfg.lock().map_err(|e| e.to_string())? = Some(BreadboardConfig {
         preset,
         board,
-        positive_net: has_power_rails.then_some(positive_net).flatten(),
-        negative_net: has_power_rails.then_some(negative_net).flatten(),
+        top_positive_net: has_power_rails.then_some(top_positive_net).flatten(),
+        top_negative_net: has_power_rails.then_some(top_negative_net).flatten(),
+        bottom_positive_net: has_power_rails.then_some(bottom_positive_net).flatten(),
+        bottom_negative_net: has_power_rails.then_some(bottom_negative_net).flatten(),
     });
     Ok(info)
 }

@@ -150,18 +150,11 @@ pub(super) fn collect_matching_rail_ids(
 ) -> std::collections::HashSet<u32> {
     let mut ids = std::collections::HashSet::new();
     let Some(pin_net) = pin_net else { return ids };
-    let Some(binding) = board.power_rail_binding() else {
-        return ids;
-    };
-    for (polarity, net_id) in binding.iter() {
+    for (anchor, net_id) in board.bound_power_rail_anchors() {
         if net_id != pin_net {
             continue;
         }
-        if let Some(anchors) = board.power_rail_anchors(polarity) {
-            for anchor in anchors {
-                ids.insert(board.effective_rail_id_of(anchor));
-            }
-        }
+        ids.insert(board.effective_rail_id_of(anchor));
     }
     ids
 }

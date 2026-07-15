@@ -30,8 +30,10 @@
   let cols = $state(30);
   let info = $state<Info | null>(null);
   let netNames = $state<string[]>([]);
-  let positiveNet = $state("");
-  let negativeNet = $state("");
+  let topPositiveNet = $state("");
+  let topNegativeNet = $state("");
+  let bottomPositiveNet = $state("");
+  let bottomNegativeNet = $state("");
   let powerOptionsReady = $state(false);
   let busy = $state(false);
   let error = $state("");
@@ -48,8 +50,10 @@
     try {
       const options = await invoke<PowerNetOptions>("get_power_net_options", { preset, locale });
       netNames = options.net_names;
-      positiveNet = options.positive_net ?? "";
-      negativeNet = options.negative_net ?? "";
+      topPositiveNet = options.positive_net ?? "";
+      topNegativeNet = options.negative_net ?? "";
+      bottomPositiveNet = options.positive_net ?? "";
+      bottomNegativeNet = options.negative_net ?? "";
       powerOptionsReady = true;
     } catch (e) {
       powerOptionsReady = false;
@@ -68,7 +72,7 @@
   // cols 变化 → 自动重提交 (debounce 250ms)
   let timer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    cols; preset; positiveNet; negativeNet; powerOptionsReady;
+    cols; preset; topPositiveNet; topNegativeNet; bottomPositiveNet; bottomNegativeNet; powerOptionsReady;
     if (timer) clearTimeout(timer);
     if (!powerOptionsReady) return;
     timer = setTimeout(() => submit(preset, cols), 250);
@@ -82,8 +86,12 @@
       info = await invoke<Info>("set_breadboard", {
         preset: p,
         cols: c,
-        positiveNet: hasPowerRails && positiveNet ? positiveNet : null,
-        negativeNet: hasPowerRails && negativeNet ? negativeNet : null,
+        powerNets: {
+          top_positive_net: hasPowerRails && topPositiveNet ? topPositiveNet : null,
+          top_negative_net: hasPowerRails && topNegativeNet ? topNegativeNet : null,
+          bottom_positive_net: hasPowerRails && bottomPositiveNet ? bottomPositiveNet : null,
+          bottom_negative_net: hasPowerRails && bottomNegativeNet ? bottomNegativeNet : null,
+        },
         locale,
       });
       onBoardChange({ preset: p, cols: info.cols });
@@ -137,21 +145,41 @@
         {#if hasPowerRails}
           <fieldset class="fieldset" disabled={busy || !powerOptionsReady}>
             <legend class="fieldset-legend">{ui.step2.powerRailBinding}</legend>
-            <label class="fieldset-label" for="positive-power-net">{ui.step2.positiveRail}</label>
-            <select id="positive-power-net" class="select w-full font-mono" bind:value={positiveNet}>
-              <option value="">{ui.step2.unbound}</option>
-              {#each netNames as net}
-                <option value={net}>{net}</option>
-              {/each}
-            </select>
+            <p class="label mt-1 font-semibold">{ui.step2.topPowerRails}</p>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="fieldset-label flex-col items-stretch gap-1" for="top-negative-power-net">
+                <span>{ui.step2.negativeRail}</span>
+                <select id="top-negative-power-net" class="select w-full min-w-0 font-mono" bind:value={topNegativeNet}>
+                  <option value="">{ui.step2.unbound}</option>
+                  {#each netNames as net}<option value={net}>{net}</option>{/each}
+                </select>
+              </label>
+              <label class="fieldset-label flex-col items-stretch gap-1" for="top-positive-power-net">
+                <span>{ui.step2.positiveRail}</span>
+                <select id="top-positive-power-net" class="select w-full min-w-0 font-mono" bind:value={topPositiveNet}>
+                  <option value="">{ui.step2.unbound}</option>
+                  {#each netNames as net}<option value={net}>{net}</option>{/each}
+                </select>
+              </label>
+            </div>
 
-            <label class="fieldset-label mt-2" for="negative-power-net">{ui.step2.negativeRail}</label>
-            <select id="negative-power-net" class="select w-full font-mono" bind:value={negativeNet}>
-              <option value="">{ui.step2.unbound}</option>
-              {#each netNames as net}
-                <option value={net}>{net}</option>
-              {/each}
-            </select>
+            <p class="label mt-2 font-semibold">{ui.step2.bottomPowerRails}</p>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-negative-power-net">
+                <span>{ui.step2.negativeRail}</span>
+                <select id="bottom-negative-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomNegativeNet}>
+                  <option value="">{ui.step2.unbound}</option>
+                  {#each netNames as net}<option value={net}>{net}</option>{/each}
+                </select>
+              </label>
+              <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-positive-power-net">
+                <span>{ui.step2.positiveRail}</span>
+                <select id="bottom-positive-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomPositiveNet}>
+                  <option value="">{ui.step2.unbound}</option>
+                  {#each netNames as net}<option value={net}>{net}</option>{/each}
+                </select>
+              </label>
+            </div>
             <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.powerRailHint}</p>
           </fieldset>
         {/if}
@@ -177,7 +205,13 @@
         </div>
         <div inert class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           {#if info}
-            <BreadboardPreview {preset} cols={info.cols} panCanvas={false} />
+            <BreadboardPreview
+              {preset}
+              cols={info.cols}
+              panCanvas={false}
+              tieNegativeRails={topNegativeNet === bottomNegativeNet}
+              tiePositiveRails={topPositiveNet === bottomPositiveNet}
+            />
           {:else}
             <div class="absolute inset-0 grid place-items-center"><span class="loading loading-spinner loading-md text-primary"></span></div>
           {/if}

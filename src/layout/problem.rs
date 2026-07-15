@@ -51,14 +51,10 @@ impl AnnealProblem {
 
         let mut fixed_geometry = PlacedGeometry::default();
 
-        if let Some(binding) = board.power_rail_binding() {
-            for (polarity, net) in binding.iter() {
-                for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
-                    fixed_geometry
-                        .rail_owners
-                        .insert(board.effective_rail_id_of(anchor), Some(net));
-                }
-            }
+        for (anchor, net) in board.bound_power_rail_anchors() {
+            fixed_geometry
+                .rail_owners
+                .insert(board.effective_rail_id_of(anchor), Some(net));
         }
 
         for tie in board.rail_ties() {

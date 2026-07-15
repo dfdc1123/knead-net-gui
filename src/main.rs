@@ -95,6 +95,18 @@ fn main() {
                 board.positive_names()
             );
         }
+        PowerRailMatch::IndividuallyBound(bindings) => {
+            let labels: Vec<_> = bindings
+                .iter()
+                .map(|(side, polarity, id)| {
+                    format!(
+                        "{side:?} {polarity:?} -> {}",
+                        circuit.nets()[id.raw()].name()
+                    )
+                })
+                .collect();
+            println!("Power rails: {}", labels.join(", "));
+        }
         PowerRailMatch::Unmatched => {
             eprintln!(
                 "Power rail: no match (positive={:?}, negative={:?})",

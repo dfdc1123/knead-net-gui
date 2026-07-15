@@ -220,19 +220,11 @@ impl SAContext {
         // 电源轨 anchor
         self.power_anchor_world.clear();
         self.power_anchor_nets.clear();
-        if let Some(binding) = board.power_rail_binding() {
-            let mut seen = std::collections::HashSet::new();
-            for (polarity, net_id) in binding.iter() {
-                for anchor in board.power_rail_anchors(polarity).into_iter().flatten() {
-                    let pos = board.hole(anchor).position;
-                    let rail_id = board.effective_rail_id_of(anchor);
-                    if !seen.insert((rail_id, net_id)) {
-                        continue;
-                    }
-                    self.power_anchor_world.push((pos.x, pos.y, rail_id));
-                    self.power_anchor_nets.push(Some(net_id));
-                }
-            }
+        for (anchor, net_id) in board.bound_power_rail_anchors() {
+            let pos = board.hole(anchor).position;
+            let rail_id = board.effective_rail_id_of(anchor);
+            self.power_anchor_world.push((pos.x, pos.y, rail_id));
+            self.power_anchor_nets.push(Some(net_id));
         }
     }
 }

@@ -18,6 +18,8 @@
     panCanvas = true,
     selected = null,
     completedWireIds = [],
+    tieNegativeRails = true,
+    tiePositiveRails = true,
     onSelect = () => {},
   }: {
     preset: BreadboardPreset;
@@ -27,6 +29,8 @@
     panCanvas?: boolean;
     selected?: CircuitSelection | null;
     completedWireIds?: string[];
+    tieNegativeRails?: boolean;
+    tiePositiveRails?: boolean;
     onSelect?: (selection: CircuitSelection | null) => void;
   } = $props();
 
@@ -60,10 +64,17 @@
     return result;
   }
 
-  function presetRailTies(kind: BreadboardPreset): LayoutWire[] {
+  function presetRailTies(
+    kind: BreadboardPreset,
+    columnCount: number,
+    includeNegative: boolean,
+    includePositive: boolean,
+  ): LayoutWire[] {
     if (kind === "hole170") return [];
-    const col = kind === "hole800" ? 2 : 0;
-    return [
+    const availableColumns = railColumns(kind, columnCount);
+    const col = availableColumns[availableColumns.length - 1];
+    if (col === undefined) return [];
+    const ties: LayoutWire[] = [
       {
         id: "rail-tie:preset:negative:top-bottom",
         from: { region: "rail-top", col, row: 0 },
@@ -83,6 +94,7 @@
         net_name: "positive power-rail tie",
       },
     ];
+    return ties.filter((wire) => wire.id.includes(":negative:") ? includeNegative : includePositive);
   }
 
   let safeCols = $derived(Math.max(1, Math.trunc(Number(cols) || 1)));
@@ -220,14 +232,19 @@
 
   let visibleWires = $derived.by(() => {
     const wires = frame?.wires ?? [];
-    return wires.some((wire) => wire.kind === "rail-tie")
+    return frame
       ? wires
-      : [...wires, ...presetRailTies(preset)];
+      : [...wires, ...presetRailTies(preset, safeCols, tieNegativeRails, tiePositiveRails)];
   });
   let plannedWires = $derived(planWires(visibleWires));
 
   function wirePath(plan: PlannedWire) {
     const { from, to } = plan;
+    if (plan.wire.kind === "rail-tie") {
+      const bulge = plan.wire.id.includes(":positive:") ? 16 : 9;
+      const middleY = (from.y + to.y) / 2;
+      return `M ${from.x} ${from.y} C ${from.x + bulge} ${middleY}, ${to.x + bulge} ${middleY}, ${to.x} ${to.y}`;
+    }
     if (!plan.horizontal) {
       const middleY = (from.y + to.y) / 2;
       return `M ${from.x} ${from.y} C ${from.x} ${middleY}, ${to.x} ${middleY}, ${to.x} ${to.y}`;
