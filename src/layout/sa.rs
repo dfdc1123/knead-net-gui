@@ -119,7 +119,9 @@ pub struct SAConfig {
     pub max_iters: usize,
     /// Attempt 0 的温度。
     pub t_start: f64,
-    /// 最后一次 attempt 的温度；schedule 按 `max_iters` 归一化推导。
+    /// 最后一次 attempt 的温度；schedule 按 `max_iters` 归一化推导。长预算 spectral
+    /// 搜索在该值低于 0.01 时保留前 90% 的 `t_start → 0.01` 深搜索曲线，
+    /// 最后 10% 再淬火到该值。
     pub t_end: f64,
     pub weights: Weights,
     /// 决定随机扰动序列; 改 seed 可重新跑一遍出不同结果。
@@ -876,6 +878,9 @@ pub(super) struct SimulationControl<'a> {
 }
 
 fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
+    const EXPLORATION_END: f64 = 0.01;
+    const QUENCH_START: f64 = 0.9;
+
     let start = if config.t_start.is_finite() && config.t_start > 0.0 {
         config.t_start
     } else {
@@ -890,15 +895,31 @@ fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
         return start;
     }
     let progress = attempt.min(config.max_iters - 1) as f64 / (config.max_iters - 1) as f64;
-    start * (end / start).powf(progress)
+    if config.use_spectral && config.max_iters >= 20_000 && end < EXPLORATION_END {
+        if progress <= QUENCH_START {
+            start * (EXPLORATION_END / start).powf(progress)
+        } else {
+            let quench_start_temperature = start * (EXPLORATION_END / start).powf(QUENCH_START);
+            let quench_progress = (progress - QUENCH_START) / (1.0 - QUENCH_START);
+            quench_start_temperature * (end / quench_start_temperature).powf(quench_progress)
+        }
+    } else {
+        start * (end / start).powf(progress)
+    }
 }
 
 fn stagnation_limit(config: &SAConfig) -> usize {
-    if config.use_spectral && config.max_iters >= 20_000 {
-        config.max_iters / 4
+    // Deep-quench and full-quality budgets run to completion. Only medium
+    // non-quenching spectral searches may trim a small, demonstrably stagnant tail.
+    if config.use_spectral && config.t_end >= 0.01 && (20_000..40_000).contains(&config.max_iters) {
+        config.max_iters / 2
     } else {
         0
     }
+}
+
+fn stagnation_check_start(config: &SAConfig) -> usize {
+    config.max_iters.saturating_mul(9) / 10
 }
 
 /// 跑模拟退火, 返回最佳 [`SAState`] 和 attempt 分类计数。
@@ -975,7 +996,7 @@ pub(super) fn simulate(
 
     for iteration in 0..config.max_iters {
         if max_stall_iters > 0
-            && iteration >= config.max_iters / 2
+            && iteration >= stagnation_check_start(config)
             && attempts_since_best >= max_stall_iters
         {
             break;
@@ -1990,6 +2011,27 @@ mod tests {
     }
 
     #[test]
+    fn long_spectral_schedule_reserves_the_first_nine_tenths_for_deep_search() {
+        let config = SAConfig {
+            max_iters: 40_000,
+            t_start: 40.0,
+            t_end: 0.001,
+            use_spectral: true,
+            ..SAConfig::default()
+        };
+        let midpoint = (config.max_iters - 1) / 2;
+        let progress = midpoint as f64 / (config.max_iters - 1) as f64;
+        let exploration_temperature = 40.0 * (0.01_f64 / 40.0).powf(progress);
+
+        assert!(
+            (temperature_at_attempt(&config, midpoint) - exploration_temperature).abs() < 1e-12
+        );
+        assert!(
+            (temperature_at_attempt(&config, config.max_iters - 1) - config.t_end).abs() < 1e-12
+        );
+    }
+
+    #[test]
     fn every_attempt_is_classified_even_without_a_candidate_or_after_invalidity() {
         let circuit = simple_circuit();
         let preprocess = crate::layout::preprocess::PreprocessResult {
@@ -2056,7 +2098,7 @@ mod tests {
     }
 
     #[test]
-    fn stagnation_limit_stops_a_seed_that_cannot_improve() {
+    fn stagnation_stop_preserves_ninety_percent_of_the_attempt_budget() {
         let circuit = simple_circuit();
         let outcome = simulate(
             vec![],
@@ -2083,10 +2125,27 @@ mod tests {
                 use_spectral: true,
                 ..SAConfig::default()
             }),
-            5_000
+            10_000
         );
-        assert_eq!(outcome.metrics.attempted, 10_000);
-        assert_eq!(outcome.metrics.no_candidate, 10_000);
+        assert_eq!(outcome.metrics.attempted, 18_000);
+        assert_eq!(outcome.metrics.no_candidate, 18_000);
+        assert_eq!(
+            stagnation_limit(&SAConfig {
+                max_iters: 20_000,
+                t_end: 0.001,
+                use_spectral: true,
+                ..SAConfig::default()
+            }),
+            0
+        );
+        assert_eq!(
+            stagnation_limit(&SAConfig {
+                max_iters: 40_000,
+                use_spectral: true,
+                ..SAConfig::default()
+            }),
+            0
+        );
     }
 
     /// 验证 SAState::from_greedy 在标准板上不会试着把元件放中间 blocked row。

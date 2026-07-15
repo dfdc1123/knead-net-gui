@@ -40,10 +40,10 @@ impl ComputeProfile {
     }
 
     fn config(self) -> SAConfig {
-        let (n_seeds, max_iters) = match self {
-            Self::Quick => (8, 5_000),
-            Self::Standard => (32, 20_000),
-            Self::Full => (128, 40_000),
+        let (n_seeds, max_iters, t_end) = match self {
+            Self::Quick => (8, 5_000, 0.1),
+            Self::Standard => (32, 20_000, 0.001),
+            Self::Full => (128, 40_000, 0.001),
         };
         SAConfig {
             max_iters,
@@ -53,7 +53,7 @@ impl ComputeProfile {
                 initial: BridgeInitial::BestOfBoth,
             },
             t_start: 40.0,
-            t_end: 0.1,
+            t_end,
             ..SAConfig::default()
         }
     }
@@ -952,7 +952,6 @@ mod tests {
         assert_eq!((full.n_seeds, full.max_iters), (128, 40_000));
         for config in [quick, standard, full] {
             assert_eq!(config.t_start, 40.0);
-            assert_eq!(config.t_end, 0.1);
             assert!(config.use_spectral);
             assert_eq!(
                 config.bridge_policy,
@@ -961,6 +960,9 @@ mod tests {
                 }
             );
         }
+        assert_eq!(quick.t_end, 0.1);
+        assert_eq!(standard.t_end, 0.001);
+        assert_eq!(full.t_end, 0.001);
     }
 
     #[test]
