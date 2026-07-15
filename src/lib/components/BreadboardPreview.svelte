@@ -259,6 +259,12 @@
     return `${pin.number || "?"}${detail ? ` · ${detail}` : ""}`;
   }
 
+  function pinCalloutText(pin: LayoutPin) {
+    const name = pin.name?.trim();
+    const detail = [name, pin.pin_type?.trim()].filter(Boolean).join(" · ");
+    return `${pin.number || "?"}${detail ? ` · ${detail}` : ""}`;
+  }
+
   function axialGeometry(part: LayoutPart) {
     if (part.pins.length < 2) return null;
     const first = holePosition(part.pins[0].hole);
@@ -396,7 +402,8 @@
     const points = part.pins.map((candidate) => holePosition(candidate.hole));
     const spanX = Math.max(...points.map(({ x }) => x)) - Math.min(...points.map(({ x }) => x));
     const spanY = Math.max(...points.map(({ y }) => y)) - Math.min(...points.map(({ y }) => y));
-    const text = pinLabelText(pin);
+    // 符号引脚形状（如 line / inverted）只影响原理图画法，装配标注不展示。
+    const text = pinCalloutText(pin);
     const width = Math.min(72, Math.max(14, text.length * 3.6 + 7));
     const height = 10;
     let x = point.x;
@@ -438,8 +445,6 @@
       }
     }
 
-    x = Math.max(width / 2 + 2, Math.min(boardWidth - width / 2 - 2, x));
-    y = Math.max(height / 2 + 2, Math.min(boardHeight - height / 2 - 2, y));
     return { point, text, width, height, x, y };
   }
 
@@ -474,14 +479,8 @@
 
   function moveCalloutToLane(callout: PinCallout, lane: number) {
     callout.lane = lane;
-    callout.x = Math.max(
-      callout.width / 2 + 2,
-      Math.min(boardWidth - callout.width / 2 - 2, callout.baseX + callout.stepX * lane),
-    );
-    callout.y = Math.max(
-      callout.height / 2 + 2,
-      Math.min(boardHeight - callout.height / 2 - 2, callout.baseY + callout.stepY * lane),
-    );
+    callout.x = callout.baseX + callout.stepX * lane;
+    callout.y = callout.baseY + callout.stepY * lane;
   }
 
   function planSelectedPinLabels(part: LayoutPart) {
@@ -527,6 +526,23 @@
     }
 
     return planned;
+  }
+
+  function calloutLeaderEnd(callout: PinCallout) {
+    const dx = callout.point.x - callout.x;
+    const dy = callout.point.y - callout.y;
+    const halfWidth = callout.width / 2;
+    const halfHeight = callout.height / 2;
+    const edgeScale = 1 / Math.max(Math.abs(dx) / halfWidth, Math.abs(dy) / halfHeight);
+
+    if (!Number.isFinite(edgeScale) || edgeScale >= 1) {
+      return { x: callout.x, y: callout.y };
+    }
+
+    return {
+      x: callout.x + dx * edgeScale,
+      y: callout.y + dy * edgeScale,
+    };
   }
 
   function hasDarkBody(part: LayoutPart) {
@@ -660,6 +676,7 @@
     width={displayWidth * zoom}
     height={displayHeight * zoom}
     viewBox="0 0 {boardWidth} {boardHeight}"
+    style:overflow="visible"
     role="img"
     aria-label={ui.boardPreview.preview(preset === "hole170" ? ui.boardPreview.hole170 : preset === "hole400" ? ui.boardPreview.hole400 : ui.boardPreview.hole800)}
     class="block max-w-none"
@@ -897,19 +914,35 @@
             pointer-events="none"
           >{part.reference}</text>
 
-          {#if selected?.type === "component" && selected.id === part.reference}
-            <g aria-label={ui.boardPreview.pinDefinitions(part.reference)} pointer-events="none">
-              {#each planSelectedPinLabels(part) as pinLabel}
+          <title>{part.reference}{part.value ? ` · ${part.value}` : ""}</title>
+          </g>
+        {/each}
+      </g>
+
+      {#if selected?.type === "component"}
+        {@const selectedPart = frame.parts.find((part) => part.reference === selected.id)}
+        {#if selectedPart}
+          {@const pinLabels = planSelectedPinLabels(selectedPart)}
+          <g aria-label={ui.boardPreview.pinDefinitions(selectedPart.reference)} pointer-events="none">
+            <!-- 所有引线统一置于标签下层，并只画到标签边框，避免穿过任何标签。 -->
+            <g aria-hidden="true">
+              {#each pinLabels as pinLabel}
+                {@const leaderEnd = calloutLeaderEnd(pinLabel)}
                 <line
                   x1={pinLabel.point.x}
                   y1={pinLabel.point.y}
-                  x2={pinLabel.x}
-                  y2={pinLabel.y}
+                  x2={leaderEnd.x}
+                  y2={leaderEnd.y}
                   stroke="var(--color-warning-content)"
                   stroke-width="0.9"
                   stroke-dasharray="2 1.5"
                   opacity="0.85"
                 />
+              {/each}
+            </g>
+
+            <g>
+              {#each pinLabels as pinLabel}
                 <rect
                   x={pinLabel.x - pinLabel.width / 2}
                   y={pinLabel.y - pinLabel.height / 2}
@@ -917,6 +950,7 @@
                   height={pinLabel.height}
                   rx="2.5"
                   fill="var(--color-base-100)"
+                  fill-opacity="1"
                   stroke="var(--color-warning-content)"
                   stroke-width="0.9"
                 />
@@ -932,11 +966,9 @@
                 >{pinLabel.text}</text>
               {/each}
             </g>
-          {/if}
-          <title>{part.reference}{part.value ? ` · ${part.value}` : ""}</title>
           </g>
-        {/each}
-      </g>
+        {/if}
+      {/if}
     {/if}
   </svg>
 </div>
