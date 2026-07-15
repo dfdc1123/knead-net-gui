@@ -87,6 +87,7 @@ fn rail_conflict_count(rail_map: &[Vec<Option<crate::circuit::NetId>>]) -> usize
 #[derive(Debug, Clone, Copy)]
 struct CompactTerms {
     area_sum: f64,
+    left_compaction_sum: f64,
     row_squash_penalty: f64,
     occupied_rails: usize,
 }
@@ -94,6 +95,7 @@ struct CompactTerms {
 fn compact_terms(compact_map: &[Vec<BBox>]) -> CompactTerms {
     let mut terms = CompactTerms {
         area_sum: 0.0,
+        left_compaction_sum: 0.0,
         row_squash_penalty: 0.0,
         occupied_rails: 0,
     };
@@ -105,6 +107,10 @@ fn compact_terms(compact_map: &[Vec<BBox>]) -> CompactTerms {
         let min_x = cells.iter().map(|bbox| bbox.min_x).min().unwrap();
         let max_x = cells.iter().map(|bbox| bbox.max_x).max().unwrap();
         terms.area_sum += (max_x - min_x + 1) as f64;
+        terms.left_compaction_sum += cells
+            .iter()
+            .map(|bbox| (bbox.min_x - min_x) as f64)
+            .sum::<f64>();
 
         let unique_rows = cells
             .iter()
@@ -495,6 +501,7 @@ fn cost_fast_inner(
             + w.column_conflict * col_conflict_count as f64
             + w.out_of_bounds * oob_count as f64
             + w.compactness * compact.area_sum
+            + w.left_compaction * compact.left_compaction_sum
             + w.row_squash * compact.row_squash_penalty
             + rail_cross
             + congestion_penalty,
@@ -711,6 +718,7 @@ fn cost_breakdown_inner(
         column_conflict: w.column_conflict * col_conflict_count as f64,
         out_of_bounds: w.out_of_bounds * oob_count as f64,
         compactness: w.compactness * compact.area_sum,
+        left_compaction: w.left_compaction * compact.left_compaction_sum,
         row_squash: w.row_squash * compact.row_squash_penalty,
         rail_crossing: rail_cross,
         mst_congestion: congestion_penalty,
@@ -720,6 +728,7 @@ fn cost_breakdown_inner(
         coll_count,
         bbox_overlap_count,
         area_sum: compact.area_sum,
+        left_compaction_sum: compact.left_compaction_sum,
         row_squash_penalty: compact.row_squash_penalty,
     };
     let total = breakdown.mst
@@ -728,6 +737,7 @@ fn cost_breakdown_inner(
         + breakdown.column_conflict
         + breakdown.out_of_bounds
         + breakdown.compactness
+        + breakdown.left_compaction
         + breakdown.row_squash
         + breakdown.rail_crossing
         + breakdown.mst_congestion;
@@ -743,6 +753,7 @@ pub(crate) struct CostBreakdown {
     pub column_conflict: f64,
     pub out_of_bounds: f64,
     pub compactness: f64,
+    pub left_compaction: f64,
     pub row_squash: f64,
     pub rail_crossing: f64,
     pub mst_congestion: f64,
@@ -752,5 +763,6 @@ pub(crate) struct CostBreakdown {
     pub coll_count: u32,
     pub bbox_overlap_count: u32,
     pub area_sum: f64,
+    pub left_compaction_sum: f64,
     pub row_squash_penalty: f64,
 }

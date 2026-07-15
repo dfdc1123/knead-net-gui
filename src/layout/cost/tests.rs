@@ -93,6 +93,7 @@ fn weights_legacy() -> Weights {
     Weights {
         mst: 1.0,
         compactness: 0.0,
+        left_compaction: 0.0,
         rail_crossing: 0.0,
         row_squash: 0.0,
         ..Weights::default()
@@ -107,6 +108,7 @@ fn zero_weights() -> Weights {
         column_conflict: 0.0,
         out_of_bounds: 0.0,
         compactness: 0.0,
+        left_compaction: 0.0,
         rail_crossing: 0.0,
         row_squash: 0.0,
         mst_congestion: 0.0,
@@ -311,6 +313,7 @@ fn mixed_fixed_bridged_and_power_inputs_are_permutation_invariant() {
                 breakdown.column_conflict,
                 breakdown.out_of_bounds,
                 breakdown.compactness,
+                breakdown.left_compaction,
                 breakdown.row_squash,
                 breakdown.rail_crossing,
             ],
@@ -1025,6 +1028,7 @@ fn compactness_penalizes_horizontal_spread() {
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
         column_conflict: 0.0,
+        left_compaction: 0.0,
         row_squash: 0.0,
         ..Weights::default()
     };
@@ -1057,6 +1061,59 @@ fn compactness_penalizes_horizontal_spread() {
         "拉开 5 列 (x 0..5) 应 cost = 0.5 * 6 = 3.0, got {c_wide}"
     );
     assert!(c_wide > c_tight);
+}
+
+/// 左右边界不变时，内部元件左移也应立刻得到更低的局部紧密度成本。
+#[test]
+fn left_compaction_rewards_internal_left_shift_without_span_change() {
+    let mut circuit = three_single_pin_components();
+    for pin in &mut circuit.pins {
+        pin.net = None;
+    }
+    circuit.nets.clear();
+
+    // 屏蔽现有成本项，只保留新加入的默认 left_compaction 权重。
+    let w = Weights {
+        mst: 0.0,
+        pin_overlap: 0.0,
+        b_box_overlap: 0.0,
+        column_conflict: 0.0,
+        out_of_bounds: 0.0,
+        compactness: 0.0,
+        row_squash: 0.0,
+        mst_congestion: 0.0,
+        ..Weights::default()
+    };
+    let spread = SAState {
+        placeable: vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+        x: vec![0, 5, 10],
+        y: vec![0, 1, 2],
+        rotation: vec![Rotation::R0; 3],
+        ..SAState::no_bridging(3)
+    };
+    let inner_shifted_left = SAState {
+        x: vec![0, 4, 10],
+        ..spread.clone()
+    };
+    let translated = SAState {
+        x: vec![3, 8, 13],
+        ..spread.clone()
+    };
+
+    let spread_cost = cost(&spread, &circuit, &board(), &[], &w);
+    let shifted_cost = cost(&inner_shifted_left, &circuit, &board(), &[], &w);
+    let translated_cost = cost(&translated, &circuit, &board(), &[], &w);
+
+    assert_eq!(spread_cost, 15.0 * w.left_compaction);
+    assert_eq!(shifted_cost, 14.0 * w.left_compaction);
+    assert!(
+        shifted_cost < spread_cost,
+        "左右跨度同为 11 时，内部元件左移应降低 left_compaction: spread={spread_cost}, shifted={shifted_cost}"
+    );
+    assert_eq!(
+        translated_cost, spread_cost,
+        "整体水平平移不应改变 left_compaction"
+    );
 }
 
 /// 同样 2 个 1-pin 元件, 同列: cost 随垂直跨度增长, 跟水平等价 (x / y 平等)。
@@ -1096,6 +1153,7 @@ fn compactness_only_x_not_y() {
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
         column_conflict: 0.0,
+        left_compaction: 0.0,
         row_squash: 0.0,
         ..Weights::default()
     };
@@ -1171,6 +1229,7 @@ fn compactness_rail_crossing_penalty() {
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
         column_conflict: 0.0,
+        left_compaction: 0.0,
         ..Weights::default()
     };
 
@@ -1242,6 +1301,7 @@ fn compactness_rail_split_avoids_central_channel_inflation() {
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
         column_conflict: 0.0,
+        left_compaction: 0.0,
         ..Weights::default()
     };
 

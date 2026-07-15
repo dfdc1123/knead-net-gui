@@ -53,11 +53,12 @@ pub(crate) use bridge::propose_bridged_pair;
 #[cfg(test)]
 pub(crate) use mst::mst_wire_length;
 
-/// SA 成本函数的九项权重。
+/// SA 成本函数的十项权重。
 ///
 /// 成本 = `mst * MST_sum + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
 ///       + column_conflict * rail owner 最少移出 endpoint 数 + out_of_bounds * 越界 pin 数
 ///       + compactness * (按 rail 分组的 union bbox 面积之和)
+///       + left_compaction * Σ (bbox.min_x - rail_min_x) (按 rail)
 ///       + row_squash * Σ max(0, n_comps - unique_min_y) (按 rail, 推元件散布到不同行)
 ///       + rail_crossing * [用了 ≥2 个 rail]
 ///       + mst_congestion * 超出 rail 空孔容量的 MST degree`
@@ -83,6 +84,9 @@ pub struct Weights {
     /// 紧凑度: 按 rail 分组, 每组算 union bbox 水平跨度 `(max_x - min_x + 1)`,
     /// 各 rail 加和。只算 x, 不再算 y — y 方向由 row_squash 管。
     pub compactness: f64,
+    /// 局部向左压紧: 每条 rail 内各 bbox 左边缘到该 rail 最左 bbox 的距离之和。
+    /// 与整体平移无关；内部元件左移即刻降 cost，补足 compactness 只看左右边界的平台区。
+    pub left_compaction: f64,
     /// 同时使用 2+ 个 rail 时的额外固定惩罚, 鼓励同 rail 排布。
     /// 跨 rail 至少要一根 ~3 孔 jumper, 这项比单 cell 紧凑更贵。
     pub rail_crossing: f64,
@@ -113,6 +117,8 @@ impl Default for Weights {
             // 紧凑度: 1 cell 水平跨度 ≈ 0.5 MST cell 的代价, 让 MST 仍有空间优化跨列 net,
             // 但水平空隙会被这股力挤掉。
             compactness: 0.5,
+            // 与跨度项同量级，主要在 MST 相同或接近时提供稳定的向左压紧梯度。
+            left_compaction: 0.5,
             // 跨 rail = 多一根 jumper + 视觉割裂, 取约 5 cell MST, 比单 cell 紧凑贵
             // 但比 column_conflict 软得多, 不会让 SA 为了"必须跨 rail 的电路"去撞列冲突。
             rail_crossing: 5.0,

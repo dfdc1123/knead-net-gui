@@ -262,6 +262,7 @@ mod tests {
             column_conflict: 0.0,
             out_of_bounds: 0.0,
             compactness: 0.0,
+            left_compaction: 0.0,
             rail_crossing: 0.0,
             row_squash: 0.0,
             mst_congestion: 0.0,
