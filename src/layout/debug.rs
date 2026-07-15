@@ -53,7 +53,7 @@ pub(crate) fn diagnose_expensive_seeds(
                 state, circuit, board, problem, weights,
             );
             eprintln!(
-                "  分解:\n    mst             = {:>10.2}  (sum={:.2})\n    mst_congestion  = {:>10.2}\n    pin_overlap     = {:>10.2}  (count={})\n    bbox_overlap    = {:>10.2}  (cells={})\n    hard violations: column_conflicts={}, oob={}\n    compactness     = {:>10.2}  (area={:.2})\n    left_compaction = {:>10.2}  (sum={:.2})\n    row_squash      = {:>10.2}  (penalty={:.2})\n    rail_crossing   = {:>10.2}\n    total           = {:>10.2}",
+                "  分解:\n    mst             = {:>10.2}  (sum={:.2})\n    mst_congestion  = {:>10.2}\n    pin_overlap     = {:>10.2}  (count={})\n    bbox_overlap    = {:>10.2}  (cells={})\n    hard violations: column_conflicts={}, oob={}\n    compactness     = {:>10.2}  (area={:.2})\n    left_compaction = {:>10.2}  (sum={:.2})\n    row_squash      = {:>10.2}  (penalty={:.2})\n    width_balance   = {:>10.2}  (penalty={:.2})\n    rail_crossing   = {:>10.2}\n    total           = {:>10.2}",
                 breakdown.1.mst,
                 breakdown.1.mst_sum,
                 breakdown.1.mst_congestion,
@@ -69,6 +69,8 @@ pub(crate) fn diagnose_expensive_seeds(
                 breakdown.1.left_compaction_sum,
                 breakdown.1.row_squash,
                 breakdown.1.row_squash_penalty,
+                breakdown.1.width_balance,
+                breakdown.1.width_balance_penalty,
                 breakdown.1.rail_crossing,
                 breakdown.0,
             );

@@ -109,6 +109,7 @@ fn zero_weights() -> Weights {
         left_compaction: 0.0,
         rail_crossing: 0.0,
         row_squash: 0.0,
+        width_balance: 0.0,
         mst_congestion: 0.0,
     }
 }
@@ -915,7 +916,10 @@ fn cost_no_binding_no_rail_pins() {
         &circuit,
         &board,
         &[],
-        &crate::layout::cost::Weights::default(),
+        &crate::layout::cost::Weights {
+            width_balance: 0.0,
+            ..Weights::default()
+        },
     );
     // cost = MST 1 (同 rail 不同 col, |Δcol|=1) × 5.0 (默认 mst 权重)
     //     + compactness 1.0 (2×1×0.5) = 6.0
@@ -1215,6 +1219,7 @@ fn compactness_rail_crossing_penalty() {
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
         left_compaction: 0.0,
+        width_balance: 0.0,
         ..Weights::default()
     };
 
@@ -1286,6 +1291,7 @@ fn compactness_rail_split_avoids_central_channel_inflation() {
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
         left_compaction: 0.0,
+        width_balance: 0.0,
         ..Weights::default()
     };
 
@@ -1320,6 +1326,77 @@ fn compactness_rail_split_avoids_central_channel_inflation() {
         (c_split - (0.5 * 2.0 + 0.5 * 1.0 + w.rail_crossing)).abs() < 1e-9,
         "split 布局应 cost = 1.5 + 5.0 = 6.5, got {c_split}"
     );
+}
+
+/// 上下两侧总占用宽度相同的布局，应优于总宽度不变但两侧宽度失衡的布局。
+#[test]
+fn cost_penalizes_upper_lower_width_imbalance() {
+    let board = crate::layout::Breadboard::standard();
+    let circuit = Circuit {
+        components: (0..4)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            })
+            .collect(),
+        pins: (0..4)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: None,
+            })
+            .collect(),
+        nets: vec![],
+        footprints: vec![one_pin_fp()],
+    };
+    let balanced = SAState {
+        placeable: (0..4).map(ComponentId).collect(),
+        x: vec![0, 3, 0, 3],
+        y: vec![0, 1, 7, 8],
+        rotation: vec![Rotation::R0; 4],
+        ..SAState::no_bridging(4)
+    };
+    let mildly_imbalanced = SAState {
+        x: vec![0, 4, 0, 2],
+        ..balanced.clone()
+    };
+    let strongly_imbalanced = SAState {
+        x: vec![0, 5, 0, 1],
+        ..balanced.clone()
+    };
+    let weights = Weights {
+        width_balance: 1.0,
+        ..zero_weights()
+    };
+
+    let balanced_cost = cost(&balanced, &circuit, &board, &[], &weights);
+    let mildly_imbalanced_cost = cost(&mildly_imbalanced, &circuit, &board, &[], &weights);
+    let strongly_imbalanced_cost = cost(&strongly_imbalanced, &circuit, &board, &[], &weights);
+
+    assert_eq!(balanced_cost, 0.0, "4/4 等宽不应产生均衡惩罚");
+    assert_eq!(mildly_imbalanced_cost, 4.0, "5/3 的宽度差应产生 2² 惩罚");
+    assert_eq!(strongly_imbalanced_cost, 16.0, "6/2 的宽度差应产生 4² 惩罚");
+}
+
+#[test]
+fn width_balance_does_not_penalize_upper_half_only_board() {
+    let board = crate::layout::Preset::Hole170.make_upper_half(17);
+    let (circuit, component) = two_pin_in_net();
+    let state = SAState::from_order(vec![component], 1, &[2]);
+    let weights = Weights {
+        width_balance: 1.0,
+        ..zero_weights()
+    };
+
+    assert_eq!(cost(&state, &circuit, &board, &[], &weights), 0.0);
 }
 
 // ============================================================

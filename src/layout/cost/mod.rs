@@ -55,12 +55,13 @@ pub(crate) use bridge::propose_bridged_pair;
 #[cfg(test)]
 pub(crate) use mst::mst_wire_length;
 
-/// SA 成本函数的八项 soft cost 权重。
+/// SA 成本函数的九项 soft cost 权重。
 ///
 /// 成本 = `mst * MST_sum + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
 ///       + compactness * (按 rail 分组的 union bbox 面积之和)
 ///       + left_compaction * Σ (bbox.min_x - rail_min_x) (按 rail)
 ///       + row_squash * Σ max(0, n_comps - unique_min_y) (按 rail, 推元件散布到不同行)
+///       + width_balance * (上侧占用宽度 - 下侧占用宽度)²
 ///       + rail_crossing * [用了 ≥2 个 rail]
 ///       + mst_congestion * 超出 rail 空孔容量的 MST degree`
 ///
@@ -90,6 +91,10 @@ pub struct Weights {
     /// `penalty = Σ max(0, n_comps - unique_min_y) (按 rail 分组, n_comps 是元件数, unique_min_y 是该 rail 上 bbox min_y 的不同行数)`, 推 SA 把元件散布到不同行,
     /// 避免所有元件挤在同一行导致水平跨度过大。
     pub row_squash: f64,
+    /// 上下两侧主板的横向占用宽度均衡惩罚。
+    /// `penalty = (upper_width - lower_width)²`; 只有两个可用主板分区时启用，
+    /// 因此 upper-half-only 面包板不会因不存在下半区而被惩罚。
+    pub width_balance: f64,
     /// MST 拥塞惩罚: 对 MST 中每条超过 rail 容量 (空孔数) 的边加罚。
     /// 推动 SA 产出的布局对容量约束友好, 避免后续路由产生 relay 列。
     /// 0 = 不启用。
@@ -116,6 +121,8 @@ impl Default for Weights {
             // 纵向挤压: 同一 rail 内元件挤在少量行 → 加罚。
             // 1.0 等价于 ~2 cell² 紧凑度, 比 MST 的 5.0 轻, 给 SA 温和推力。
             row_squash: 1.0,
+            // 二次项让轻微不齐影响温和，而明显偏载能提供足够的回拉梯度。
+            width_balance: 0.5,
             mst_congestion: 2.0,
         }
     }

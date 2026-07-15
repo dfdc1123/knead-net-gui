@@ -89,14 +89,16 @@ struct CompactTerms {
     area_sum: f64,
     left_compaction_sum: f64,
     row_squash_penalty: f64,
+    width_balance_penalty: f64,
     occupied_rails: usize,
 }
 
-fn compact_terms(compact_map: &[Vec<BBox>]) -> CompactTerms {
+fn compact_terms(compact_map: &[Vec<BBox>], board: &Breadboard) -> CompactTerms {
     let mut terms = CompactTerms {
         area_sum: 0.0,
         left_compaction_sum: 0.0,
         row_squash_penalty: 0.0,
+        width_balance_penalty: 0.0,
         occupied_rails: 0,
     };
     for cells in compact_map {
@@ -122,6 +124,25 @@ fn compact_terms(compact_map: &[Vec<BBox>]) -> CompactTerms {
             })
             .count();
         terms.row_squash_penalty += cells.len().saturating_sub(unique_rows) as f64;
+    }
+
+    let mut available_rail_tops =
+        (0..board.main_rows() as i32).filter(|&y| board.rail_top(y) == Some(y));
+    if let (Some(upper), Some(lower), None) = (
+        available_rail_tops.next(),
+        available_rail_tops.next(),
+        available_rail_tops.next(),
+    ) {
+        let occupied_width = |cells: &[BBox]| {
+            let Some(min_x) = cells.iter().map(|bbox| bbox.min_x).min() else {
+                return 0;
+            };
+            let max_x = cells.iter().map(|bbox| bbox.max_x).max().unwrap();
+            max_x - min_x + 1
+        };
+        let width_difference = occupied_width(&compact_map[upper as usize])
+            - occupied_width(&compact_map[lower as usize]);
+        terms.width_balance_penalty = width_difference.pow(2) as f64;
     }
     terms
 }
@@ -486,7 +507,7 @@ fn cost_fast_inner(
         // rail_top ∈ [0, main_rows) 在上几行已保证
         buf.compact_map[rail_top as usize].push(*bbox);
     }
-    let compact = compact_terms(&buf.compact_map);
+    let compact = compact_terms(&buf.compact_map, board);
     let rail_cross = if compact.occupied_rails >= 2 {
         w.rail_crossing
     } else {
@@ -501,6 +522,7 @@ fn cost_fast_inner(
             + w.compactness * compact.area_sum
             + w.left_compaction * compact.left_compaction_sum
             + w.row_squash * compact.row_squash_penalty
+            + w.width_balance * compact.width_balance_penalty
             + rail_cross
             + congestion_penalty,
     )
@@ -702,7 +724,7 @@ fn cost_breakdown_inner(
             .unwrap_or(bbox.min_y);
         buf.compact_map[rail_top as usize].push(*bbox);
     }
-    let compact = compact_terms(&buf.compact_map);
+    let compact = compact_terms(&buf.compact_map, board);
     let rail_cross = if compact.occupied_rails >= 2 {
         w.rail_crossing
     } else {
@@ -716,6 +738,7 @@ fn cost_breakdown_inner(
         compactness: w.compactness * compact.area_sum,
         left_compaction: w.left_compaction * compact.left_compaction_sum,
         row_squash: w.row_squash * compact.row_squash_penalty,
+        width_balance: w.width_balance * compact.width_balance_penalty,
         rail_crossing: rail_cross,
         mst_congestion: congestion_penalty,
         mst_sum,
@@ -726,6 +749,7 @@ fn cost_breakdown_inner(
         area_sum: compact.area_sum,
         left_compaction_sum: compact.left_compaction_sum,
         row_squash_penalty: compact.row_squash_penalty,
+        width_balance_penalty: compact.width_balance_penalty,
     };
     let total = breakdown.mst
         + breakdown.pin_overlap
@@ -733,6 +757,7 @@ fn cost_breakdown_inner(
         + breakdown.compactness
         + breakdown.left_compaction
         + breakdown.row_squash
+        + breakdown.width_balance
         + breakdown.rail_crossing
         + breakdown.mst_congestion;
     (total, breakdown)
@@ -747,6 +772,7 @@ pub(crate) struct CostBreakdown {
     pub compactness: f64,
     pub left_compaction: f64,
     pub row_squash: f64,
+    pub width_balance: f64,
     pub rail_crossing: f64,
     pub mst_congestion: f64,
     pub mst_sum: f64,
@@ -757,4 +783,5 @@ pub(crate) struct CostBreakdown {
     pub area_sum: f64,
     pub left_compaction_sum: f64,
     pub row_squash_penalty: f64,
+    pub width_balance_penalty: f64,
 }

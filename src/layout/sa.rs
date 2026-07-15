@@ -2576,6 +2576,7 @@ mod tests {
                 left_compaction: 0.0,
                 rail_crossing: 0.0,
                 row_squash: 0.0,
+                width_balance: 0.0,
                 mst_congestion: 0.0,
             },
             ..SAConfig::default()
