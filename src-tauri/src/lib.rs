@@ -41,10 +41,18 @@ pub fn test_render_sch_with_pcb(path: &str, pcb_path: &str) -> Result<String, St
 pub(crate) struct AppState {
     pub(crate) pcb_path: Mutex<Option<String>>,
     pub(crate) schematic_metadata: Mutex<sch::ComponentMetadataMap>,
-    pub(crate) breadboard_cfg: Mutex<Option<(String, knead_net::layout::Breadboard)>>,
+    pub(crate) breadboard_cfg: Mutex<Option<BreadboardConfig>>,
     pub(crate) compute_running: AtomicBool,
     pub(crate) next_run_id: AtomicU64,
     pub(crate) compute_cancellation: Mutex<Option<knead_net::CancellationToken>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct BreadboardConfig {
+    pub(crate) preset: String,
+    pub(crate) board: knead_net::layout::Breadboard,
+    pub(crate) positive_net: Option<String>,
+    pub(crate) negative_net: Option<String>,
 }
 
 // ─────────────── Step 1: 选目录 + 渲染 .sch ───────────────
@@ -170,6 +178,40 @@ struct BreadboardInfo {
     has_power_rails: bool,
 }
 
+#[derive(serde::Serialize)]
+struct PowerNetOptions {
+    net_names: Vec<String>,
+    positive_net: Option<String>,
+    negative_net: Option<String>,
+}
+
+fn power_net_options_for(
+    circuit: &knead_net::Circuit,
+    board: &knead_net::layout::Breadboard,
+) -> PowerNetOptions {
+    let net_names: Vec<String> = circuit
+        .nets()
+        .iter()
+        .map(|net| net.name().to_string())
+        .collect();
+    let positive_net = board
+        .positive_names()
+        .iter()
+        .find(|candidate| net_names.contains(candidate))
+        .cloned();
+    let negative_net = board
+        .negative_names()
+        .iter()
+        .find(|candidate| net_names.contains(candidate))
+        .cloned();
+
+    PowerNetOptions {
+        net_names,
+        positive_net,
+        negative_net,
+    }
+}
+
 fn preset_from_str(s: &str) -> Result<knead_net::layout::Preset, String> {
     use knead_net::layout::Preset;
     match s {
@@ -198,6 +240,8 @@ fn set_breadboard(
     state: tauri::State<AppState>,
     preset: String,
     cols: usize,
+    positive_net: Option<String>,
+    negative_net: Option<String>,
     locale: UiLocale,
 ) -> Result<BreadboardInfo, String> {
     let p = preset_from_str(&preset)
@@ -222,18 +266,62 @@ fn set_breadboard(
         holes: board.len(),
         has_power_rails: board.power_rails().is_some(),
     };
-    *state.breadboard_cfg.lock().map_err(|e| e.to_string())? = Some((preset, board));
+    let has_power_rails = board.power_rails().is_some();
+    *state.breadboard_cfg.lock().map_err(|e| e.to_string())? = Some(BreadboardConfig {
+        preset,
+        board,
+        positive_net: has_power_rails.then_some(positive_net).flatten(),
+        negative_net: has_power_rails.then_some(negative_net).flatten(),
+    });
     Ok(info)
+}
+
+#[tauri::command]
+fn get_power_net_options(
+    state: tauri::State<AppState>,
+    preset: String,
+    locale: UiLocale,
+) -> Result<PowerNetOptions, String> {
+    let pcb_path = state
+        .pcb_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or_else(|| {
+            locale
+                .text(
+                    "请先在 Step 1 选择一个 .kicad_pcb 文件",
+                    "Select a .kicad_pcb file in Step 1 first",
+                )
+                .to_string()
+        })?;
+    let text = fs::read_to_string(&pcb_path).map_err(|error| {
+        format!(
+            "{}: {error}",
+            locale.text("读取 PCB 失败", "Failed to read PCB")
+        )
+    })?;
+    let circuit = knead_net::input::pcb::parse_pcb(&text).map_err(|error| {
+        format!(
+            "{}: {}",
+            locale.text("解析 PCB 失败", "Failed to parse PCB"),
+            error.message
+        )
+    })?;
+    let preset = preset_from_str(&preset)
+        .map_err(|_| locale.text("未知面包板预设", "Unknown breadboard preset"))?;
+    let board = make_breadboard(preset, 30)?;
+    Ok(power_net_options_for(&circuit, &board))
 }
 
 #[tauri::command]
 fn get_breadboard_info(state: tauri::State<AppState>) -> Option<BreadboardInfo> {
     state.breadboard_cfg.lock().ok().and_then(|g| {
-        g.as_ref().map(|(preset, b)| BreadboardInfo {
-            preset: preset.clone(),
-            cols: b.cols(),
-            holes: b.len(),
-            has_power_rails: b.power_rails().is_some(),
+        g.as_ref().map(|config| BreadboardInfo {
+            preset: config.preset.clone(),
+            cols: config.board.cols(),
+            holes: config.board.len(),
+            has_power_rails: config.board.power_rails().is_some(),
         })
     })
 }
@@ -250,6 +338,7 @@ pub fn run() {
             set_pcb_path,
             clear_project_source,
             get_pcb_path,
+            get_power_net_options,
             set_breadboard,
             get_breadboard_info,
             compute::start_compute,
@@ -287,5 +376,28 @@ mod tests {
         assert_eq!(make_breadboard(Preset::Hole170, 17).unwrap().len(), 170);
         assert_eq!(make_breadboard(Preset::Hole400, 30).unwrap().len(), 400);
         assert_eq!(make_breadboard(Preset::Hole800, 4).unwrap().cols(), 4);
+    }
+
+    #[test]
+    fn power_net_options_keep_the_existing_alias_priority() {
+        let text =
+            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let circuit = knead_net::input::pcb::parse_pcb(&text).unwrap();
+        let options = power_net_options_for(&circuit, &Preset::Hole400.make(30));
+
+        assert_eq!(options.positive_net.as_deref(), Some("+5V"));
+        assert_eq!(options.negative_net.as_deref(), Some("GND"));
+        assert!(options.net_names.iter().any(|name| name == "+5V"));
+    }
+
+    #[test]
+    fn board_without_rails_has_no_default_power_net_selection() {
+        let text =
+            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let circuit = knead_net::input::pcb::parse_pcb(&text).unwrap();
+        let options = power_net_options_for(&circuit, &Preset::Hole170.make(17));
+
+        assert_eq!(options.positive_net, None);
+        assert_eq!(options.negative_net, None);
     }
 }

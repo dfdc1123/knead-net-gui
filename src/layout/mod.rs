@@ -27,7 +27,9 @@ pub use breadboard::{
 pub use cost::Weights;
 pub use occupancy::{Occupancy, Occupant};
 pub use placement::{BBox, PinHole, PlacedFootprint, Placement, Rotation};
-pub use prepare::{LayoutPreparation, PowerRailMatch, prepare_for_layout};
+pub use prepare::{
+    LayoutPreparation, PowerRailMatch, prepare_for_layout, prepare_for_layout_with_power_nets,
+};
 pub use progress::{CancellationToken, LayoutProgress, LayoutSnapshot, ProgressOptions};
 pub use routing::{PathFinderRouter, Router, Wire, WireId};
 pub use sa::SAConfig;

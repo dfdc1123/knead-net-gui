@@ -21,5 +21,6 @@ pub use layout::{
     LayoutProgress, LayoutSnapshot, Occupancy, Occupant, PathFinderRouter, PinHole,
     PlacedFootprint, Placement, Polarity, PowerRail, PowerRailBinding, PowerRailMatch, PowerRails,
     PowerStrip, Preset, ProgressOptions, Region, Rotation, Router, SAConfig, Weights, Wire, WireId,
-    prepare_for_layout, spectral_debug_positions, standard_power_rails, wide_power_rails_800,
+    prepare_for_layout, prepare_for_layout_with_power_nets, spectral_debug_positions,
+    standard_power_rails, wide_power_rails_800,
 };

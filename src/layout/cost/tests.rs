@@ -585,8 +585,8 @@ fn cost_with_binding_reflects_rail_jumper() {
 
     // 绑定: 虚拟 pin (0, -4) 加入 net, MST = |10| + |4| = 14
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(0),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(0)),
     });
     let cost_with = cost(&state, &circuit, &board, &[], &w);
 
@@ -1093,8 +1093,8 @@ fn propose_bridged_pair_uses_r90_for_horizontal_resistor() {
     // 绑定: top/bottom positive rail  ← +12V, top/bottom negative rail ← SIG
     // (信号名号无所谓, 只曹 power_net_ids 包含 NetId(0) 即可)
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(1),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(1)),
     });
     let comp = &circuit.components[0];
     let pair = propose_bridged_pair(comp, &circuit, &board, &[NetId(0), NetId(1)]);
@@ -1266,8 +1266,8 @@ fn cost_bridged_uses_heuristic_pair_and_skips_bbox() {
         footprints: vec![fp],
     };
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(1),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(1)),
     });
 
     // OnBoard 状态: (0, 0) 放, 令 pin 1 跨进 gap (y=-1) → OOB 龲高 cost
@@ -1399,8 +1399,8 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
         footprints: vec![fp_r, fp_x],
     };
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(1),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(1)),
     });
 
     // 拿启发式生成的 R1 bridged pair
@@ -1561,8 +1561,8 @@ fn populate_bridgeable_info_top_rail_tiebreaker() {
         footprints: fps,
     };
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(1), // SIG 也在 power 的 net_ids 里 -> bridgeable 启发式返 2 边的 rail
+        positive: Some(NetId(0)),
+        negative: Some(NetId(1)), // SIG 也在 power 的 net_ids 里 -> bridgeable 启发式返 2 边的 rail
     });
 
     // 从 greedy 造 state, populate_bridgeable_info
@@ -1804,8 +1804,8 @@ fn bridgeable_two_pin_circuit() -> (Circuit, Breadboard) {
         footprints: vec![fp_r, fp_x],
     };
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(1),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(1)),
     });
     (circuit, board)
 }

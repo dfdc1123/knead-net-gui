@@ -69,8 +69,8 @@ fn main() {
     }
     match preparation.power_rails {
         PowerRailMatch::Bound(binding) => {
-            let pos = &circuit.nets()[binding.positive.raw()];
-            let neg = &circuit.nets()[binding.negative.raw()];
+            let pos = &circuit.nets()[binding.positive.expect("bound positive rail").raw()];
+            let neg = &circuit.nets()[binding.negative.expect("bound negative rail").raw()];
             eprintln!(
                 "Power rail binding: - -> {} ({:?}), + -> {} ({:?})",
                 neg.name(),

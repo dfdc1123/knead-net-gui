@@ -62,6 +62,11 @@ const dictionaries = {
       availableColumns: "面包板可用列数",
       withRails: "含电源轨",
       withoutRails: "无电源轨",
+      powerRailBinding: "电源轨网络绑定",
+      positiveRail: "正极（+）电源轨",
+      negativeRail: "负极（−）电源轨",
+      unbound: "不绑定",
+      powerRailHint: "默认按常见电源名称自动匹配，也可以绑定到工程中的任意网络。",
     },
     step3: {
       title: "计算布局",
@@ -198,6 +203,11 @@ const dictionaries = {
       availableColumns: "Available breadboard columns",
       withRails: "Power rails",
       withoutRails: "No power rails",
+      powerRailBinding: "Power-rail net binding",
+      positiveRail: "Positive (+) rail",
+      negativeRail: "Negative (−) rail",
+      unbound: "Not bound",
+      powerRailHint: "Common power names are matched by default; either rail can use any project net.",
     },
     step3: {
       title: "Compute Layout",

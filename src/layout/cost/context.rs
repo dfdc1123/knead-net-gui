@@ -170,11 +170,7 @@ impl SAContext {
         self.power_anchor_world.clear();
         self.power_anchor_nets.clear();
         if let Some(binding) = board.power_rail_binding() {
-            use crate::layout::breadboard::Polarity;
-            for (polarity, net_id) in [
-                (Polarity::Negative, binding.negative),
-                (Polarity::Positive, binding.positive),
-            ] {
+            for (polarity, net_id) in binding.iter() {
                 if let Some(anchor) = board.power_rail_anchor(polarity) {
                     let pos = board.hole(anchor).position;
                     let rail_id = board.rail_id_of(anchor);

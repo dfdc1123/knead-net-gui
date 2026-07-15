@@ -153,10 +153,7 @@ impl Router for PathFinderRouter {
 
         // ── 注入 power rail anchor ──
         if let Some(binding) = board.power_rail_binding() {
-            for (polarity, net_id) in [
-                (crate::layout::Polarity::Negative, binding.negative),
-                (crate::layout::Polarity::Positive, binding.positive),
-            ] {
+            for (polarity, net_id) in binding.iter() {
                 if (net_id.0) < net_pins.len()
                     && let Some(anchor) = board.power_rail_anchor(polarity)
                 {
@@ -1484,8 +1481,8 @@ mod tests {
             },
         );
         let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-            positive: NetId(999),
-            negative: NetId(0),
+            positive: Some(NetId(999)),
+            negative: Some(NetId(0)),
         });
         let occ = layout.occupancy(&board).unwrap();
         let wires = PathFinderRouter::default().route(circuit, &board, &occ, &[]);

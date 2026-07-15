@@ -141,9 +141,25 @@ pub struct PowerRails {
 #[derive(Debug, Clone, Copy)]
 pub struct PowerRailBinding {
     /// 正极 rail 绑定的 net (例: `+12V` / `5V` / `VCC`)
-    pub positive: NetId,
+    pub positive: Option<NetId>,
     /// 负极 rail 绑定的 net (例: `GND`)
-    pub negative: NetId,
+    pub negative: Option<NetId>,
+}
+
+impl PowerRailBinding {
+    /// 按负极、正极的稳定顺序遍历当前实际绑定的电源轨。
+    pub fn iter(&self) -> impl Iterator<Item = (Polarity, NetId)> {
+        [
+            (Polarity::Negative, self.negative),
+            (Polarity::Positive, self.positive),
+        ]
+        .into_iter()
+        .filter_map(|(polarity, net)| net.map(|net| (polarity, net)))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.positive.is_none() && self.negative.is_none()
+    }
 }
 
 /// 预设板型 (170 / 400 / 800 孔) — main.rs 唯一选择点。
@@ -564,8 +580,8 @@ impl Breadboard {
 
     /// 设置电源轨到 net 的绑定。返回 self 便于链式调用。
     ///
-    /// `binding.positive` / `binding.negative` 必须是有效 `NetId` (即
-    /// `< circuit.nets().len()`), 否则 cost / 路由 时会静默忽略 (找不到 net)。
+    /// `binding` 中存在的 `NetId` 必须有效 (即 `< circuit.nets().len()`),
+    /// 否则 cost / 路由时会静默忽略 (找不到 net)。
     pub fn with_power_rail_binding(mut self, binding: PowerRailBinding) -> Self {
         self.power_rail_binding = Some(binding);
         self
@@ -1076,13 +1092,13 @@ mod tests {
     fn with_power_rail_binding_sets_it() {
         use crate::circuit::NetId;
         let binding = PowerRailBinding {
-            positive: NetId(0),
-            negative: NetId(1),
+            positive: Some(NetId(0)),
+            negative: Some(NetId(1)),
         };
         let b = Breadboard::standard().with_power_rail_binding(binding);
         let got = b.power_rail_binding().unwrap();
-        assert_eq!(got.positive, NetId(0));
-        assert_eq!(got.negative, NetId(1));
+        assert_eq!(got.positive, Some(NetId(0)));
+        assert_eq!(got.negative, Some(NetId(1)));
     }
 
     #[test]

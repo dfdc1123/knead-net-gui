@@ -197,7 +197,7 @@ pub async fn start_compute(
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
-    let (_, board) = state
+    let board_config = state
         .breadboard_cfg
         .lock()
         .map_err(|e| e.to_string())?
@@ -223,7 +223,9 @@ pub async fn start_compute(
             run_id,
             &pcb_path,
             schematic_metadata,
-            board,
+            board_config.board,
+            board_config.positive_net,
+            board_config.negative_net,
             request,
             cancellation,
         )
@@ -257,6 +259,8 @@ fn run_compute(
     pcb_path: &str,
     schematic_metadata: ComponentMetadataMap,
     board: Breadboard,
+    positive_net: Option<String>,
+    negative_net: Option<String>,
     request: ComputeRequest,
     cancellation: CancellationToken,
 ) -> Result<(), String> {
@@ -275,7 +279,31 @@ fn run_compute(
             e.message
         )
     })?;
-    let board = knead_net::prepare_for_layout(&mut circuit, board).board;
+    for (polarity_zh, polarity_en, selected) in [
+        ("正极", "positive", positive_net.as_deref()),
+        ("负极", "negative", negative_net.as_deref()),
+    ] {
+        if let Some(name) = selected {
+            if !circuit.nets().iter().any(|net| net.name() == name) {
+                return Err(format!(
+                    "{}: {name}",
+                    match locale {
+                        UiLocale::ZhCn => format!("所选{polarity_zh}电源轨网络已不存在"),
+                        UiLocale::En => {
+                            format!("The selected {polarity_en} power-rail net no longer exists")
+                        }
+                    }
+                ));
+            }
+        }
+    }
+    let board = knead_net::prepare_for_layout_with_power_nets(
+        &mut circuit,
+        board,
+        positive_net.as_deref(),
+        negative_net.as_deref(),
+    )
+    .board;
     let mut layout = Layout::new(&circuit);
 
     let config = request.profile.config();

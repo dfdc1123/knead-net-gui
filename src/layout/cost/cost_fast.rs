@@ -5,7 +5,7 @@
 //! - `cost_breakdown_inner`: breakdown 的实际实现, 跟 cost_fast 共享热路径
 
 use crate::circuit::Circuit;
-use crate::layout::breadboard::{Breadboard, Polarity};
+use crate::layout::breadboard::Breadboard;
 use crate::layout::placement::{BBox, Rotation};
 
 use super::Weights;
@@ -226,10 +226,7 @@ pub(crate) fn cost_fast(
             }
         }
     } else if let Some(binding) = board.power_rail_binding() {
-        for (polarity, net_id) in [
-            (Polarity::Negative, binding.negative),
-            (Polarity::Positive, binding.positive),
-        ] {
+        for (polarity, net_id) in binding.iter() {
             if let Some(anchor) = board.power_rail_anchor(polarity) {
                 let pos = board.hole(anchor).position;
                 let rail_id = board.rail_id_of(anchor);
@@ -521,10 +518,7 @@ fn cost_breakdown_inner(
         }
     }
     if let Some(binding) = board.power_rail_binding() {
-        for (polarity, net_id) in [
-            (Polarity::Negative, binding.negative),
-            (Polarity::Positive, binding.positive),
-        ] {
+        for (polarity, net_id) in binding.iter() {
             if let Some(anchor) = board.power_rail_anchor(polarity) {
                 let pos = board.hole(anchor).position;
                 let rail_id = board.rail_id_of(anchor);

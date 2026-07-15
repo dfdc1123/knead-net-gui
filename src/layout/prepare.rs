@@ -22,14 +22,63 @@ pub struct LayoutPreparation {
 
 /// 执行布局前必须完成的通用准备。
 ///
-/// 该函数保持原有策略：先按板子的正/负电源名称标记可桥接的两脚元件；只有
-/// 正负两条网络都匹配成功时才真正绑定电源轨，单边匹配只写入报告。
+/// 该函数保持原有自动匹配策略，并把匹配到的每条电源轨独立绑定。
 pub fn prepare_for_layout(circuit: &mut Circuit, board: Breadboard) -> LayoutPreparation {
-    let power_names: Vec<String> = board
+    let positive = board
         .positive_names()
         .iter()
-        .chain(board.negative_names().iter())
-        .cloned()
+        .find_map(|name| circuit.nets().iter().find(|net| net.name() == name));
+    let negative = board
+        .negative_names()
+        .iter()
+        .find_map(|name| circuit.nets().iter().find(|net| net.name() == name));
+
+    prepare_for_layout_with_net_ids(
+        circuit,
+        board,
+        positive.map(|net| net.id()),
+        negative.map(|net| net.id()),
+    )
+}
+
+/// 使用用户选择的网络名称准备布局。每一条电源轨都可以独立绑定或留空。
+///
+/// 名称按当前 PCB 的网络精确匹配；不存在的名称按未绑定处理。调用方若需要把
+/// 过期名称视为错误，应在调用前校验。
+pub fn prepare_for_layout_with_power_nets(
+    circuit: &mut Circuit,
+    board: Breadboard,
+    positive_name: Option<&str>,
+    negative_name: Option<&str>,
+) -> LayoutPreparation {
+    let positive = positive_name.and_then(|name| {
+        circuit
+            .nets()
+            .iter()
+            .find(|net| net.name() == name)
+            .map(|net| net.id())
+    });
+    let negative = negative_name.and_then(|name| {
+        circuit
+            .nets()
+            .iter()
+            .find(|net| net.name() == name)
+            .map(|net| net.id())
+    });
+
+    prepare_for_layout_with_net_ids(circuit, board, positive, negative)
+}
+
+fn prepare_for_layout_with_net_ids(
+    circuit: &mut Circuit,
+    board: Breadboard,
+    positive: Option<NetId>,
+    negative: Option<NetId>,
+) -> LayoutPreparation {
+    let power_names: Vec<String> = [negative, positive]
+        .into_iter()
+        .flatten()
+        .map(|id| circuit.nets()[id.0].name().to_string())
         .collect();
     let power_name_refs: Vec<&str> = power_names.iter().map(String::as_str).collect();
     crate::input::pcb::auto_mark_bridgeable(circuit, &power_name_refs);
@@ -41,28 +90,31 @@ pub fn prepare_for_layout(circuit: &mut Circuit, board: Breadboard) -> LayoutPre
         .map(|component| component.id())
         .collect();
 
-    let positive = board
-        .positive_names()
-        .iter()
-        .find_map(|name| circuit.nets().iter().find(|net| net.name() == name));
-    let negative = board
-        .negative_names()
-        .iter()
-        .find_map(|name| circuit.nets().iter().find(|net| net.name() == name));
-
     let (board, power_rails) = match (positive, negative) {
         (Some(positive), Some(negative)) => {
             let binding = PowerRailBinding {
-                positive: positive.id(),
-                negative: negative.id(),
+                positive: Some(positive),
+                negative: Some(negative),
             };
             (
                 board.with_power_rail_binding(binding),
                 PowerRailMatch::Bound(binding),
             )
         }
-        (Some(positive), None) => (board, PowerRailMatch::PositiveOnly(positive.id())),
-        (None, Some(negative)) => (board, PowerRailMatch::NegativeOnly(negative.id())),
+        (Some(positive), None) => (
+            board.with_power_rail_binding(PowerRailBinding {
+                positive: Some(positive),
+                negative: None,
+            }),
+            PowerRailMatch::PositiveOnly(positive),
+        ),
+        (None, Some(negative)) => (
+            board.with_power_rail_binding(PowerRailBinding {
+                positive: None,
+                negative: Some(negative),
+            }),
+            PowerRailMatch::NegativeOnly(negative),
+        ),
         (None, None) if board.power_rails().is_some() => (board, PowerRailMatch::Unmatched),
         (None, None) => (board, PowerRailMatch::NotPresent),
     };
@@ -139,8 +191,8 @@ mod tests {
         let PowerRailMatch::Bound(binding) = prepared.power_rails else {
             panic!("VCC/GND 都存在时应绑定电源轨");
         };
-        assert_eq!(binding.positive, NetId(0));
-        assert_eq!(binding.negative, NetId(1));
+        assert_eq!(binding.positive, Some(NetId(0)));
+        assert_eq!(binding.negative, Some(NetId(1)));
         assert!(prepared.board.power_rail_binding().is_some());
     }
 
@@ -151,6 +203,44 @@ mod tests {
 
         assert!(matches!(prepared.power_rails, PowerRailMatch::NotPresent));
         assert!(prepared.board.power_rail_binding().is_none());
+        assert!(prepared.bridgeable_components.is_empty());
+    }
+
+    #[test]
+    fn explicit_single_rail_binding_is_applied() {
+        let mut circuit = power_and_signal_circuit();
+        let prepared = prepare_for_layout_with_power_nets(
+            &mut circuit,
+            super::super::Preset::Hole400.make(30),
+            Some("SIGNAL"),
+            None,
+        );
+
+        assert!(matches!(
+            prepared.power_rails,
+            PowerRailMatch::PositiveOnly(NetId(2))
+        ));
+        let binding = prepared.board.power_rail_binding().unwrap();
+        assert_eq!(binding.positive, Some(NetId(2)));
+        assert_eq!(binding.negative, None);
+        assert_eq!(prepared.bridgeable_components, vec![ComponentId(0)]);
+    }
+
+    #[test]
+    fn explicit_names_can_reverse_the_automatic_polarity_choice() {
+        let mut circuit = power_and_signal_circuit();
+        let prepared = prepare_for_layout_with_power_nets(
+            &mut circuit,
+            super::super::Preset::Hole400.make(30),
+            Some("SIGNAL"),
+            Some("VCC"),
+        );
+
+        let PowerRailMatch::Bound(binding) = prepared.power_rails else {
+            panic!("both selected rails should be bound");
+        };
+        assert_eq!(binding.positive, Some(NetId(2)));
+        assert_eq!(binding.negative, Some(NetId(0)));
         assert!(prepared.bridgeable_components.is_empty());
     }
 }

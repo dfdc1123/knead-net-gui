@@ -789,7 +789,7 @@ pub(super) fn simulate(
     // `propose_bridged_pairs` 返空 Vec, 没人会被标 bridgeable, Toggle 不会触发。
     let power_net_ids: Vec<NetId> = board
         .power_rail_binding()
-        .map(|b| vec![b.negative, b.positive])
+        .map(|binding| binding.iter().map(|(_, net)| net).collect())
         .unwrap_or_default();
     populate_bridgeable_info(&mut state, circuit, board, &power_net_ids);
     // 预计算 context (footprint pin offset, bbox) 和 reusable buffers
@@ -1252,8 +1252,8 @@ mod tests {
             footprints: vec![fp],
         };
         let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-            positive: NetId(0),
-            negative: NetId(1),
+            positive: Some(NetId(0)),
+            negative: Some(NetId(1)),
         });
         (circuit, board)
     }

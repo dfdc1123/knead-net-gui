@@ -1,7 +1,7 @@
 //! 桥接探测 + 桥接位世界坐标计算。
 
 use crate::circuit::{Circuit, Component, ComponentId, NetId, PinId, Position};
-use crate::layout::breadboard::{Breadboard, HoleId, Polarity, Region};
+use crate::layout::breadboard::{Breadboard, HoleId, Region};
 use crate::layout::placement::{Rotation, rotate};
 
 use super::Weights;
@@ -128,10 +128,7 @@ pub(super) fn collect_matching_rail_ids(
     let Some(binding) = board.power_rail_binding() else {
         return ids;
     };
-    for (polarity, net_id) in [
-        (Polarity::Negative, binding.negative),
-        (Polarity::Positive, binding.positive),
-    ] {
+    for (polarity, net_id) in binding.iter() {
         if net_id != pin_net {
             continue;
         }

@@ -838,8 +838,8 @@ fn bridged_cross_rail_to_main_routes_correctly() {
     }));
 
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(0),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(0)),
     });
     // pin 1 (主区) 在 (5, 0), pin 2 (负极轨) 在 (0, -4)
     let h_main = board.at(5, 0).unwrap();
@@ -937,8 +937,8 @@ fn bridged_body_cells_are_marked_blocked() {
         footprints: vec![fp],
     }));
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(0),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(0)),
     });
     let h_main = board.at(5, 0).unwrap();
     let h_rail = board.at(0, -4).unwrap();
@@ -1180,8 +1180,8 @@ fn place_sa_can_emit_bridged_placement_for_bridgeable_resistor() {
         footprints: vec![fp],
     }));
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(1),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(1)),
     });
     let mut layout = Layout::new(circuit);
     // 退火不一定总选 Bridged (取决于 SA 随机接受), 但无论选哪个, validate 应过。
@@ -1270,8 +1270,8 @@ fn place_sa_bridgeable_can_flip_to_bridged() {
         footprints: vec![fp],
     }));
     let board = Breadboard::standard().with_power_rail_binding(PowerRailBinding {
-        positive: NetId(0),
-        negative: NetId(1),
+        positive: Some(NetId(0)),
+        negative: Some(NetId(1)),
     });
     // 跑多次, 记录是否出现 Bridged 结果。
     // 不强求 100% 出现 (SA 随机性), 但要求至少 1 次出现 (概率足够大时必然出现)。

@@ -2,7 +2,7 @@
 //! inspect_state_pins / print_seed_cost_report。
 
 use crate::circuit::{Circuit, ComponentId};
-use crate::layout::breadboard::{Breadboard, HoleId, Polarity};
+use crate::layout::breadboard::{Breadboard, HoleId};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn diagnose_expensive_seeds(
@@ -183,10 +183,7 @@ fn inspect_state_pins(
     }
     // Power rail 虚拟 pin (绑定 net 在 anchor 位置) — 跟 cost_fast 一样注入。
     if let Some(binding) = board.power_rail_binding() {
-        for (polarity, net_id) in [
-            (Polarity::Negative, binding.negative),
-            (Polarity::Positive, binding.positive),
-        ] {
+        for (polarity, net_id) in binding.iter() {
             if let Some(anchor) = board.power_rail_anchor(polarity) {
                 let pos = board.hole(anchor).position;
                 let rail_id = board.rail_id_of(anchor);

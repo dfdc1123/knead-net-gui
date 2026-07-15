@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
   import { locale, ui } from "$lib/i18n";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
@@ -13,6 +14,11 @@
   } = $props();
 
   type Info = { preset: string; cols: number; holes: number; has_power_rails: boolean };
+  type PowerNetOptions = {
+    net_names: string[];
+    positive_net: string | null;
+    negative_net: string | null;
+  };
 
   const PRESETS: { id: BreadboardPreset; name: string; defaultCols: number }[] = [
     { id: "hole170", name: ui.step2.holes(170), defaultCols: 17 },
@@ -23,8 +29,35 @@
   let preset = $state<BreadboardPreset>("hole400");
   let cols = $state(30);
   let info = $state<Info | null>(null);
+  let netNames = $state<string[]>([]);
+  let positiveNet = $state("");
+  let negativeNet = $state("");
+  let powerOptionsReady = $state(false);
   let busy = $state(false);
   let error = $state("");
+  let hasPowerRails = $derived(preset !== "hole170");
+
+  onMount(() => {
+    void loadPowerNetOptions();
+  });
+
+  async function loadPowerNetOptions() {
+    busy = true;
+    error = "";
+    onStatusChange(false);
+    try {
+      const options = await invoke<PowerNetOptions>("get_power_net_options", { preset, locale });
+      netNames = options.net_names;
+      positiveNet = options.positive_net ?? "";
+      negativeNet = options.negative_net ?? "";
+      powerOptionsReady = true;
+    } catch (e) {
+      powerOptionsReady = false;
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
 
   function pick(p: BreadboardPreset) {
     if (busy) return;
@@ -35,8 +68,9 @@
   // cols 变化 → 自动重提交 (debounce 250ms)
   let timer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    cols; preset;
+    cols; preset; positiveNet; negativeNet; powerOptionsReady;
     if (timer) clearTimeout(timer);
+    if (!powerOptionsReady) return;
     timer = setTimeout(() => submit(preset, cols), 250);
   });
 
@@ -45,7 +79,13 @@
     error = "";
     onStatusChange(false);
     try {
-      info = await invoke<Info>("set_breadboard", { preset: p, cols: c, locale });
+      info = await invoke<Info>("set_breadboard", {
+        preset: p,
+        cols: c,
+        positiveNet: hasPowerRails && positiveNet ? positiveNet : null,
+        negativeNet: hasPowerRails && negativeNet ? negativeNet : null,
+        locale,
+      });
       onBoardChange({ preset: p, cols: info.cols });
       onStatusChange(true);
     } catch (e) {
@@ -93,6 +133,28 @@
             <span class="label">3–120</span>
           </label>
         </fieldset>
+
+        {#if hasPowerRails}
+          <fieldset class="fieldset" disabled={busy || !powerOptionsReady}>
+            <legend class="fieldset-legend">{ui.step2.powerRailBinding}</legend>
+            <label class="fieldset-label" for="positive-power-net">{ui.step2.positiveRail}</label>
+            <select id="positive-power-net" class="select w-full font-mono" bind:value={positiveNet}>
+              <option value="">{ui.step2.unbound}</option>
+              {#each netNames as net}
+                <option value={net}>{net}</option>
+              {/each}
+            </select>
+
+            <label class="fieldset-label mt-2" for="negative-power-net">{ui.step2.negativeRail}</label>
+            <select id="negative-power-net" class="select w-full font-mono" bind:value={negativeNet}>
+              <option value="">{ui.step2.unbound}</option>
+              {#each netNames as net}
+                <option value={net}>{net}</option>
+              {/each}
+            </select>
+            <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.powerRailHint}</p>
+          </fieldset>
+        {/if}
 
         {#if info}
           <div class="flex flex-wrap gap-2">
