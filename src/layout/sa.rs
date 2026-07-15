@@ -115,7 +115,7 @@ use std::collections::HashSet;
 /// SA 总配置。`Default` 给出 18 元件级别的合理起点。
 #[derive(Debug, Clone, Copy)]
 pub struct SAConfig {
-    /// 退火总迭代数; 后期 SA 接受率接近 0, 跑也是空转。
+    /// 退火 attempt 上限；spectral 模式会在长期没有刷新 best 时提前结束。
     pub max_iters: usize,
     /// Attempt 0 的温度。
     pub t_start: f64,
@@ -171,6 +171,8 @@ enum Move {
     ShiftX(usize, i32),
     /// 单个元件 y 增 ±N (N 随温度: 高温 1..=3, 低温 1)
     ShiftY(usize, i32),
+    /// 交换两个未锁定、非 Bridged 元件的 anchor 位置。
+    SwapPositions(usize, usize),
     /// 翻转 `state.bridged[i]` (bridgeable 元件在 OnBoard ↔ Bridged 之间切换)。
     /// 仅当 `state.is_bridgeable[i] = true` 时生成 (见 `random_move`)。
     ToggleBridging(usize),
@@ -180,6 +182,10 @@ enum Move {
     /// 组由密度聚类决定 (gap ≤ 2 算同组)。
     ShiftGroup(Vec<usize>),
 }
+
+/// 热/中温阶段交换两个普通元件位置的权重。交换保留布局密度，能跨越单元件
+/// Shift 被相邻 body 阻塞的局部最优；低温阶段自动关闭。
+const SWAP_WEIGHT: f64 = 0.08;
 
 fn random_move(
     state: &SAState,
@@ -216,7 +222,12 @@ fn random_move(
         0.0
     };
     let p_change = config.p_change_bridge_candidate.clamp(0.0, 0.45);
-    let standard_scale = 1.0 - p_toggle - p_change;
+    let p_swap = if config.max_iters >= 20_000 && t > t_start * 0.02 {
+        SWAP_WEIGHT
+    } else {
+        0.0
+    };
+    let standard_scale = (1.0 - p_toggle - p_change - p_swap).max(0.10);
     let shift_x_weight = standard_scale * 0.37 / 0.85;
     let flip_weight = standard_scale * 0.20 / 0.85;
     let shift_y_weight = standard_scale * 0.20 / 0.85;
@@ -231,7 +242,19 @@ fn random_move(
         let can_flip_or_shift_y = !state.bridged[p] && state.y_locked[p].is_none();
         let can_toggle = p_toggle > 0.0 && state.is_bridgeable[p];
         let can_change = state.bridged[p] && state.bridged_pin_pairs[p].len() > 1;
-        let group = find_left_shiftable_group(state, board, p);
+        let swap_target = if p_swap > 0.0 && !state.bridged[p] && state.y_locked[p].is_none() {
+            let target_start = rng.usize(0..n);
+            (0..n)
+                .map(|offset| (target_start + offset) % n)
+                .find(|&q| q != p && !state.bridged[q] && state.y_locked[q].is_none())
+        } else {
+            None
+        };
+        // 短预算保持原扰动序列；中长预算启用 Swap 时，ShiftGroup 改为抽中后
+        // 再计算，避免每个 attempt 都为低权重 group 分配并排序。
+        let eager_group = (p_swap == 0.0)
+            .then(|| find_left_shiftable_group(state, board, p))
+            .flatten();
 
         let mut total = 0.0;
         if can_shift_x {
@@ -246,14 +269,26 @@ fn random_move(
         if can_change {
             total += p_change;
         }
-        if group.is_some() {
+        if swap_target.is_some() {
+            total += p_swap;
+        }
+        if eager_group.is_some() {
             total += group_weight;
         }
         if total <= 0.0 {
             continue;
         }
 
-        let mut choice = rng.f64() * total;
+        // ShiftGroup 的可用性检查需要收集、排序同 rail 元件。只有抽中这类 move
+        // 时才做这份工作；若当前元件没有可移动组，立即在其余类别中重抽。
+        let lazy_group_weight = if p_swap > 0.0 { group_weight } else { 0.0 };
+        let mut choice = rng.f64() * (total + lazy_group_weight);
+        if choice >= total {
+            if let Some(group) = find_left_shiftable_group(state, board, p) {
+                return Some(Move::ShiftGroup(group));
+            }
+            choice = rng.f64() * total;
+        }
         if can_shift_x {
             if choice < shift_x_weight {
                 return Some(Move::ShiftX(p, dx));
@@ -289,7 +324,13 @@ fn random_move(
             }
             choice -= p_change;
         }
-        if let Some(group) = group {
+        if let Some(target) = swap_target {
+            if choice < p_swap {
+                return Some(Move::SwapPositions(p, target));
+            }
+            choice -= p_swap;
+        }
+        if let Some(group) = eager_group {
             debug_assert!(choice < group_weight);
             return Some(Move::ShiftGroup(group));
         }
@@ -410,6 +451,12 @@ enum Backup {
         idx: usize,
         old_y: i32,
     },
+    SwapPositions {
+        a: usize,
+        b: usize,
+        old_a: (i32, i32),
+        old_b: (i32, i32),
+    },
     ToggleBridging {
         idx: usize,
         old_bridged: bool,
@@ -443,6 +490,10 @@ impl Backup {
                 }
             }
             Backup::ShiftY { idx, old_y } => state.y[idx] = old_y,
+            Backup::SwapPositions { a, b, old_a, old_b } => {
+                (state.x[a], state.y[a]) = old_a;
+                (state.x[b], state.y[b]) = old_b;
+            }
             Backup::ToggleBridging {
                 idx,
                 old_bridged,
@@ -523,6 +574,26 @@ fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backu
                     old_active_idx: 0,
                 })
             }
+        }
+        Move::SwapPositions(a, b) => {
+            if a == b
+                || state.bridged[*a]
+                || state.bridged[*b]
+                || state.y_locked[*a].is_some()
+                || state.y_locked[*b].is_some()
+            {
+                return None;
+            }
+            let old_a = (state.x[*a], state.y[*a]);
+            let old_b = (state.x[*b], state.y[*b]);
+            (state.x[*a], state.y[*a]) = old_b;
+            (state.x[*b], state.y[*b]) = old_a;
+            Some(Backup::SwapPositions {
+                a: *a,
+                b: *b,
+                old_a,
+                old_b,
+            })
         }
         Move::ShiftGroup(indices) => {
             // 两段式: 先备份, 再 apply; 任一成员失败则还原全部
@@ -822,6 +893,14 @@ fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
     start * (end / start).powf(progress)
 }
 
+fn stagnation_limit(config: &SAConfig) -> usize {
+    if config.use_spectral && config.max_iters >= 20_000 {
+        config.max_iters / 4
+    } else {
+        0
+    }
+}
+
 /// 跑模拟退火, 返回最佳 [`SAState`] 和 attempt 分类计数。
 ///
 /// 初始状态按 [`SAConfig::use_spectral`] 选 [`SAState::from_spectral`] 或
@@ -891,8 +970,13 @@ pub(super) fn simulate(
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
     let mut metrics = AnnealMetrics::default();
+    let mut attempts_since_best = 0usize;
+    let max_stall_iters = stagnation_limit(config);
 
     for iteration in 0..config.max_iters {
+        if max_stall_iters > 0 && attempts_since_best >= max_stall_iters {
+            break;
+        }
         if control.as_ref().is_some_and(|control| {
             control
                 .cancellation
@@ -912,6 +996,7 @@ pub(super) fn simulate(
             });
         }
         metrics.attempted += 1;
+        attempts_since_best += 1;
         let temperature = temperature_at_attempt(config, iteration);
         prof_iter_inc!();
         #[cfg(profile_sa)]
@@ -977,6 +1062,7 @@ pub(super) fn simulate(
             current_cost = new_cost;
             if current_cost < best_cost {
                 best_cost = current_cost;
+                attempts_since_best = 0;
                 // 只有"新最佳"才 clone — 罕见 (~100/seed), 不占用热路径
                 #[cfg(profile_sa)]
                 let tb = std::time::Instant::now();
@@ -1117,6 +1203,11 @@ mod tests {
                 | Move::ChangeBridgeCandidate(i, _) => {
                     assert!(i < state.n(), "index {i} out of range {}", state.n());
                 }
+                Move::SwapPositions(a, b) => {
+                    assert!(a < state.n(), "index {a} out of range {}", state.n());
+                    assert!(b < state.n(), "index {b} out of range {}", state.n());
+                    assert_ne!(a, b);
+                }
                 Move::ShiftGroup(indices) => {
                     for &i in &indices {
                         assert!(i < state.n(), "index {i} out of range {}", state.n());
@@ -1149,6 +1240,54 @@ mod tests {
         }
         assert!(hi_max >= 2, "T=30 应该出现 N=2 或 N=3, 最大观测 = {hi_max}");
         assert_eq!(lo_max, 1, "T=0.5 应该恒为 N=1, 最大观测 = {lo_max}");
+    }
+
+    #[test]
+    fn random_move_emits_global_swaps_while_hot() {
+        let state = SAState::from_order(
+            vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+            2,
+            &[1, 1, 1],
+        );
+        let short_config = SAConfig {
+            max_iters: 5_000,
+            p_toggle_bridge: 0.0,
+            p_change_bridge_candidate: 0.0,
+            ..SAConfig::default()
+        };
+        let board = board();
+        let mut short_rng = fastrand::Rng::with_seed(0x5A_A0);
+        assert!((0..1_000).all(|_| !matches!(
+            random_move(&state, &mut short_rng, 10.0, 10.0, &short_config, &board),
+            Some(Move::SwapPositions(_, _))
+        )));
+
+        let config = SAConfig {
+            max_iters: 20_000,
+            p_toggle_bridge: 0.0,
+            p_change_bridge_candidate: 0.0,
+            ..SAConfig::default()
+        };
+        let mut rng = fastrand::Rng::with_seed(0x5A_A0);
+
+        assert!((0..100).any(|_| matches!(
+            random_move(&state, &mut rng, 10.0, 10.0, &config, &board),
+            Some(Move::SwapPositions(a, b)) if a != b
+        )));
+    }
+
+    #[test]
+    fn swap_positions_is_completely_reversible() {
+        let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
+        state.x = vec![3, 9];
+        state.y = vec![1, 4];
+        let before = state.clone();
+
+        let backup = apply_move(&mut state, &Move::SwapPositions(0, 1), &board()).unwrap();
+        assert_eq!(state.x, vec![9, 3]);
+        assert_eq!(state.y, vec![4, 1]);
+        backup.revert(&mut state);
+        assert_state_fields_equal(&state, &before, "SwapPositions");
     }
 
     #[test]
@@ -1869,6 +2008,40 @@ mod tests {
         );
         assert!(evaluated.metrics.evaluated > 0);
         assert!(evaluated.metrics.accepted <= evaluated.metrics.evaluated);
+    }
+
+    #[test]
+    fn stagnation_limit_stops_a_seed_that_cannot_improve() {
+        let circuit = simple_circuit();
+        let outcome = simulate(
+            vec![],
+            &circuit,
+            &board(),
+            &SAConfig {
+                max_iters: 20_000,
+                use_spectral: true,
+                bridge_policy: BridgePolicy::Disabled,
+                ..SAConfig::default()
+            },
+            &crate::layout::problem::AnnealProblem::default(),
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            stagnation_limit(&SAConfig {
+                max_iters: 20_000,
+                use_spectral: true,
+                ..SAConfig::default()
+            }),
+            5_000
+        );
+        assert_eq!(outcome.metrics.attempted, 5_000);
+        assert_eq!(outcome.metrics.no_candidate, 5_000);
     }
 
     /// 验证 SAState::from_greedy 在标准板上不会试着把元件放中间 blocked row。

@@ -89,7 +89,7 @@
     if (!busy || (activeRunId !== null && event.run_id !== activeRunId)) return;
     if (interrupting && event.phase === "annealing" && event.progress < 88) return;
     if (!event.frame) {
-      // seeds 聚合进度不参与 80ms 动画排队，否则 100 个完成事件会产生额外延迟。
+      // seeds 聚合进度不参与 80ms 动画排队，否则多个完成事件会产生额外延迟。
       applyEvent(event);
       return;
     }

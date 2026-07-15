@@ -42,8 +42,8 @@ impl ComputeProfile {
     fn config(self) -> SAConfig {
         let (n_seeds, max_iters) = match self {
             Self::Quick => (8, 5_000),
-            Self::Standard => (32, 200_000),
-            Self::Full => (100, 1_000_000),
+            Self::Standard => (32, 20_000),
+            Self::Full => (128, 40_000),
         };
         SAConfig {
             max_iters,
@@ -948,8 +948,8 @@ mod tests {
         let full = ComputeProfile::Full.config();
 
         assert_eq!((quick.n_seeds, quick.max_iters), (8, 5_000));
-        assert_eq!((standard.n_seeds, standard.max_iters), (32, 200_000));
-        assert_eq!((full.n_seeds, full.max_iters), (100, 1_000_000));
+        assert_eq!((standard.n_seeds, standard.max_iters), (32, 20_000));
+        assert_eq!((full.n_seeds, full.max_iters), (128, 40_000));
         for config in [quick, standard, full] {
             assert_eq!(config.t_start, 40.0);
             assert_eq!(config.t_end, 0.01);
