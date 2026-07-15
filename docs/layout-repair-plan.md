@@ -400,6 +400,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R7. 先封死所有 reject 的完整状态恢复
 
+- 实施状态：**已完成**（2026-07-15）。T11 的逐字段回归先确认 Toggle reject 后会泄漏候选 index（`active_bridge_idx` 从 0 变成 23）；`Backup::ToggleBridging` 现同时保存并恢复 mode 与 candidate index。Flip/ShiftX/ShiftY/ShiftGroup/Toggle 的成功应用后回滚，以及所有 `None` 路径的零修改，均按 `SAState` 全字段比较。
 - 对应：A11 和 AGENTS.md 的 rejected-move invariant。
 - 依赖：R5 后 `SAState` 字段形态稳定，避免随后重写测试。
 - 最小失败测试：T11，并把 Flip/ShiftX/ShiftY/ShiftGroup/Toggle 做成同一逐字段 property table。

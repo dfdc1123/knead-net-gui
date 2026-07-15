@@ -387,6 +387,7 @@ enum Backup {
     ToggleBridging {
         idx: usize,
         old_bridged: bool,
+        old_active_idx: usize,
     },
     ShiftGroup {
         // 每成员: (idx, was_bridged, old_x, old_active_idx)
@@ -412,7 +413,14 @@ impl Backup {
                 }
             }
             Backup::ShiftY { idx, old_y } => state.y[idx] = old_y,
-            Backup::ToggleBridging { idx, old_bridged } => state.bridged[idx] = old_bridged,
+            Backup::ToggleBridging {
+                idx,
+                old_bridged,
+                old_active_idx,
+            } => {
+                state.bridged[idx] = old_bridged;
+                state.active_bridge_idx[idx] = old_active_idx;
+            }
             Backup::ShiftGroup { entries } => {
                 for (idx, was_bridged, old_x, old_active_idx) in entries {
                     if was_bridged {
@@ -552,10 +560,12 @@ fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backu
         }
         Move::ToggleBridging(i) => {
             let old_bridged = state.bridged[*i];
+            let old_active_idx = state.active_bridge_idx[*i];
             state.bridged[*i] = !old_bridged;
             Some(Backup::ToggleBridging {
                 idx: *i,
                 old_bridged,
+                old_active_idx,
             })
         }
     }
@@ -1240,6 +1250,88 @@ mod tests {
         assert!(!state.bridged_pin_pairs[0].is_empty(), "cache 不该为空");
         state.bridged[0] = true;
         state
+    }
+
+    fn assert_state_fields_equal(actual: &SAState, expected: &SAState, context: &str) {
+        assert_eq!(actual.placeable, expected.placeable, "{context}: placeable");
+        assert_eq!(
+            actual.is_bridgeable, expected.is_bridgeable,
+            "{context}: is_bridgeable"
+        );
+        assert_eq!(actual.bridged, expected.bridged, "{context}: bridged");
+        assert_eq!(
+            actual.bridged_pin_pairs, expected.bridged_pin_pairs,
+            "{context}: bridged_pin_pairs"
+        );
+        assert_eq!(
+            actual.active_bridge_idx, expected.active_bridge_idx,
+            "{context}: active_bridge_idx"
+        );
+        assert_eq!(actual.x, expected.x, "{context}: x");
+        assert_eq!(actual.y, expected.y, "{context}: y");
+        assert_eq!(actual.rotation, expected.rotation, "{context}: rotation");
+        assert_eq!(actual.r90_only, expected.r90_only, "{context}: r90_only");
+        assert_eq!(actual.y_locked, expected.y_locked, "{context}: y_locked");
+    }
+
+    #[test]
+    fn every_rejected_move_restores_the_complete_state() {
+        let plain_board = board();
+        let mut plain = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
+        plain.x = vec![2, 4];
+        for (name, movement) in [
+            ("Flip", Move::Flip(0)),
+            ("ShiftX", Move::ShiftX(0, 1)),
+            ("ShiftY", Move::ShiftY(0, 1)),
+            ("ShiftGroup", Move::ShiftGroup(vec![0, 1])),
+        ] {
+            let mut candidate = plain.clone();
+            let before = candidate.clone();
+            let backup = apply_move(&mut candidate, &movement, &plain_board)
+                .unwrap_or_else(|| panic!("{name} fixture 应能应用"));
+            backup.revert(&mut candidate);
+            assert_state_fields_equal(&candidate, &before, name);
+        }
+
+        let (_circuit, bridge_board) = bridgable_fixture();
+        let mut toggled = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        toggled.bridged[0] = false;
+        toggled.active_bridge_idx[0] = 0;
+        assert!(toggled.bridged_pin_pairs[0].len() > 1);
+        let before = toggled.clone();
+        let backup = apply_move(&mut toggled, &Move::ToggleBridging(0), &bridge_board).unwrap();
+        // SA 会在 Toggle 落地后遍历候选并改 active index；reject 必须连它一起恢复。
+        toggled.active_bridge_idx[0] = toggled.bridged_pin_pairs[0].len() - 1;
+        backup.revert(&mut toggled);
+        assert_state_fields_equal(&toggled, &before, "ToggleBridging");
+    }
+
+    #[test]
+    fn every_none_move_leaves_the_complete_state_unchanged() {
+        let (_circuit, bridge_board) = bridgable_fixture();
+        let bridged = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        for (name, movement) in [("Flip", Move::Flip(0)), ("ShiftY", Move::ShiftY(0, 1))] {
+            let mut candidate = bridged.clone();
+            let before = candidate.clone();
+            assert!(apply_move(&mut candidate, &movement, &bridge_board).is_none());
+            assert_state_fields_equal(&candidate, &before, name);
+        }
+
+        let mut shifted = bridged.clone();
+        let leftmost = shifted.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| bridge_board.hole(pair[0].0).position.x == 1)
+            .expect("应能找到最左可用 power x=1 的候选");
+        shifted.active_bridge_idx[0] = leftmost;
+        let before = shifted.clone();
+        assert!(apply_move(&mut shifted, &Move::ShiftX(0, -2), &bridge_board).is_none());
+        assert_state_fields_equal(&shifted, &before, "ShiftX None");
+
+        let mut group = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
+        group.x = vec![2, 0];
+        let before = group.clone();
+        assert!(apply_move(&mut group, &Move::ShiftGroup(vec![0, 1]), &board()).is_none());
+        assert_state_fields_equal(&group, &before, "ShiftGroup None");
     }
 
     /// Flip 命中 bridged 时 静默丢弃, state 完全不变。
