@@ -380,7 +380,7 @@ pub(crate) fn initialize_bridging(
     Ok(())
 }
 
-fn state_hard_legal(
+pub(crate) fn state_hard_legal(
     state: &SAState,
     circuit: &Circuit,
     board: &Breadboard,

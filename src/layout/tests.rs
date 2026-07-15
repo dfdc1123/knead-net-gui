@@ -1754,8 +1754,8 @@ fn place_sa_can_emit_bridged_placement_for_bridgeable_resistor() {
     // 为提高撞上 Toggle 的概率, 提升 p_toggle_bridge 到 0.3 跑多次。
     let config = SAConfig {
         max_iters: 2000,
-        t0: 5.0,
-        cool_rate: 0.95,
+        t_start: 5.0,
+        t_end: 0.01,
         n_seeds: 5,
         p_toggle_bridge: 0.3,
         ..SAConfig::default()
@@ -1843,8 +1843,8 @@ fn place_sa_bridgeable_can_flip_to_bridged() {
     // 不强求 100% 出现 (SA 随机性), 但要求至少 1 次出现 (概率足够大时必然出现)。
     let config = SAConfig {
         max_iters: 2000,
-        t0: 10.0,
-        cool_rate: 0.9,
+        t_start: 10.0,
+        t_end: 0.01,
         n_seeds: 20,
         p_toggle_bridge: 0.5,
         ..SAConfig::default()

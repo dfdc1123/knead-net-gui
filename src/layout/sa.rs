@@ -60,9 +60,10 @@ use crate::layout::breadboard::Breadboard;
 use crate::layout::cost::cost;
 use crate::layout::cost::{
     BridgeInitContext, BridgePolicy, CostBuf, SAContext, SAState, Weights, cost_fast,
-    initialize_bridging, populate_bridgeable_info,
+    initialize_bridging, populate_bridgeable_info, state_hard_legal,
 };
 use crate::layout::placement::Rotation;
+use crate::layout::progress::AnnealMetrics;
 
 // ============================================================
 //  Profile helpers (--profile flag 启用, 默认 noop)
@@ -152,10 +153,10 @@ use std::collections::HashSet;
 pub struct SAConfig {
     /// 退火总迭代数; 后期 SA 接受率接近 0, 跑也是空转。
     pub max_iters: usize,
-    /// 初始温度; 经验上 T0 ≈ 3 * "典型变差 Δcost" 比较稳。
-    pub t0: f64,
-    /// 每步 T *= cool_rate; 0.95 通用, 0.9 更快但更糙。
-    pub cool_rate: f64,
+    /// Attempt 0 的温度。
+    pub t_start: f64,
+    /// 最后一次 attempt 的温度；schedule 按 `max_iters` 归一化推导。
+    pub t_end: f64,
     pub weights: Weights,
     /// 决定随机扰动序列; 改 seed 可重新跑一遍出不同结果。
     pub seed: u64,
@@ -174,20 +175,24 @@ pub struct SAConfig {
     /// 只在 [`BridgePolicy::Explore`] 下生效；Disabled / Forced 都不会生成 Toggle。
     /// 0 = 关闭 Explore 的 Toggle 区间；它不再决定是否建立候选或初始姿态。
     pub p_toggle_bridge: f64,
+    /// Relative probability mass for changing the active Bridged candidate without
+    /// changing pose mode. Only applicable when at least two candidates exist.
+    pub p_change_bridge_candidate: f64,
 }
 
 impl Default for SAConfig {
     fn default() -> Self {
         Self {
             max_iters: 10000,
-            t0: 10.0,
-            cool_rate: 0.95,
+            t_start: 10.0,
+            t_end: 0.01,
             weights: Weights::default(),
             seed: 0xCAFE_F00D,
             n_seeds: 1,
             use_spectral: false,
             bridge_policy: BridgePolicy::default(),
             p_toggle_bridge: 0.15,
+            p_change_bridge_candidate: 0.10,
         }
     }
 }
@@ -207,6 +212,8 @@ enum Move {
     /// 翻转 `state.bridged[i]` (bridgeable 元件在 OnBoard ↔ Bridged 之间切换)。
     /// 仅当 `state.is_bridgeable[i] = true` 时生成 (见 `random_move`)。
     ToggleBridging(usize),
+    /// Bridged 元件切换到另一个预计算候选。
+    ChangeBridgeCandidate(usize, usize),
     /// 同 rail 内一组紧邻元件整体左移 1 列, 填桥接留下的空洞。
     /// 组由密度聚类决定 (gap ≤ 2 算同组)。
     ShiftGroup(Vec<usize>),
@@ -216,22 +223,21 @@ fn random_move(
     state: &SAState,
     rng: &mut fastrand::Rng,
     t: f64,
-    t0: f64,
+    t_start: f64,
     config: &SAConfig,
     board: &Breadboard,
-) -> Move {
+) -> Option<Move> {
     let n = state.n();
     if n == 0 {
-        return Move::Flip(0);
+        return None;
     }
-    let p = rng.usize(0..n);
-    let r = rng.f64();
+    let start = rng.usize(0..n);
 
     // 步长随温度变: 高温期 N ∈ {1, 2, 3} 均匀, 中温 {1, 2}, 低温恒为 1。
     // 三个区间按 T0 的 0.5 / 0.2 划分; 越冷越精细, 越热越敢跳。
-    let max_n = if t > t0 * 0.5 {
+    let max_n = if t > t_start * 0.5 {
         3
-    } else if t > t0 * 0.2 {
+    } else if t > t_start * 0.2 {
         2
     } else {
         1
@@ -242,40 +248,92 @@ fn random_move(
     let dx = dx_sign * n_amp;
     let dy = dy_sign * n_amp;
 
-    // v7 分布: ShiftX 37% / Flip 20% / ShiftY 20% / ToggleBridging 15% / ShiftGroup 8%。
-    // ShiftX 从 45% → 37%, 匀 8% 给 ShiftGroup。
     let p_toggle = if matches!(config.bridge_policy, BridgePolicy::Explore { .. }) {
         config.p_toggle_bridge.clamp(0.0, 0.45)
     } else {
         0.0
     };
-    let p_shiftx = (1.0 - p_toggle) * 0.37 / 0.85;
-    let p_flip = (1.0 - p_toggle) * 0.20 / 0.85;
-    let p_shiftg = (1.0 - p_toggle) * 0.08 / 0.85;
-    let _p_shifty = (1.0 - p_toggle) * 0.20 / 0.85;
-    // 校验: p_shiftx + p_flip + p_shifty + p_toggle + p_shiftg = (1-p_toggle) + p_toggle = 1
+    let p_change = config.p_change_bridge_candidate.clamp(0.0, 0.45);
+    let standard_scale = 1.0 - p_toggle - p_change;
+    let shift_x_weight = standard_scale * 0.37 / 0.85;
+    let flip_weight = standard_scale * 0.20 / 0.85;
+    let shift_y_weight = standard_scale * 0.20 / 0.85;
+    let group_weight = standard_scale * 0.08 / 0.85;
 
-    if r < p_shiftx {
-        Move::ShiftX(p, dx)
-    } else if r < p_shiftx + p_flip {
-        Move::Flip(p)
-    } else if r < p_shiftx + p_flip + p_toggle {
-        if state.is_bridgeable[p] {
-            Move::ToggleBridging(p)
-        } else {
-            Move::ShiftX(p, dx)
+    for offset in 0..n {
+        let p = (start + offset) % n;
+        let bridged_shift = state.bridged[p]
+            .then(|| bridged_shift_target(state, board, p, dx))
+            .flatten();
+        let can_shift_x = !state.bridged[p] || bridged_shift.is_some();
+        let can_flip_or_shift_y = !state.bridged[p] && state.y_locked[p].is_none();
+        let can_toggle = p_toggle > 0.0 && state.is_bridgeable[p];
+        let can_change = state.bridged[p] && state.bridged_pin_pairs[p].len() > 1;
+        let group = find_left_shiftable_group(state, board, p);
+
+        let mut total = 0.0;
+        if can_shift_x {
+            total += shift_x_weight;
         }
-    } else if r < p_shiftx + p_flip + p_toggle + p_shiftg {
-        // ShiftGroup: 找 p 所在同 rail 密度聚类, 整组左移 1 列填洞。
-        // 找不到可用组就退回单个 ShiftX。
-        if let Some(group) = find_left_shiftable_group(state, board, p) {
-            Move::ShiftGroup(group)
-        } else {
-            Move::ShiftX(p, dx)
+        if can_flip_or_shift_y {
+            total += flip_weight + shift_y_weight;
         }
-    } else {
-        Move::ShiftY(p, dy)
+        if can_toggle {
+            total += p_toggle;
+        }
+        if can_change {
+            total += p_change;
+        }
+        if group.is_some() {
+            total += group_weight;
+        }
+        if total <= 0.0 {
+            continue;
+        }
+
+        let mut choice = rng.f64() * total;
+        if can_shift_x {
+            if choice < shift_x_weight {
+                return Some(Move::ShiftX(p, dx));
+            }
+            choice -= shift_x_weight;
+        }
+        if can_flip_or_shift_y {
+            if choice < flip_weight {
+                return Some(Move::Flip(p));
+            }
+            choice -= flip_weight;
+            if choice < shift_y_weight {
+                return Some(Move::ShiftY(p, dy));
+            }
+            choice -= shift_y_weight;
+        }
+        if can_toggle {
+            if choice < p_toggle {
+                return Some(Move::ToggleBridging(p));
+            }
+            choice -= p_toggle;
+        }
+        if can_change {
+            if choice < p_change {
+                let current = state.active_bridge_idx[p];
+                let candidate_offset = rng.usize(0..state.bridged_pin_pairs[p].len() - 1);
+                let target = if candidate_offset >= current {
+                    candidate_offset + 1
+                } else {
+                    candidate_offset
+                };
+                return Some(Move::ChangeBridgeCandidate(p, target));
+            }
+            choice -= p_change;
+        }
+        if let Some(group) = group {
+            debug_assert!(choice < group_weight);
+            return Some(Move::ShiftGroup(group));
+        }
+        debug_assert!(false, "weighted move selection fell through");
     }
+    None
 }
 
 /// 同一 rail 内密度聚类, 找到 `i` 所在的组。
@@ -396,6 +454,10 @@ enum Backup {
         old_bridged: bool,
         old_active_idx: usize,
     },
+    ChangeBridgeCandidate {
+        idx: usize,
+        old_active_idx: usize,
+    },
     ShiftGroup {
         // 每成员: (idx, was_bridged, old_x, old_active_idx)
         entries: Vec<(usize, bool, i32, usize)>,
@@ -428,6 +490,10 @@ impl Backup {
                 state.bridged[idx] = old_bridged;
                 state.active_bridge_idx[idx] = old_active_idx;
             }
+            Backup::ChangeBridgeCandidate {
+                idx,
+                old_active_idx,
+            } => state.active_bridge_idx[idx] = old_active_idx,
             Backup::ShiftGroup { entries } => {
                 for (idx, was_bridged, old_x, old_active_idx) in entries {
                     if was_bridged {
@@ -575,6 +641,20 @@ fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backu
                 old_active_idx,
             })
         }
+        Move::ChangeBridgeCandidate(i, candidate) => {
+            if !state.bridged[*i]
+                || *candidate >= state.bridged_pin_pairs[*i].len()
+                || *candidate == state.active_bridge_idx[*i]
+            {
+                return None;
+            }
+            let old_active_idx = state.active_bridge_idx[*i];
+            state.active_bridge_idx[*i] = *candidate;
+            Some(Backup::ChangeBridgeCandidate {
+                idx: *i,
+                old_active_idx,
+            })
+        }
     }
 }
 
@@ -586,31 +666,36 @@ fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backu
 /// (e.g. x=6), 避免电源轨邻接永远过不去。`ShiftGroup` 不会触发此回退 —
 /// 严格左移 1 列的语义更紧凑。
 fn try_bridged_shift_x(state: &mut SAState, board: &Breadboard, i: usize, dx: i32) -> bool {
-    let cur = match state.active_bridge_pair(i) {
-        Some(p) => p,
-        None => return false,
+    let Some(target) = bridged_shift_target(state, board, i, dx) else {
+        return false;
     };
+    state.active_bridge_idx[i] = target;
+    true
+}
+
+fn bridged_shift_target(state: &SAState, board: &Breadboard, i: usize, dx: i32) -> Option<usize> {
+    let cur = state.active_bridge_pair(i)?;
     let old_power = board.hole(cur[0].0).position;
     let old_signal = board.hole(cur[1].0).position;
 
-    if try_shift_to(state, board, i, old_power, old_signal, dx) {
-        return true;
+    if let Some(target) = shifted_candidate(state, board, i, old_power, old_signal, dx) {
+        return Some(target);
     }
     if dx != 0 {
         let bumped = dx + dx.signum();
-        return try_shift_to(state, board, i, old_power, old_signal, bumped);
+        return shifted_candidate(state, board, i, old_power, old_signal, bumped);
     }
-    false
+    None
 }
 
-fn try_shift_to(
-    state: &mut SAState,
+fn shifted_candidate(
+    state: &SAState,
     board: &Breadboard,
     i: usize,
     old_power: crate::circuit::Position,
     old_signal: crate::circuit::Position,
     dx: i32,
-) -> bool {
+) -> Option<usize> {
     let tgt_power = crate::circuit::Position {
         x: old_power.x + dx,
         y: old_power.y,
@@ -619,14 +704,9 @@ fn try_shift_to(
         x: old_signal.x + dx,
         y: old_signal.y,
     };
-    if let Some(j) = state.bridged_pin_pairs[i].iter().position(|pair| {
+    state.bridged_pin_pairs[i].iter().position(|pair| {
         board.hole(pair[0].0).position == tgt_power && board.hole(pair[1].0).position == tgt_signal
-    }) {
-        state.active_bridge_idx[i] = j;
-        true
-    } else {
-        false
-    }
+    })
 }
 
 /// ShiftGroup 应用: 两段式, 第一遍验证 + 收集更新, 第二遍落写。保证全原子
@@ -743,8 +823,15 @@ pub(super) enum SimulationProgress {
         iteration: usize,
         current_cost: f64,
         best_cost: f64,
+        metrics: AnnealMetrics,
         state: SAState,
     },
+}
+
+#[derive(Debug)]
+pub(super) struct SimulationOutcome {
+    pub state: SAState,
+    pub metrics: AnnealMetrics,
 }
 
 pub(super) struct SimulationObserver<'a> {
@@ -757,7 +844,25 @@ pub(super) struct SimulationControl<'a> {
     pub cancellation: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
-/// 跑模拟退火, 返回最佳 [`SAState`]。
+fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
+    let start = if config.t_start.is_finite() && config.t_start > 0.0 {
+        config.t_start
+    } else {
+        f64::MIN_POSITIVE
+    };
+    let end = if config.t_end.is_finite() && config.t_end > 0.0 {
+        config.t_end
+    } else {
+        f64::MIN_POSITIVE
+    };
+    if config.max_iters <= 1 {
+        return start;
+    }
+    let progress = attempt.min(config.max_iters - 1) as f64 / (config.max_iters - 1) as f64;
+    start * (end / start).powf(progress)
+}
+
+/// 跑模拟退火, 返回最佳 [`SAState`] 和 attempt 分类计数。
 ///
 /// 初始状态按 [`SAConfig::use_spectral`] 选 [`SAState::from_spectral`] 或
 /// [`SAState::from_greedy`]; 两者都已经避免 pin 撞 / bbox 撞 / 列冲突,
@@ -770,7 +875,7 @@ pub(super) fn simulate(
     problem: &crate::layout::problem::AnnealProblem,
     preprocess: &crate::layout::preprocess::PreprocessResult,
     control: Option<SimulationControl<'_>>,
-) -> Result<SAState, crate::layout::LayoutError> {
+) -> Result<SimulationOutcome, crate::layout::LayoutError> {
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
         SAState::from_spectral(placeable, circuit, board, config.seed, preprocess, problem)
@@ -816,7 +921,7 @@ pub(super) fn simulate(
     let mut current_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
-    let mut t = config.t0;
+    let mut metrics = AnnealMetrics::default();
 
     for iteration in 0..config.max_iters {
         if control.as_ref().is_some_and(|control| {
@@ -833,13 +938,20 @@ pub(super) fn simulate(
                 iteration,
                 current_cost,
                 best_cost,
+                metrics,
                 state: state.clone(),
             });
         }
+        metrics.attempted += 1;
+        let temperature = temperature_at_attempt(config, iteration);
         prof_iter_inc!();
         #[cfg(profile_sa)]
         let _t_move_start = std::time::Instant::now();
-        let m = random_move(&state, &mut rng, t, config.t0, config, board);
+        let Some(m) = random_move(&state, &mut rng, temperature, config.t_start, config, board)
+        else {
+            metrics.no_candidate += 1;
+            continue;
+        };
         // in-place apply: 返 Some(backup) 表成功, None 表该 move 在当前状态下不应落地
         // (state 未变, 不需 revert)。
         #[cfg(profile_sa)]
@@ -849,42 +961,23 @@ pub(super) fn simulate(
             {
                 prof_move_add!(t_apply_start.elapsed().as_nanos() as u64);
             }
+            metrics.no_candidate += 1;
+            debug_assert!(
+                false,
+                "state-aware generator returned {m:?}, but apply rejected it"
+            );
             continue;
         };
         #[cfg(profile_sa)]
         {
             prof_move_add!(t_apply_start.elapsed().as_nanos() as u64);
         }
-        // 拒绝任何产生越界 / blocked row y 的候选 — 物理上不该考虑的状态。
-        if !state_y_valid(&state, board) {
+        if !state_hard_legal(&state, circuit, board, problem) {
+            metrics.invalid += 1;
             backup.revert(&mut state);
             continue;
         }
-        // 额外检查 OnBoard pin 不能出界 — 捕捉 Flip 导致 pin 越过轮边。
-        if !state_onboard_pins_in_bounds(&state, &ctx, board) {
-            backup.revert(&mut state);
-            continue;
-        }
-        // ToggleBridging 翻到 bridge 模式时: 遍历该元件的候选, 选 cost 最低的那对
-        // 写回 active_bridge_idx。 翻到 OnBoard 时不用管 active_bridge_idx。
-        let mut toggled_best_idx: Option<usize> = None;
-        if let Move::ToggleBridging(i) = &m
-            && state.bridged[*i]
-            && state.bridged_pin_pairs[*i].len() > 1
-        {
-            let mut best_cost = f64::INFINITY;
-            let mut best_idx = state.active_bridge_idx[*i];
-            for (j, _) in state.bridged_pin_pairs[*i].iter().enumerate() {
-                state.active_bridge_idx[*i] = j;
-                let c = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
-                if c < best_cost {
-                    best_cost = c;
-                    best_idx = j;
-                }
-            }
-            state.active_bridge_idx[*i] = best_idx;
-            toggled_best_idx = Some(best_idx);
-        }
+        metrics.evaluated += 1;
         #[cfg(profile_sa)]
         let t_cost_start = std::time::Instant::now();
         let new_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
@@ -894,8 +987,9 @@ pub(super) fn simulate(
         }
         let delta = new_cost - current_cost;
 
-        let accept = delta <= 0.0 || rng.f64() < (-delta / t).exp();
+        let accept = delta <= 0.0 || rng.f64() < (-delta / temperature).exp();
         if accept {
+            metrics.accepted += 1;
             current_cost = new_cost;
             if current_cost < best_cost {
                 best_cost = current_cost;
@@ -911,73 +1005,19 @@ pub(super) fn simulate(
             // accept: 不需要 revert, backup 直接 drop (小内存)
             drop(backup);
         } else {
-            // reject: revert 改回原状态。ToggleBridging 候选 idx 也是 revert 范围内。
-            let _ = toggled_best_idx; // 被 backup 覆盖
             backup.revert(&mut state);
         }
-
-        t *= config.cool_rate;
-        if t < 1e-6 {
-            break;
-        }
     }
 
-    Ok(best_state)
-}
-
-/// 检查 SAState 里所有 y 是否在板内且非 blocked row。
-/// ShiftY ±1 可能把 y=0 的元件推到 y=-1 (越界), 把 y=4 的推到 y=5 (blocked row),
-/// 这些候选从一开始就不该让 SA 考虑。
-fn state_y_valid(state: &SAState, board: &Breadboard) -> bool {
-    state
-        .y
-        .iter()
-        .all(|&y| y >= 0 && (y as usize) < board.rows() && !board.is_blocked(y as usize))
-}
-
-/// 检查 SAState 里所有 OnBoard 元件的**所有 pin**都在 main board 范围内。
-///
-/// **为什么要 pin-level**: `state_y_valid` 只查 `state.y`，但 `state.x` 在 Flip
-/// 改变 rotation 后仍然可能推 pin 进轮界外 (典型例: OnBoard 电阻 R5.x=1 R180,
-/// pin offset 是 (-4, 0), 实际 x = -3 → 越界)。Metropolis 该拒绝这个 Flip (delta=+1e6),
-/// 复杂在跨多个 Move 累计下沉后, 状态可能从 x=4 → Flip 到 R180 (本末状态不变) →
-/// 连续 ShiftX(-1) 逐渐推进 pin.2 进越界。 计算 cost 时 oob_count 报 1, 但从合法到
-/// OOB 是连续几轮 ShiftX, 每一轮 delta=0 (受限于上界㯱下界之间),  被 Metropolis 接受。
-///
-/// 在 Move 被接受之前都在走, 之前从不查 pin 位置, 因此 SA 有机会走进越界并被
-/// 1e6 锁死。换 "检查 pin-level OOB" 拦下越界无法表达。
-fn state_onboard_pins_in_bounds(state: &SAState, ctx: &SAContext, board: &Breadboard) -> bool {
-    let cols_i = board.cols() as i32;
-    let main_rows_i = board.main_rows() as i32;
-    for (idx, _) in state.placeable.iter().enumerate() {
-        if state.bridged[idx] {
-            // bridged 的 pin 位由 active_bridge_pair 决定; 他是 [1.1]后修复过的合法
-            // cache 抽取出来的, 不需这里复查 (最初状态不会越界)。
-            continue;
-        }
-        let px = state.x[idx];
-        let py = state.y[idx];
-        if px < 0
-            || px >= cols_i
-            || py < 0
-            || (py as usize) >= board.rows()
-            || board.is_blocked(py as usize)
-        {
-            return false;
-        }
-        let ri = super::cost::context::rot_index(state.rotation[idx]);
-        let comp_info = &ctx.comp_infos[idx];
-        for pin_data in &comp_info.pins {
-            let (offsets, _net) = pin_data;
-            let offset = offsets[ri];
-            let x = px + offset.x;
-            let y = py + offset.y;
-            if x < 0 || x >= cols_i || y < 0 || y >= main_rows_i {
-                return false;
-            }
-        }
-    }
-    true
+    debug_assert_eq!(
+        metrics.attempted,
+        metrics.no_candidate + metrics.invalid + metrics.evaluated
+    );
+    debug_assert!(metrics.accepted <= metrics.evaluated);
+    Ok(SimulationOutcome {
+        state: best_state,
+        metrics,
+    })
 }
 
 // ============================================================
@@ -1084,12 +1124,13 @@ mod tests {
         // T0=30, T 在 [0.3, 30] 区间走过, 涵盖 max_n=3/2/1 三档。
         for k in 0..200 {
             let t = 30.0_f64 * (1.0 - k as f64 / 200.0) + 0.3;
-            let m = random_move(&state, &mut rng, t, 30.0, &cfg, &b);
+            let m = random_move(&state, &mut rng, t, 30.0, &cfg, &b).unwrap();
             match m {
                 Move::Flip(i)
                 | Move::ShiftX(i, _)
                 | Move::ShiftY(i, _)
-                | Move::ToggleBridging(i) => {
+                | Move::ToggleBridging(i)
+                | Move::ChangeBridgeCandidate(i, _) => {
                     assert!(i < state.n(), "index {i} out of range {}", state.n());
                 }
                 Move::ShiftGroup(indices) => {
@@ -1112,10 +1153,13 @@ mod tests {
         let mut lo_max = 0i32;
         let b = board();
         for _ in 0..2000 {
-            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_hi, 30.0, 30.0, &cfg, &b) {
+            if let Some(Move::ShiftX(_, dx)) =
+                random_move(&state, &mut rng_hi, 30.0, 30.0, &cfg, &b)
+            {
                 hi_max = hi_max.max(dx.abs());
             }
-            if let Move::ShiftX(_, dx) = random_move(&state, &mut rng_lo, 0.5, 30.0, &cfg, &b) {
+            if let Some(Move::ShiftX(_, dx)) = random_move(&state, &mut rng_lo, 0.5, 30.0, &cfg, &b)
+            {
                 lo_max = lo_max.max(dx.abs());
             }
         }
@@ -1311,10 +1355,21 @@ mod tests {
         assert!(toggled.bridged_pin_pairs[0].len() > 1);
         let before = toggled.clone();
         let backup = apply_move(&mut toggled, &Move::ToggleBridging(0), &bridge_board).unwrap();
-        // SA 会在 Toggle 落地后遍历候选并改 active index；reject 必须连它一起恢复。
-        toggled.active_bridge_idx[0] = toggled.bridged_pin_pairs[0].len() - 1;
         backup.revert(&mut toggled);
         assert_state_fields_equal(&toggled, &before, "ToggleBridging");
+
+        let mut changed = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        changed.active_bridge_idx[0] = 0;
+        let target = changed.bridged_pin_pairs[0].len() - 1;
+        let before = changed.clone();
+        let backup = apply_move(
+            &mut changed,
+            &Move::ChangeBridgeCandidate(0, target),
+            &bridge_board,
+        )
+        .unwrap();
+        backup.revert(&mut changed);
+        assert_state_fields_equal(&changed, &before, "ChangeBridgeCandidate");
     }
 
     #[test]
@@ -1337,6 +1392,19 @@ mod tests {
         let before = shifted.clone();
         assert!(apply_move(&mut shifted, &Move::ShiftX(0, -2), &bridge_board).is_none());
         assert_state_fields_equal(&shifted, &before, "ShiftX None");
+
+        let mut onboard_change = bridged.clone();
+        onboard_change.bridged[0] = false;
+        let before = onboard_change.clone();
+        assert!(
+            apply_move(
+                &mut onboard_change,
+                &Move::ChangeBridgeCandidate(0, 1),
+                &bridge_board,
+            )
+            .is_none()
+        );
+        assert_state_fields_equal(&onboard_change, &before, "ChangeCandidate None");
 
         let mut group = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[1, 1]);
         group.x = vec![2, 0];
@@ -1635,15 +1703,13 @@ mod tests {
         for _ in 0..2000 {
             let m = random_move(&state, &mut rng, 10.0, 10.0, &cfg, &b);
             assert!(
-                !matches!(m, Move::ToggleBridging(_)),
+                !matches!(m, Some(Move::ToggleBridging(_))),
                 "is_bridgeable=false 时 random_move 不应返 ToggleBridging"
             );
         }
     }
 
-    /// random_move 选到 Toggle 区间 且 p 是 bridgeable 时, 返 ToggleBridging(p)。
-    /// 注: `p_toggle_bridge` 在 `random_move` 里被 clamp 到 0.45 (防误配超过 45%)。
-    /// 设 0.25 期望 ~25% = 500/2000, 留 100 偏差。
+    /// OnBoard state 只在当前可用的 move classes 之间重新归一化权重。
     #[test]
     fn random_move_toggle_emits_when_bridgeable() {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);
@@ -1653,16 +1719,23 @@ mod tests {
             ..SAConfig::default()
         };
         let mut rng = fastrand::Rng::with_seed(0);
-        let mut toggle_count = 0;
+        let mut toggle_count = 0usize;
         let b = board();
-        for _ in 0..2000 {
-            if let Move::ToggleBridging(_) = random_move(&state, &mut rng, 10.0, 10.0, &cfg, &b) {
+        let samples = 20_000usize;
+        for _ in 0..samples {
+            if let Some(Move::ToggleBridging(_)) =
+                random_move(&state, &mut rng, 10.0, 10.0, &cfg, &b)
+            {
                 toggle_count += 1;
             }
         }
+        let standard_scale = 1.0 - cfg.p_toggle_bridge - cfg.p_change_bridge_candidate;
+        let applicable_standard = standard_scale * (0.37 + 0.20 + 0.20) / 0.85;
+        let expected =
+            samples as f64 * cfg.p_toggle_bridge / (cfg.p_toggle_bridge + applicable_standard);
         assert!(
-            toggle_count > 400 && toggle_count < 600,
-            "p_toggle_bridge=0.25 采 2000 次应约 500 次 Toggle, got {toggle_count}"
+            (toggle_count as f64 - expected).abs() < 300.0,
+            "state-aware normalized Toggle count expected {expected:.1}, got {toggle_count}"
         );
     }
 
@@ -1682,10 +1755,129 @@ mod tests {
         for _ in 0..2000 {
             let m = random_move(&state, &mut rng, 10.0, 10.0, &cfg, &b);
             assert!(
-                !matches!(m, Move::ToggleBridging(_)),
+                !matches!(m, Some(Move::ToggleBridging(_))),
                 "p_toggle_bridge=0 时不应返 Toggle"
             );
         }
+    }
+
+    #[test]
+    fn generator_never_returns_a_mode_inapplicable_move() {
+        let (_circuit, bridge_board) = bridgable_fixture();
+        let bridged = bridgable_state_in_bridged(vec![ComponentId(0)]);
+        let config = SAConfig::default();
+        let mut rng = fastrand::Rng::with_seed(0x0BAD_5EED);
+        for _ in 0..1_000 {
+            let movement = random_move(&bridged, &mut rng, 10.0, 10.0, &config, &bridge_board)
+                .expect("fixture should have at least one applicable move");
+            let mut candidate = bridged.clone();
+            assert!(
+                apply_move(&mut candidate, &movement, &bridge_board).is_some(),
+                "Bridged state generated an inapplicable move: {movement:?}"
+            );
+        }
+
+        let mut locked = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
+        locked.y_locked[0] = Some(2);
+        let locked_board = board();
+        let mut rng = fastrand::Rng::with_seed(0x0010_C0ED);
+        for _ in 0..1_000 {
+            let movement = random_move(&locked, &mut rng, 10.0, 10.0, &config, &locked_board)
+                .expect("fixture should have at least one applicable move");
+            let mut candidate = locked.clone();
+            assert!(
+                apply_move(&mut candidate, &movement, &locked_board).is_some(),
+                "y-locked state generated an inapplicable move: {movement:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn temperature_schedule_is_normalized_by_attempt_budget() {
+        let quick = SAConfig {
+            max_iters: 5_000,
+            t_start: 40.0,
+            t_end: 0.01,
+            ..SAConfig::default()
+        };
+        let full = SAConfig {
+            max_iters: 1_000_000,
+            ..quick
+        };
+        assert_eq!(temperature_at_attempt(&quick, 0), 40.0);
+        assert!((temperature_at_attempt(&quick, quick.max_iters - 1) - 0.01).abs() < 1e-12);
+        assert!((temperature_at_attempt(&full, full.max_iters - 1) - 0.01).abs() < 1e-12);
+
+        let quick_mid = temperature_at_attempt(&quick, (quick.max_iters - 1) / 2);
+        let full_mid = temperature_at_attempt(&full, (full.max_iters - 1) / 2);
+        assert!((quick_mid - full_mid).abs() < 0.01);
+        assert!(temperature_at_attempt(&quick, 1) < temperature_at_attempt(&quick, 0));
+    }
+
+    #[test]
+    fn every_attempt_is_classified_even_without_a_candidate_or_after_invalidity() {
+        let circuit = simple_circuit();
+        let preprocess = crate::layout::preprocess::PreprocessResult {
+            r90_only: std::collections::HashSet::new(),
+            y_locked: std::collections::HashMap::new(),
+        };
+        let config = SAConfig {
+            max_iters: 64,
+            bridge_policy: BridgePolicy::Disabled,
+            ..SAConfig::default()
+        };
+
+        let empty = simulate(
+            vec![],
+            &circuit,
+            &board(),
+            &config,
+            &crate::layout::problem::AnnealProblem::default(),
+            &preprocess,
+            None,
+        )
+        .unwrap();
+        assert_eq!(empty.metrics.attempted, config.max_iters);
+        assert_eq!(empty.metrics.no_candidate, config.max_iters);
+        assert_eq!(empty.metrics.invalid, 0);
+        assert_eq!(empty.metrics.evaluated, 0);
+
+        // Two-pin footprint exactly fills this 2x1 board. Every generated Shift/Flip is
+        // hard-invalid, but all 64 attempts must still advance the normalized schedule.
+        let invalid = simulate(
+            vec![ComponentId(0)],
+            &circuit,
+            &Breadboard::new(2, 1),
+            &config,
+            &crate::layout::problem::AnnealProblem::default(),
+            &preprocess,
+            None,
+        )
+        .unwrap();
+        assert_eq!(invalid.metrics.attempted, config.max_iters);
+        assert_eq!(invalid.metrics.invalid, config.max_iters);
+        assert_eq!(invalid.metrics.no_candidate, 0);
+        assert_eq!(invalid.metrics.evaluated, 0);
+
+        let evaluated = simulate(
+            vec![ComponentId(0)],
+            &circuit,
+            &board(),
+            &config,
+            &crate::layout::problem::AnnealProblem::default(),
+            &preprocess,
+            None,
+        )
+        .unwrap();
+        assert_eq!(evaluated.metrics.attempted, config.max_iters);
+        assert_eq!(
+            evaluated.metrics.attempted,
+            evaluated.metrics.no_candidate
+                + evaluated.metrics.invalid
+                + evaluated.metrics.evaluated
+        );
+        assert!(evaluated.metrics.evaluated > 0);
+        assert!(evaluated.metrics.accepted <= evaluated.metrics.evaluated);
     }
 
     /// 验证 SAState::from_greedy 在标准板上不会试着把元件放中间 blocked row。
@@ -1734,7 +1926,7 @@ mod tests {
             },
             ..SAConfig::default()
         };
-        let state = simulate(
+        let outcome = simulate(
             vec![ComponentId(0)],
             &circuit,
             &board,
@@ -1748,7 +1940,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(state.bridged, vec![false]);
+        assert_eq!(outcome.state.bridged, vec![false]);
     }
 
     #[test]
@@ -1779,36 +1971,38 @@ mod tests {
         };
 
         let disabled = run(BridgePolicy::Disabled);
-        assert_eq!(disabled.is_bridgeable, vec![false]);
-        assert_eq!(disabled.bridged, vec![false]);
-        assert!(disabled.bridged_pin_pairs[0].is_empty());
+        assert_eq!(disabled.state.is_bridgeable, vec![false]);
+        assert_eq!(disabled.state.bridged, vec![false]);
+        assert!(disabled.state.bridged_pin_pairs[0].is_empty());
 
         let onboard = run(BridgePolicy::Explore {
             initial: BridgeInitial::OnBoard,
         });
-        assert_eq!(onboard.is_bridgeable, vec![true]);
-        assert_eq!(onboard.bridged, vec![false]);
-        assert!(!onboard.bridged_pin_pairs[0].is_empty());
+        assert_eq!(onboard.state.is_bridgeable, vec![true]);
+        assert_eq!(onboard.state.bridged, vec![false]);
+        assert!(!onboard.state.bridged_pin_pairs[0].is_empty());
 
         let forced = run(BridgePolicy::Forced);
-        assert_eq!(forced.is_bridgeable, vec![true]);
-        assert_eq!(forced.bridged, vec![true]);
+        assert_eq!(forced.state.is_bridgeable, vec![true]);
+        assert_eq!(forced.state.bridged, vec![true]);
 
         let mut rng = fastrand::Rng::with_seed(7);
         let forced_config = SAConfig {
             bridge_policy: BridgePolicy::Forced,
             p_toggle_bridge: 0.45,
+            p_change_bridge_candidate: 0.45,
             ..SAConfig::default()
         };
+        let mut saw_candidate_change = false;
         for _ in 0..500 {
+            let movement = random_move(&forced.state, &mut rng, 10.0, 10.0, &forced_config, &board);
             assert!(
-                !matches!(
-                    random_move(&forced, &mut rng, 10.0, 10.0, &forced_config, &board),
-                    Move::ToggleBridging(_)
-                ),
+                !matches!(movement, Some(Move::ToggleBridging(_))),
                 "Forced policy must not emit a move back to OnBoard"
             );
+            saw_candidate_change |= matches!(movement, Some(Move::ChangeBridgeCandidate(_, _)));
         }
+        assert!(saw_candidate_change);
     }
 
     #[test]
@@ -1846,7 +2040,7 @@ mod tests {
 
         let (circuit, board) = bridgable_fixture();
         let cancelled = std::sync::atomic::AtomicBool::new(true);
-        let state = simulate(
+        let outcome = simulate(
             vec![ComponentId(0)],
             &circuit,
             &board,
@@ -1869,10 +2063,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(state.placeable, vec![ComponentId(0)]);
-        assert_eq!(state.is_bridgeable, vec![true]);
-        assert_eq!(state.bridged, vec![false]);
-        assert!(!state.bridged_pin_pairs[0].is_empty());
+        assert_eq!(outcome.state.placeable, vec![ComponentId(0)]);
+        assert_eq!(outcome.state.is_bridgeable, vec![true]);
+        assert_eq!(outcome.state.bridged, vec![false]);
+        assert!(!outcome.state.bridged_pin_pairs[0].is_empty());
     }
 
     #[test]
@@ -1886,8 +2080,8 @@ mod tests {
         let initial_cost = cost(&state, &circuit, &board(), &[], &Weights::default());
         let config = SAConfig {
             max_iters: 2000,
-            t0: 5.0,
-            cool_rate: 0.95,
+            t_start: 5.0,
+            t_end: 0.01,
             weights: Weights::default(),
             seed: 0xCAFE_F00D,
             ..SAConfig::default()
@@ -1904,7 +2098,8 @@ mod tests {
             },
             None,
         )
-        .unwrap();
+        .unwrap()
+        .state;
         let best_cost = cost(&best, &circuit, &board(), &[], &Weights::default());
         assert!(
             best_cost <= initial_cost,
@@ -1932,7 +2127,8 @@ mod tests {
             },
             None,
         )
-        .unwrap();
+        .unwrap()
+        .state;
         // SA 输出本身就是 final 位置 (compact 删了, cost 里的 compactness 替代)
         let xs = best.x.clone();
         // 检查 pin 不撞

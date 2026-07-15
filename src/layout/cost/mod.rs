@@ -30,7 +30,9 @@ mod state;
 mod tests;
 
 // --- 公共 API 重导出 (供 layout/, sa.rs, main.rs 使用) ---
-pub(crate) use bridge::{BridgeInitContext, initialize_bridging, populate_bridgeable_info};
+pub(crate) use bridge::{
+    BridgeInitContext, initialize_bridging, populate_bridgeable_info, state_hard_legal,
+};
 pub use bridge::{BridgeInitial, BridgePolicy};
 pub(crate) use context::CostBuf;
 pub use context::{CompInfo, SAContext};

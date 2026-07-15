@@ -174,8 +174,8 @@ fn main() {
         SAConfig {
             use_spectral: true,
             max_iters: 5_000,
-            t0: 40.0,
-            cool_rate: 0.99999,
+            t_start: 40.0,
+            t_end: 0.01,
             n_seeds: 10,
             seed: 0xCAFE_F00D,
             ..SAConfig::default()
@@ -184,8 +184,8 @@ fn main() {
         SAConfig {
             use_spectral: true,
             max_iters: 1_000_000,
-            t0: 40.0,
-            cool_rate: 0.99999,
+            t_start: 40.0,
+            t_end: 0.01,
             n_seeds: 100,
             seed: 0xCAFE_F00D,
             ..SAConfig::default()

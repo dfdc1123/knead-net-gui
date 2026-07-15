@@ -7,7 +7,7 @@ use crate::layout::placement::{Placement, Rotation};
 
 use super::debug::{diagnose_expensive_seeds, print_seed_cost_report};
 use super::routing::Wire;
-use super::{CancellationToken, LayoutProgress, LayoutSnapshot, ProgressOptions};
+use super::{AnnealMetrics, CancellationToken, LayoutProgress, LayoutSnapshot, ProgressOptions};
 
 impl<'c> super::Layout<'c> {
     pub fn new(circuit: &'c Circuit) -> Self {
@@ -196,7 +196,8 @@ impl<'c> super::Layout<'c> {
         let display_seed = progress
             .map_or(0, |(_, options)| options.display_seed)
             .min(n_seeds - 1);
-        let seed_results: Vec<Result<(f64, u64, SAState), LayoutError>> = (0..n_seeds as u64)
+        let seed_results: Vec<Result<(f64, u64, SAState, AnnealMetrics), LayoutError>> = (0
+            ..n_seeds as u64)
             .into_par_iter()
             .filter_map(|s| {
                 // 取消后尚未开始的非观察 seed 无需再做 spectral/bridge 初始化。
@@ -221,8 +222,9 @@ impl<'c> super::Layout<'c> {
                             iteration,
                             current_cost,
                             best_cost,
+                            metrics,
                             state,
-                        } => (Some((iteration, current_cost, best_cost)), state),
+                        } => (Some((iteration, current_cost, best_cost, metrics)), state),
                     };
                     let snapshot = snapshot_from_state(&base_placements, &base_wires, &state);
                     match kind {
@@ -233,13 +235,14 @@ impl<'c> super::Layout<'c> {
                             });
                             initial_progress_reported.store(true, Ordering::Release);
                         }
-                        Some((iteration, current_cost, best_cost)) => {
+                        Some((iteration, current_cost, best_cost, metrics)) => {
                             callback(LayoutProgress::Annealing {
                                 seed: cfg_s.seed,
                                 iteration,
                                 total_iterations: cfg_s.max_iters,
                                 current_cost,
                                 best_cost,
+                                metrics,
                                 snapshot,
                             })
                         }
@@ -258,7 +261,7 @@ impl<'c> super::Layout<'c> {
                         cancellation: cancellation_flag,
                     },
                 );
-                let state_s = match sa::simulate(
+                let outcome = match sa::simulate(
                     placeable.clone(),
                     self.circuit,
                     board,
@@ -267,9 +270,11 @@ impl<'c> super::Layout<'c> {
                     &preprocess,
                     control,
                 ) {
-                    Ok(state) => state,
+                    Ok(outcome) => outcome,
                     Err(error) => return Some(Err(error)),
                 };
+                let state_s = outcome.state;
+                let metrics_s = outcome.metrics;
                 let cost_s = crate::layout::cost::cost_with_problem(
                     &state_s,
                     self.circuit,
@@ -286,16 +291,19 @@ impl<'c> super::Layout<'c> {
                         total: n_seeds,
                     });
                 }
-                Some(Ok((cost_s, cfg_s.seed, state_s)))
+                Some(Ok((cost_s, cfg_s.seed, state_s, metrics_s)))
             })
             .collect();
-        let results: Vec<(f64, u64, SAState)> = seed_results
+        let results: Vec<(f64, u64, SAState, AnnealMetrics)> = seed_results
             .into_iter()
             .collect::<Result<_, _>>()
             .map_err(|error| vec![error])?;
-        let per_seed_costs: Vec<f64> = results.iter().map(|(c, _, _)| *c).collect();
-        let per_seed_states: Vec<SAState> = results.iter().map(|(_, _, s)| s.clone()).collect();
-        let (best_cost, best_seed, best) = results
+        let per_seed_costs: Vec<f64> = results.iter().map(|(cost, _, _, _)| *cost).collect();
+        let per_seed_states: Vec<SAState> = results
+            .iter()
+            .map(|(_, _, state, _)| state.clone())
+            .collect();
+        let (best_cost, best_seed, best, best_metrics) = results
             .into_iter()
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
             .expect("至少跑过一次");
@@ -320,6 +328,7 @@ impl<'c> super::Layout<'c> {
                 callback(LayoutProgress::PlacementComplete {
                     seed: best_seed,
                     cost: best_cost,
+                    metrics: best_metrics,
                     cancelled: cancellation.is_some_and(CancellationToken::is_cancelled),
                     snapshot: LayoutSnapshot {
                         placements: layout.placements.clone(),

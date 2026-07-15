@@ -40,6 +40,17 @@ pub struct LayoutSnapshot {
     pub wires: Vec<Wire>,
 }
 
+/// Counters for one annealing seed. Every attempt lands in exactly one of
+/// `no_candidate`, `invalid`, or `evaluated`; accepted is a subset of evaluated.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AnnealMetrics {
+    pub attempted: usize,
+    pub no_candidate: usize,
+    pub invalid: usize,
+    pub evaluated: usize,
+    pub accepted: usize,
+}
+
 /// Step 3 所需的几个稳定阶段。
 #[derive(Debug, Clone)]
 pub enum LayoutProgress {
@@ -52,6 +63,7 @@ pub enum LayoutProgress {
         total_iterations: usize,
         current_cost: f64,
         best_cost: f64,
+        metrics: AnnealMetrics,
         snapshot: LayoutSnapshot,
     },
     /// 全部并行 seed 的真实完成进度；与固定观察 seed 的动画进度分离。
@@ -60,6 +72,7 @@ pub enum LayoutProgress {
     PlacementComplete {
         seed: u64,
         cost: f64,
+        metrics: AnnealMetrics,
         cancelled: bool,
         snapshot: LayoutSnapshot,
     },

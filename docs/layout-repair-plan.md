@@ -427,6 +427,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R10. 生成 state-aware move，并用归一化 attempt progress 定义温度
 
+- 实施状态：**已完成**（2026-07-15）。T08b 先在 Bridged 状态稳定复现旧 generator 生成必然不可应用的 `ShiftX`；GUI profile 回归也先复现固定 `cool_rate` 导致不同预算到达不同末温。generator 现按 pose、y lock、bridge catalog 与邻接关系重新归一化，只在整个状态没有候选时记录 no-candidate；`ToggleBridging` 与 `ChangeBridgeCandidate` 已拆分，后者 reject/失败均完整回滚。温度由 `T_start/T_end/max_iters` 和 attempt index 纯函数计算，所有 no-candidate、hard-invalid、accept、reject 都消耗一次 attempt。公开进度现报告 attempted/no-candidate/invalid/evaluated/accepted，三档 GUI profile 共用 40.0→0.01 的端点语义。
 - 对应：A8，以及报告中“只生成有效 move、拆分 Toggle/ChangeCandidate、记录 move 比例”的建议。
 - 依赖：R7/R8 后 dead/invalid move 定义稳定，便于指标解释。
 - 最小失败测试：T08；另加 `T08b_generator_never_returns_mode_inapplicable_move`，在 OnBoard/Bridged/y-locked/无相邻候选状态采样或枚举 move，断言不会返回必然 `apply_move == None` 的类型；GUI profile test 改为断言共同 `T_start/T_end` 语义，而不是共同 magic cool rate。

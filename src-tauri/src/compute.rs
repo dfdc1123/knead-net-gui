@@ -52,9 +52,8 @@ impl ComputeProfile {
             bridge_policy: BridgePolicy::Explore {
                 initial: BridgeInitial::BestOfBoth,
             },
-            // 正式计算使用较慢的降温配置；默认的 0.95 会过早冻结。
-            t0: 40.0,
-            cool_rate: 0.99999,
+            t_start: 40.0,
+            t_end: 0.01,
             ..SAConfig::default()
         }
     }
@@ -525,6 +524,7 @@ fn progress_event(
             cost,
             cancelled,
             snapshot,
+            ..
         } => ComputeEvent {
             run_id,
             phase: "annealing",
@@ -918,8 +918,8 @@ mod tests {
         assert_eq!((standard.n_seeds, standard.max_iters), (32, 200_000));
         assert_eq!((full.n_seeds, full.max_iters), (100, 1_000_000));
         for config in [quick, standard, full] {
-            assert_eq!(config.t0, 40.0);
-            assert_eq!(config.cool_rate, 0.99999);
+            assert_eq!(config.t_start, 40.0);
+            assert_eq!(config.t_end, 0.01);
             assert!(config.use_spectral);
             assert_eq!(
                 config.bridge_policy,
