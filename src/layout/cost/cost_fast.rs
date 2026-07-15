@@ -498,8 +498,6 @@ fn cost_fast_inner(
         w.mst * mst_sum
             + w.pin_overlap * coll_count as f64
             + w.b_box_overlap * bbox_overlap_count as f64
-            + w.column_conflict * col_conflict_count as f64
-            + w.out_of_bounds * oob_count as f64
             + w.compactness * compact.area_sum
             + w.left_compaction * compact.left_compaction_sum
             + w.row_squash * compact.row_squash_penalty
@@ -715,8 +713,6 @@ fn cost_breakdown_inner(
         mst: w.mst * mst_sum,
         pin_overlap: w.pin_overlap * coll_count as f64,
         bbox_overlap: w.b_box_overlap * bbox_overlap_count as f64,
-        column_conflict: w.column_conflict * col_conflict_count as f64,
-        out_of_bounds: w.out_of_bounds * oob_count as f64,
         compactness: w.compactness * compact.area_sum,
         left_compaction: w.left_compaction * compact.left_compaction_sum,
         row_squash: w.row_squash * compact.row_squash_penalty,
@@ -734,8 +730,6 @@ fn cost_breakdown_inner(
     let total = breakdown.mst
         + breakdown.pin_overlap
         + breakdown.bbox_overlap
-        + breakdown.column_conflict
-        + breakdown.out_of_bounds
         + breakdown.compactness
         + breakdown.left_compaction
         + breakdown.row_squash
@@ -750,8 +744,6 @@ pub(crate) struct CostBreakdown {
     pub mst: f64,
     pub pin_overlap: f64,
     pub bbox_overlap: f64,
-    pub column_conflict: f64,
-    pub out_of_bounds: f64,
     pub compactness: f64,
     pub left_compaction: f64,
     pub row_squash: f64,

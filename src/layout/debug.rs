@@ -53,7 +53,7 @@ pub(crate) fn diagnose_expensive_seeds(
                 state, circuit, board, problem, weights,
             );
             eprintln!(
-                "  分解:\n    mst             = {:>10.2}  (sum={:.2})\n    mst_congestion  = {:>10.2}\n    pin_overlap     = {:>10.2}  (count={})\n    bbox_overlap    = {:>10.2}  (cells={})\n    column_conf.    = {:>10.2}  (moves={})\n    out_of_bounds   = {:>10.2}  (oob={})\n    compactness     = {:>10.2}  (area={:.2})\n    left_compaction = {:>10.2}  (sum={:.2})\n    row_squash      = {:>10.2}  (penalty={:.2})\n    rail_crossing   = {:>10.2}\n    total           = {:>10.2}",
+                "  分解:\n    mst             = {:>10.2}  (sum={:.2})\n    mst_congestion  = {:>10.2}\n    pin_overlap     = {:>10.2}  (count={})\n    bbox_overlap    = {:>10.2}  (cells={})\n    hard violations: column_conflicts={}, oob={}\n    compactness     = {:>10.2}  (area={:.2})\n    left_compaction = {:>10.2}  (sum={:.2})\n    row_squash      = {:>10.2}  (penalty={:.2})\n    rail_crossing   = {:>10.2}\n    total           = {:>10.2}",
                 breakdown.1.mst,
                 breakdown.1.mst_sum,
                 breakdown.1.mst_congestion,
@@ -61,9 +61,7 @@ pub(crate) fn diagnose_expensive_seeds(
                 breakdown.1.coll_count,
                 breakdown.1.bbox_overlap,
                 breakdown.1.bbox_overlap_count,
-                breakdown.1.column_conflict,
                 breakdown.1.col_conflict_count,
-                breakdown.1.out_of_bounds,
                 breakdown.1.oob_count,
                 breakdown.1.compactness,
                 breakdown.1.area_sum,

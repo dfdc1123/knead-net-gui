@@ -2572,8 +2572,6 @@ mod tests {
                 mst: 0.0,
                 pin_overlap: 0.0,
                 b_box_overlap: 0.0,
-                column_conflict: 0.0,
-                out_of_bounds: 0.0,
                 compactness: 0.0,
                 left_compaction: 0.0,
                 rail_crossing: 0.0,

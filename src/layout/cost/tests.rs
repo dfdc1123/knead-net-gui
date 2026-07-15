@@ -85,7 +85,7 @@ fn board() -> Breadboard {
     Breadboard::new(30, 5)
 }
 
-/// 只关心 MST / pin / bbox / column 各项的测试用, 屏蔽新加的紧凑度和跨 rail 惩罚。
+/// 只关心 MST / pin / bbox 各项的测试用, 屏蔽新加的紧凑度和跨 rail 惩罚。
 /// 不想让"layout 跨几行" 之类的全局性质混入到孤立某项成本的断言里。
 /// 显式 mst=1.0 让 "1 cell MST → cost 1.0" 这种简单算术在测试里成立
 /// (默认 mst=5.0 是给 SA 跑的; 测试要看的不是权重而是公式结构)。
@@ -105,8 +105,6 @@ fn zero_weights() -> Weights {
         mst: 0.0,
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
-        column_conflict: 0.0,
-        out_of_bounds: 0.0,
         compactness: 0.0,
         left_compaction: 0.0,
         rail_crossing: 0.0,
@@ -188,11 +186,13 @@ fn cost_is_invariant_under_state_permutation() {
         ..SAState::no_bridging(3)
     };
     let owners_bab = permute_state(&owners_abb, &[1, 0, 2]);
-    let mut column_only = zero_weights();
-    column_only.column_conflict = 1.0;
+    let problem = crate::layout::problem::AnnealProblem::default();
+    let (_, owners_abb_breakdown) =
+        cost_breakdown_with_problem(&owners_abb, &circuit, &board, &problem, &zero_weights());
+    let (_, owners_bab_breakdown) =
+        cost_breakdown_with_problem(&owners_bab, &circuit, &board, &problem, &zero_weights());
     assert_eq!(
-        cost(&owners_abb, &circuit, &board, &[], &column_only),
-        cost(&owners_bab, &circuit, &board, &[], &column_only),
+        owners_abb_breakdown.col_conflict_count, owners_bab_breakdown.col_conflict_count,
         "[A,B,B] 与 [B,A,B] 是同一物理 rail owner multiset"
     );
 }
@@ -310,8 +310,6 @@ fn mixed_fixed_bridged_and_power_inputs_are_permutation_invariant() {
                 breakdown.mst_congestion,
                 breakdown.pin_overlap,
                 breakdown.bbox_overlap,
-                breakdown.column_conflict,
-                breakdown.out_of_bounds,
                 breakdown.compactness,
                 breakdown.left_compaction,
                 breakdown.row_squash,
@@ -390,9 +388,9 @@ fn pin_collision_adds_penalty() {
     );
 }
 
-/// 列冲突: 同列不同 net 的 pin 对会多扣 cost
+/// 列冲突是 hard legality，不应再混入 soft cost。
 #[test]
-fn column_conflict_adds_penalty() {
+fn column_conflict_is_not_part_of_soft_cost() {
     let fp = one_pin_fp();
     let comps = (0..2)
         .map(|i| Component {
@@ -436,30 +434,24 @@ fn column_conflict_adds_penalty() {
     let c_clean = cost(&s, &circuit, &board(), &[], &weights_legacy());
     assert_eq!(c_clean, 0.0);
 
-    // 冲突: x = [0, 0] (同列, 同孔 → pin_collision + bbox_collision + column_conflict)
+    // 冲突: x = [0, 0] (同列, 同孔 → pin_collision + bbox_collision)
     let mut s = state.clone();
     s.x = vec![0, 0];
     let c_coll = cost(&s, &circuit, &board(), &[], &weights_legacy());
-    let expected = weights_legacy().pin_overlap
-        + weights_legacy().b_box_overlap
-        + weights_legacy().column_conflict;
+    let expected = weights_legacy().pin_overlap + weights_legacy().b_box_overlap;
     assert!(
         (c_coll - expected).abs() < 1e-9,
-        "expected pin_overlap + b_box_overlap + column_conflict = {}, got {}",
+        "expected only pin_overlap + b_box_overlap = {}, got {}",
         expected,
         c_coll
     );
 
-    // 只 column_conflict: 同列不同行
+    // 只有 hard column conflict: 同列不同行，soft cost 仍为 0。
     let mut s = state;
     s.x = vec![0, 0];
     s.y = vec![2, 3];
     let c_col_only = cost(&s, &circuit, &board(), &[], &weights_legacy());
-    assert!(
-        (c_col_only - weights_legacy().column_conflict).abs() < 1e-9,
-        "expected only column_conflict penalty, got {}",
-        c_col_only
-    );
+    assert_eq!(c_col_only, 0.0);
 }
 
 /// 标准板上, 同列不同 rail 的不同 net pin 不该被记为列冲突。
@@ -513,7 +505,7 @@ fn column_conflict_ignores_different_rails_in_cost() {
 }
 
 #[test]
-fn oob_adds_huge_penalty() {
+fn out_of_bounds_is_not_part_of_soft_cost() {
     let fp = one_pin_fp();
     let comp = Component {
         id: ComponentId(0),
@@ -540,8 +532,8 @@ fn oob_adds_huge_penalty() {
     };
     let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
     state.y[0] = -5;
-    let c = cost(&state, &circuit, &board(), &[], &Weights::default());
-    assert!(c >= Weights::default().out_of_bounds);
+    let c = cost(&state, &circuit, &board(), &[], &weights_legacy());
+    assert_eq!(c, 0.0);
 }
 
 #[test]
@@ -1025,7 +1017,6 @@ fn compactness_penalizes_horizontal_spread() {
         mst: 0.0,
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
-        column_conflict: 0.0,
         left_compaction: 0.0,
         row_squash: 0.0,
         ..Weights::default()
@@ -1075,8 +1066,6 @@ fn left_compaction_rewards_internal_left_shift_without_span_change() {
         mst: 0.0,
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
-        column_conflict: 0.0,
-        out_of_bounds: 0.0,
         compactness: 0.0,
         row_squash: 0.0,
         mst_congestion: 0.0,
@@ -1150,7 +1139,6 @@ fn compactness_only_x_not_y() {
         mst: 0.0,
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
-        column_conflict: 0.0,
         left_compaction: 0.0,
         row_squash: 0.0,
         ..Weights::default()
@@ -1226,7 +1214,6 @@ fn compactness_rail_crossing_penalty() {
         mst: 0.0,
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
-        column_conflict: 0.0,
         left_compaction: 0.0,
         ..Weights::default()
     };
@@ -1298,7 +1285,6 @@ fn compactness_rail_split_avoids_central_channel_inflation() {
         mst: 0.0,
         pin_overlap: 0.0,
         b_box_overlap: 0.0,
-        column_conflict: 0.0,
         left_compaction: 0.0,
         ..Weights::default()
     };
