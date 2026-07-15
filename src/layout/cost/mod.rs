@@ -29,13 +29,13 @@ mod state;
 mod tests;
 
 // --- 公共 API 重导出 (供 layout/, sa.rs, main.rs 使用) ---
-pub(crate) use bridge::{
-    BridgeInitContext, initialize_bridging, populate_bridgeable_info, state_hard_legal,
-};
+#[cfg(debug_assertions)]
+pub(crate) use bridge::state_hard_legal;
+pub(crate) use bridge::{BridgeInitContext, initialize_bridging, populate_bridgeable_info};
 pub use bridge::{BridgeInitial, BridgePolicy};
 pub(crate) use context::CostBuf;
 pub use context::{CompInfo, SAContext};
-pub(crate) use cost_fast::{cost_breakdown_with_problem, cost_fast};
+pub(crate) use cost_fast::{cost_breakdown_with_problem, cost_fast, cost_fast_if_legal};
 pub use profile::{dump_cost_profile, reset_cost_profile};
 pub use state::SAState;
 

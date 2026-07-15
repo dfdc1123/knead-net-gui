@@ -69,6 +69,96 @@ pub(super) fn mst_wire_length_fast(
     }
 }
 
+/// 与 [`mst_wire_length_fast`] 使用相同的稳定边顺序，一次 Kruskal 同时返回
+/// MST 长度和各节点 degree。拥塞 cost 需要两者时可避免重复建边和排序。
+pub(super) fn mst_wire_length_and_degrees(
+    indices: &[usize],
+    holes: &[(i32, i32, u32)],
+    mst_rails: &[u32],
+) -> (f64, Vec<usize>) {
+    let n = indices.len();
+    let mut degrees = vec![0; n];
+    match n {
+        0..=1 => (0.0, degrees),
+        2 => {
+            degrees.fill(1);
+            (mst_wire_length_fast(indices, holes, mst_rails), degrees)
+        }
+        3 => {
+            let mut edges = [(0i32, 0usize, 1usize), (0, 0, 2), (0, 1, 2)];
+            for edge in &mut edges {
+                let a = indices[edge.1];
+                let b = indices[edge.2];
+                edge.0 = if mst_rails[a] == mst_rails[b] {
+                    0
+                } else {
+                    (holes[a].0 - holes[b].0).abs() + (holes[a].1 - holes[b].1).abs()
+                };
+            }
+            edges.sort_by_key(|edge| edge.0);
+            let mut total = 0;
+            for &(distance, a, b) in &edges[..2] {
+                total += distance;
+                degrees[a] += 1;
+                degrees[b] += 1;
+            }
+            (total as f64, degrees)
+        }
+        _ => mst_kruskal_with_degrees(indices, holes, mst_rails, degrees),
+    }
+}
+
+fn mst_kruskal_with_degrees(
+    indices: &[usize],
+    holes: &[(i32, i32, u32)],
+    mst_rails: &[u32],
+    mut degrees: Vec<usize>,
+) -> (f64, Vec<usize>) {
+    let n = indices.len();
+    let mut edges = Vec::with_capacity(n * (n - 1) / 2);
+    for a in 0..n {
+        let hole_a = holes[indices[a]];
+        for b in (a + 1)..n {
+            let hole_b = holes[indices[b]];
+            let distance = if mst_rails[indices[a]] == mst_rails[indices[b]] {
+                0
+            } else {
+                (hole_a.0 - hole_b.0).abs() + (hole_a.1 - hole_b.1).abs()
+            };
+            edges.push((distance, a, b));
+        }
+    }
+    edges.sort_by_key(|edge| edge.0);
+
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut total = 0;
+    let mut edges_used = 0;
+    for &(distance, a, b) in &edges {
+        let mut root_a = a;
+        while parent[root_a] != root_a {
+            parent[root_a] = parent[parent[root_a]];
+            root_a = parent[root_a];
+        }
+        let mut root_b = b;
+        while parent[root_b] != root_b {
+            parent[root_b] = parent[parent[root_b]];
+            root_b = parent[root_b];
+        }
+        if root_a == root_b {
+            continue;
+        }
+        parent[root_a] = root_b;
+        total += distance;
+        degrees[a] += 1;
+        degrees[b] += 1;
+        edges_used += 1;
+        if edges_used == n - 1 {
+            break;
+        }
+    }
+    (total as f64, degrees)
+}
+
 /// Kruskal MST for ≥4 pin nets. 用栈上数组代替堆 Vec, 避免每次 malloc/free。
 /// 上限 12 pin = 66 条边, 超过则退到堆路径。
 pub(super) fn mst_wire_length_fast_kruskal(
@@ -180,6 +270,7 @@ pub(super) fn kruskal_union(edges: &[(i32, usize, usize)], n: usize) -> f64 {
 }
 
 /// 算 MST 并返回每个节点的度数 (用于拥塞惩罚)。
+#[cfg(test)]
 pub(super) fn mst_degrees(
     indices: &[usize],
     holes: &[(i32, i32, u32)],
@@ -254,4 +345,29 @@ pub(super) fn mst_degrees(
         }
     }
     degree
+}
+
+#[cfg(test)]
+mod equivalence_tests {
+    use super::*;
+
+    #[test]
+    fn combined_mst_matches_separate_length_and_degrees_on_random_corpus() {
+        let mut rng = fastrand::Rng::with_seed(0x1304_C057);
+        for n in 0..=20 {
+            for _ in 0..200 {
+                let holes: Vec<_> = (0..n)
+                    .map(|_| (rng.i32(-8..=8), rng.i32(-4..=12), rng.u32(0..8)))
+                    .collect();
+                let mst_rails: Vec<_> = holes.iter().map(|hole| hole.2).collect();
+                let indices: Vec<_> = (0..n).collect();
+                let expected_length = mst_wire_length_fast(&indices, &holes, &mst_rails);
+                let expected_degrees = mst_degrees(&indices, &holes, &mst_rails);
+                let (actual_length, actual_degrees) =
+                    mst_wire_length_and_degrees(&indices, &holes, &mst_rails);
+                assert_eq!(actual_length, expected_length, "n={n}, holes={holes:?}");
+                assert_eq!(actual_degrees, expected_degrees, "n={n}, holes={holes:?}");
+            }
+        }
+    }
 }

@@ -18,9 +18,11 @@ use crate::circuit::{Circuit, ComponentId, NetId};
 use crate::layout::breadboard::Breadboard;
 #[cfg(test)]
 use crate::layout::cost::cost;
+#[cfg(debug_assertions)]
+use crate::layout::cost::state_hard_legal;
 use crate::layout::cost::{
     BridgeInitContext, BridgePolicy, CostBuf, SAContext, SAState, Weights, cost_fast,
-    initialize_bridging, populate_bridgeable_info, state_hard_legal,
+    cost_fast_if_legal, initialize_bridging, populate_bridgeable_info,
 };
 use crate::layout::placement::Rotation;
 use crate::layout::progress::AnnealMetrics;
@@ -30,9 +32,10 @@ use crate::layout::progress::AnnealMetrics;
 //  atomic fetch_add 在 hot path 上有 ~1% 开销; 主程序没传 --profile 时下面
 //  的宏都是 noop, 不污染 baseline。
 // ============================================================
-static PROF_CLONE_NS: AtomicU64 = AtomicU64::new(0);
+static PROF_INIT_NS: AtomicU64 = AtomicU64::new(0);
+static PROF_GENERATE_NS: AtomicU64 = AtomicU64::new(0);
 static PROF_COST_NS: AtomicU64 = AtomicU64::new(0);
-static PROF_MOVE_NS: AtomicU64 = AtomicU64::new(0);
+static PROF_APPLY_NS: AtomicU64 = AtomicU64::new(0);
 static PROF_BEST_NS: AtomicU64 = AtomicU64::new(0);
 static PROF_ITERS: AtomicU64 = AtomicU64::new(0);
 
@@ -42,21 +45,21 @@ macro_rules! prof_iter_inc {
 }
 
 #[cfg(profile_sa)]
-macro_rules! prof_clone_add {
-    ($n:expr) => {
-        $crate::layout::sa::PROF_CLONE_NS.fetch_add($n, Ordering::Relaxed);
-    };
-}
-#[cfg(profile_sa)]
 macro_rules! prof_cost_add {
     ($n:expr) => {
         $crate::layout::sa::PROF_COST_NS.fetch_add($n, Ordering::Relaxed);
     };
 }
 #[cfg(profile_sa)]
-macro_rules! prof_move_add {
+macro_rules! prof_generate_add {
     ($n:expr) => {
-        $crate::layout::sa::PROF_MOVE_NS.fetch_add($n, Ordering::Relaxed);
+        $crate::layout::sa::PROF_GENERATE_NS.fetch_add($n, Ordering::Relaxed);
+    };
+}
+#[cfg(profile_sa)]
+macro_rules! prof_apply_add {
+    ($n:expr) => {
+        $crate::layout::sa::PROF_APPLY_NS.fetch_add($n, Ordering::Relaxed);
     };
 }
 #[cfg(profile_sa)]
@@ -73,9 +76,10 @@ macro_rules! prof_iter_inc {
 }
 
 pub fn reset_profile() {
-    PROF_CLONE_NS.store(0, Ordering::Relaxed);
+    PROF_INIT_NS.store(0, Ordering::Relaxed);
+    PROF_GENERATE_NS.store(0, Ordering::Relaxed);
     PROF_COST_NS.store(0, Ordering::Relaxed);
-    PROF_MOVE_NS.store(0, Ordering::Relaxed);
+    PROF_APPLY_NS.store(0, Ordering::Relaxed);
     PROF_BEST_NS.store(0, Ordering::Relaxed);
     PROF_ITERS.store(0, Ordering::Relaxed);
 }
@@ -85,19 +89,19 @@ pub fn dump_profile(prefix: &str) {
     if it == 0 {
         return;
     }
-    let c = PROF_CLONE_NS.load(Ordering::Relaxed);
+    let init = PROF_INIT_NS.load(Ordering::Relaxed);
+    let generate = PROF_GENERATE_NS.load(Ordering::Relaxed);
     let co = PROF_COST_NS.load(Ordering::Relaxed);
-    let m = PROF_MOVE_NS.load(Ordering::Relaxed);
+    let apply = PROF_APPLY_NS.load(Ordering::Relaxed);
     let b = PROF_BEST_NS.load(Ordering::Relaxed);
     eprintln!(
-        "[profile {prefix}] iters={} clone={:?} cost={:?} move={:?} best_clone={:?} | per-iter clone={:?} cost={:?}",
+        "[profile {prefix}] attempts={} init={:?} generate={:?} apply={:?} checked_cost={:?} best_clone={:?}",
         it,
-        std::time::Duration::from_nanos(c),
+        std::time::Duration::from_nanos(init),
+        std::time::Duration::from_nanos(generate),
+        std::time::Duration::from_nanos(apply),
         std::time::Duration::from_nanos(co),
-        std::time::Duration::from_nanos(m),
         std::time::Duration::from_nanos(b),
-        std::time::Duration::from_nanos(c / it),
-        std::time::Duration::from_nanos(co / it),
     );
 }
 
@@ -618,10 +622,9 @@ fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backu
 /// bridged 元件: 尝试在 cache 里找 (power+dx, signal+dx), 找不到时按
 /// `dx + sign(dx)` 跳 gap 再试。两次都失败 → 返 `false` (state 不变)。
 ///
-/// "跳 gap" 的物理意义: 电源轨每 5 孔一断开, group 边界 (e.g. x=4 右移 +1)
-/// 必撞 gap; 这里让 `ShiftX(+1)` 在 x=4 时自动变 `+2` 落到下一 group 起点
-/// (e.g. x=6), 避免电源轨邻接永远过不去。`ShiftGroup` 不会触发此回退 —
-/// 严格左移 1 列的语义更紧凑。
+/// "跳 gap" 只表示 group 之间没有可插线的孔，并非底层导体断开。例如 x=4
+/// 右移一步没有孔时，`ShiftX(+1)` 尝试 `+2` 落到下一 group 的 x=6；两处仍属于
+/// 同一条天然导通的完整电源轨行。`ShiftGroup` 保持严格左移 1 列，不跳过无孔位置。
 fn try_bridged_shift_x(state: &mut SAState, board: &Breadboard, i: usize, dx: i32) -> bool {
     let Some(target) = bridged_shift_target(state, board, i, dx) else {
         return false;
@@ -833,6 +836,8 @@ pub(super) fn simulate(
     preprocess: &crate::layout::preprocess::PreprocessResult,
     control: Option<SimulationControl<'_>>,
 ) -> Result<SimulationOutcome, crate::layout::LayoutError> {
+    #[cfg(profile_sa)]
+    let profile_init_started = std::time::Instant::now();
     let mut rng = fastrand::Rng::with_seed(config.seed);
     let mut state = if config.use_spectral {
         SAState::from_spectral(placeable, circuit, board, config.seed, preprocess, problem)
@@ -876,6 +881,13 @@ pub(super) fn simulate(
         config.bridge_policy,
     )?;
     let mut current_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
+    #[cfg(profile_sa)]
+    {
+        PROF_INIT_NS.fetch_add(
+            profile_init_started.elapsed().as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+    }
     let mut best_state = state.clone();
     let mut best_cost = current_cost;
     let mut metrics = AnnealMetrics::default();
@@ -903,9 +915,13 @@ pub(super) fn simulate(
         let temperature = temperature_at_attempt(config, iteration);
         prof_iter_inc!();
         #[cfg(profile_sa)]
-        let _t_move_start = std::time::Instant::now();
-        let Some(m) = random_move(&state, &mut rng, temperature, config.t_start, config, board)
-        else {
+        let t_generate_start = std::time::Instant::now();
+        let generated = random_move(&state, &mut rng, temperature, config.t_start, config, board);
+        #[cfg(profile_sa)]
+        {
+            prof_generate_add!(t_generate_start.elapsed().as_nanos() as u64);
+        }
+        let Some(m) = generated else {
             metrics.no_candidate += 1;
             continue;
         };
@@ -916,7 +932,7 @@ pub(super) fn simulate(
         let Some(backup) = apply_move(&mut state, &m, board) else {
             #[cfg(profile_sa)]
             {
-                prof_move_add!(t_apply_start.elapsed().as_nanos() as u64);
+                prof_apply_add!(t_apply_start.elapsed().as_nanos() as u64);
             }
             metrics.no_candidate += 1;
             debug_assert!(
@@ -927,21 +943,32 @@ pub(super) fn simulate(
         };
         #[cfg(profile_sa)]
         {
-            prof_move_add!(t_apply_start.elapsed().as_nanos() as u64);
+            prof_apply_add!(t_apply_start.elapsed().as_nanos() as u64);
         }
-        if !state_hard_legal(&state, circuit, board, problem) {
-            metrics.invalid += 1;
-            backup.revert(&mut state);
-            continue;
-        }
-        metrics.evaluated += 1;
         #[cfg(profile_sa)]
         let t_cost_start = std::time::Instant::now();
-        let new_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
+        let candidate_cost =
+            cost_fast_if_legal(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
         #[cfg(profile_sa)]
         {
             prof_cost_add!(t_cost_start.elapsed().as_nanos() as u64);
         }
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            candidate_cost.is_some(),
+            state_hard_legal(&state, circuit, board, problem),
+            "cost-derived hard legality diverged after {m:?}: x={:?} y={:?} rotation={:?} bridged={:?}",
+            state.x,
+            state.y,
+            state.rotation,
+            state.bridged,
+        );
+        let Some(new_cost) = candidate_cost else {
+            metrics.invalid += 1;
+            backup.revert(&mut state);
+            continue;
+        };
+        metrics.evaluated += 1;
         let delta = new_cost - current_cost;
 
         let accept = delta <= 0.0 || rng.f64() < (-delta / temperature).exp();

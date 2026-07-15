@@ -11,7 +11,7 @@ use crate::layout::problem::AnnealProblem;
 
 use super::Weights;
 use super::context::{CostBuf, SAContext};
-use super::mst::{mst_degrees, mst_wire_length_fast};
+use super::mst::{mst_wire_length_and_degrees, mst_wire_length_fast};
 use super::state::SAState;
 
 // `cp_*` 宏由 profile.rs 用 `#[macro_export]` 导出到 crate 根, 这里 import 进本模块作用域
@@ -19,32 +19,41 @@ use crate::{cp_bbox, cp_call, cp_collect, cp_compact, cp_mst, cp_pin, cp_rail};
 
 // SA 走线估算: 用 net_buckets (Vec<Vec<usize>>) 代替 HashMap
 
-fn mst_and_congestion(buf: &CostBuf, board: &Breadboard, w: &Weights) -> (f64, f64) {
+fn mst_and_congestion(
+    buf: &CostBuf,
+    board: &Breadboard,
+    w: &Weights,
+    ctx: &SAContext,
+) -> (f64, f64) {
     let mut mst_sum = 0.0;
     let mut congestion = 0.0;
     for bucket in &buf.net_buckets {
         if bucket.len() < 2 {
             continue;
         }
-        mst_sum += mst_wire_length_fast(bucket, &buf.holes, &buf.mst_rails);
-
         if w.mst_congestion <= 0.0 {
+            mst_sum += mst_wire_length_fast(bucket, &buf.holes, &buf.mst_rails);
             continue;
         }
-        let degrees = mst_degrees(bucket, &buf.holes, &buf.mst_rails);
-        let mut rail_pin_count: std::collections::HashMap<u32, usize> =
-            std::collections::HashMap::new();
-        for &idx in bucket {
-            *rail_pin_count.entry(buf.holes[idx].2).or_default() += 1;
-        }
+        let (net_mst, degrees) = mst_wire_length_and_degrees(bucket, &buf.holes, &buf.mst_rails);
+        mst_sum += net_mst;
         for (i, &idx) in bucket.iter().enumerate() {
             let rail_id = buf.holes[idx].2;
-            let pins_on_rail = rail_pin_count.get(&rail_id).copied().unwrap_or(1);
-            let total_holes = board
-                .holes()
+            let pins_on_rail = bucket
                 .iter()
-                .filter(|hole| board.effective_rail_id_of(hole.id) == rail_id)
+                .filter(|&&other| buf.holes[other].2 == rail_id)
                 .count();
+            let total_holes = ctx
+                .rail_hole_counts
+                .get(rail_id as usize)
+                .copied()
+                .unwrap_or_else(|| {
+                    board
+                        .holes()
+                        .iter()
+                        .filter(|hole| board.effective_rail_id_of(hole.id) == rail_id)
+                        .count()
+                });
             let capacity = total_holes.saturating_sub(pins_on_rail);
             if degrees[i] > capacity {
                 congestion += (degrees[i] - capacity) as f64 * w.mst_congestion;
@@ -122,6 +131,35 @@ pub(crate) fn cost_fast(
     ctx: &SAContext,
     buf: &mut CostBuf,
 ) -> f64 {
+    cost_fast_inner(state, circuit, board, bridged_pins, w, ctx, buf, false)
+        .expect("diagnostic cost must be returned even for a hard-invalid state")
+}
+
+/// SA hot path: return `None` when the already-collected pin/bbox/rail data proves the
+/// candidate hard-invalid. This avoids rebuilding a separate occupancy for every move.
+pub(crate) fn cost_fast_if_legal(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    bridged_pins: &[(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
+    w: &Weights,
+    ctx: &SAContext,
+    buf: &mut CostBuf,
+) -> Option<f64> {
+    cost_fast_inner(state, circuit, board, bridged_pins, w, ctx, buf, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cost_fast_inner(
+    state: &SAState,
+    circuit: &Circuit,
+    board: &Breadboard,
+    bridged_pins: &[(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
+    w: &Weights,
+    ctx: &SAContext,
+    buf: &mut CostBuf,
+    reject_hard_invalid: bool,
+) -> Option<f64> {
     cp_call!();
     let _t_collect = std::time::Instant::now();
     buf.clear();
@@ -132,6 +170,7 @@ pub(crate) fn cost_fast(
     // fused: 在 collect 阶段同时计算 oob_count + 填 pin_idx_sorted (跳过虚拟 + 越界)。
     // 省两遍对 buf.holes 的扫描。
     let mut oob_count = 0u32;
+    let mut invalid_onboard_body = false;
 
     // 1. 收集所有 pin 的 (col, row, rail_id) 和所属 net, 以及每个元件的 bbox。
     for (idx, _comp_id) in state.placeable.iter().enumerate() {
@@ -174,6 +213,7 @@ pub(crate) fn cost_fast(
             buf.mst_rails.push(ctx.mst_rail(*net, rail_id));
             buf.nets.push(*net);
             buf.is_virtual.push(false);
+            buf.pin_owners.push(Some(idx));
             if rail_id == u32::MAX {
                 oob_count += 1;
             } else {
@@ -213,6 +253,16 @@ pub(crate) fn cost_fast(
                 max_y: -bbox_r0.min_x + py,
             },
         };
+        let allow_channel_crossing = state.y_locked[idx].is_some();
+        if world_bbox.iter_cells().any(|position| {
+            position.x < 0
+                || position.x >= board.cols() as i32
+                || position.y < 0
+                || position.y >= board.main_rows() as i32
+                || (!allow_channel_crossing && board.at(position.x, position.y).is_none())
+        }) {
+            invalid_onboard_body = true;
+        }
         buf.bboxes.push(Some(world_bbox));
     }
 
@@ -225,6 +275,7 @@ pub(crate) fn cost_fast(
             buf.mst_rails.push(ctx.mst_rail(net, rail_id));
             buf.nets.push(net);
             buf.is_virtual.push(false);
+            buf.pin_owners.push(None);
             if rail_id == u32::MAX {
                 oob_count += 1;
             } else {
@@ -245,6 +296,7 @@ pub(crate) fn cost_fast(
             buf.mst_rails.push(ctx.mst_rail(pin.net, rail_id));
             buf.nets.push(pin.net);
             buf.is_virtual.push(false);
+            buf.pin_owners.push(None);
             if rail_id == u32::MAX {
                 oob_count += 1;
             } else {
@@ -264,6 +316,7 @@ pub(crate) fn cost_fast(
         buf.mst_rails.push(ctx.mst_rail(net, rail_id));
         buf.nets.push(net);
         buf.is_virtual.push(false);
+        buf.pin_owners.push(None);
         buf.pin_idx_sorted.push(hole_idx);
         buf.rail_map[rail_id as usize].push(net);
         if let Some(net) = net {
@@ -288,6 +341,7 @@ pub(crate) fn cost_fast(
                 buf.mst_rails.push(ctx.mst_rail(net, rail_id));
                 buf.nets.push(net);
                 buf.is_virtual.push(false);
+                buf.pin_owners.push(Some(idx));
                 if rail_id == u32::MAX {
                     oob_count += 1;
                 } else {
@@ -312,6 +366,7 @@ pub(crate) fn cost_fast(
                 buf.mst_rails.push(ctx.mst_rail(pin.net, rail_id));
                 buf.nets.push(pin.net);
                 buf.is_virtual.push(false);
+                buf.pin_owners.push(Some(idx));
                 if rail_id == u32::MAX {
                     oob_count += 1;
                 } else {
@@ -333,6 +388,7 @@ pub(crate) fn cost_fast(
             buf.mst_rails.push(ctx.mst_rail(net_id, rail_id));
             buf.nets.push(net_id);
             buf.is_virtual.push(true);
+            buf.pin_owners.push(None);
             buf.rail_map[rail_id as usize].push(net_id);
             if let Some(n) = net_id {
                 buf.net_buckets[n.0].push(buf.holes.len() - 1);
@@ -351,6 +407,7 @@ pub(crate) fn cost_fast(
                 buf.mst_rails.push(ctx.mst_rail(Some(net_id), rail_id));
                 buf.nets.push(Some(net_id));
                 buf.is_virtual.push(true);
+                buf.pin_owners.push(None);
                 buf.rail_map[rail_id as usize].push(Some(net_id));
                 buf.net_buckets[net_id.0].push(buf.holes.len() - 1);
             }
@@ -366,6 +423,7 @@ pub(crate) fn cost_fast(
         *buf.holes.get_unchecked(i)
     });
     let mut coll_count = 0u32;
+    let mut hard_pin_collision = false;
     let mut j = 0;
     while j < buf.pin_idx_sorted.len() {
         let mut k = j + 1;
@@ -377,6 +435,11 @@ pub(crate) fn cost_fast(
         let n = k - j;
         if n > 1 {
             coll_count += (n - 1) as u32;
+            let first_owner = buf.pin_owners[buf.pin_idx_sorted[j]];
+            hard_pin_collision |= first_owner.is_none()
+                || buf.pin_idx_sorted[(j + 1)..k]
+                    .iter()
+                    .any(|&index| buf.pin_owners[index] != first_owner);
         }
         j = k;
     }
@@ -387,6 +450,7 @@ pub(crate) fn cost_fast(
     buf.bboxes
         .extend(ctx.fixed_bboxes.iter().copied().map(Some));
     let mut bbox_overlap_count = 0u32;
+    let mut hard_bbox_collision = false;
     for i in 0..buf.bboxes.len() {
         let Some(bi) = buf.bboxes[i] else { continue };
         for j in (i + 1)..buf.bboxes.len() {
@@ -398,6 +462,7 @@ pub(crate) fn cost_fast(
                 if pos.x >= bj.min_x && pos.x <= bj.max_x && pos.y >= bj.min_y && pos.y <= bj.max_y
                 {
                     bbox_overlap_count += 1;
+                    hard_bbox_collision |= board.at(pos.x, pos.y).is_some();
                 }
             }
         }
@@ -407,19 +472,30 @@ pub(crate) fn cost_fast(
         for obstacle in &ctx.fixed_point_obstacles {
             if bbox.overlaps(obstacle) {
                 bbox_overlap_count += 1;
+                hard_bbox_collision = true;
             }
         }
     }
     cp_bbox!(_t_bbox.elapsed().as_nanos() as u64);
-    let _t_mst = std::time::Instant::now();
-
-    // 5+6: net_buckets 和 rail_map 都已在 collect 阶段填好。直接扫。
-    let (mst_sum, congestion_penalty) = mst_and_congestion(buf, board, w);
-    cp_mst!(_t_mst.elapsed().as_nanos() as u64);
     let _t_rail = std::time::Instant::now();
 
     let col_conflict_count = rail_conflict_count(&buf.rail_map);
     cp_rail!(_t_rail.elapsed().as_nanos() as u64);
+    if reject_hard_invalid
+        && (oob_count != 0
+            || invalid_onboard_body
+            || hard_pin_collision
+            || hard_bbox_collision
+            || col_conflict_count != 0)
+    {
+        return None;
+    }
+
+    let _t_mst = std::time::Instant::now();
+
+    // 5+6: net_buckets 和 rail_map 都已在 collect 阶段填好。直接扫。
+    let (mst_sum, congestion_penalty) = mst_and_congestion(buf, board, w, ctx);
+    cp_mst!(_t_mst.elapsed().as_nanos() as u64);
     let _t_compact = std::time::Instant::now();
 
     // 7. 紧凑度: 按 rail 分组
@@ -445,15 +521,17 @@ pub(crate) fn cost_fast(
     };
     cp_compact!(_t_compact.elapsed().as_nanos() as u64);
 
-    w.mst * mst_sum
-        + w.pin_overlap * coll_count as f64
-        + w.b_box_overlap * bbox_overlap_count as f64
-        + w.column_conflict * col_conflict_count as f64
-        + w.out_of_bounds * oob_count as f64
-        + w.compactness * compact.area_sum
-        + w.row_squash * compact.row_squash_penalty
-        + rail_cross
-        + congestion_penalty
+    Some(
+        w.mst * mst_sum
+            + w.pin_overlap * coll_count as f64
+            + w.b_box_overlap * bbox_overlap_count as f64
+            + w.column_conflict * col_conflict_count as f64
+            + w.out_of_bounds * oob_count as f64
+            + w.compactness * compact.area_sum
+            + w.row_squash * compact.row_squash_penalty
+            + rail_cross
+            + congestion_penalty,
+    )
 }
 
 /// 调试用: 返回成本的同时返回各项明细。一千成本以上的项重点看。
@@ -660,7 +738,7 @@ fn cost_breakdown_inner(
             buf.net_buckets[net.0].push(i);
         }
     }
-    let (mst_sum, congestion_penalty) = mst_and_congestion(buf, board, w);
+    let (mst_sum, congestion_penalty) = mst_and_congestion(buf, board, w, ctx);
     for (i, &net_opt) in buf.nets.iter().enumerate() {
         let (_, _, rail_id) = buf.holes[i];
         if rail_id == u32::MAX {

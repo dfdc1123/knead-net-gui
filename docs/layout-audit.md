@@ -125,11 +125,12 @@ enum ComponentPose {
 
 4. 最后优化性能：
 
-   - bridge candidate catalog 跨 seed 复用；
-   - 预计算候选左右邻接，替代线性搜索；
-   - Toggle 不要内嵌 K 次全量 cost；
-   - move 只重算受影响元件的 net、bbox 和 rail；
-   - bbox 相交面积直接算矩形交集，不要逐 cell 枚举。
+   - Toggle 已不再内嵌 K 次全量 cost；
+   - release benchmark 保留 rail capacity 预计算、MST length/degree 合并及 cost/legality 共享 collection；
+   - catalog 跨 seed、候选邻接、独立 delta cache 未达到收益/风险 gate，不引入；
+   - bbox 闭式交集等价但整体收益不足 2%，已按 gate 回退。
+
+完整基准、质量对照和各子项结论见 [layout-performance.md](layout-performance.md)。
 
 ## 最优先补的测试
 

@@ -350,8 +350,8 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 - [x] R10：state-aware move 与归一化 attempt schedule
 - [x] R11：当前不变量注释与诊断说明
 - [x] R12：真实 PCB 全链路连通图回归
-- [ ] R13：benchmark-gated 质量与性能重构
-- [ ] 最终全量验证与完成审计
+- [x] R13：benchmark-gated 质量与性能重构
+- [x] 最终全量验证与完成审计
 
 ### R0. 冻结电源轨产品语义（决策门）
 
@@ -470,6 +470,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R13. 最后做 benchmark-gated 的质量与性能重构
 
+- [x] **已完成**（2026-07-15）。release profile 使用真实 h-bridge、10 seeds × 5000 attempts 建立时间与质量基线，详情见 [layout-performance.md](layout-performance.md)。保留项把 effective rail 容量预计算、MST length/degree 合并，并让 SA cost collection 同源返回 hard legality、在 MST 前拒绝非法 candidate；随机 MST corpus、debug 逐 move 旧/新 legality 对照和 T14 证明等价。仪器化阶段累计时间从 785.57ms 降到 199.24ms（-74.6%），best/median/mean/max cost 与 16-wire 结果不变。catalog 跨 seed、邻接索引、独立 Toggle delta 因理论收益上限不足或缓存失效复杂度未过 gate 而不引入；bbox 闭式交集实测整体收益不足 2% 已回退；没有质量预算缺口，因此不改变 move 集。Profiler 的 private re-export/失真指标也已修复，并纠正“group 无孔位置等于导体断口”的残留注释。
 - 对应：报告的 global relocate/swap/双向 group 与五项性能建议；它们不是 R1-R12 correctness 的替代品。
 - 依赖：R12 建立端到端语义保护后才能开始。
 - 最小失败 gate：先建立 release benchmark 和等价性 harness。只有当前实现超过产品确认的时间/内存/解质量预算，才把该 benchmark 作为失败用例；没有预算或基准证据时不以“看起来更快”为由改热路径。每个优化还必须在随机 state corpus 上证明优化前后逐项 cost/legality 完全一致。
@@ -478,6 +479,8 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 - 完成条件：每个子项单独给出基准前后数据和等价性结果；无显著收益的子项回退；算法行为若有意改变必须提升算法版本并重新确认 seed 契约；完成后重新审阅 R11 注释并重跑 T01-T14 与全量验证。
 
 ## 最终完成门槛
+
+- [x] **全部满足**（2026-07-15）。R0–R13 已逐项完成或按 benchmark gate 明确回退/不引入；最终工作树验证为：`cargo fmt --check` 通过，`cargo test --workspace` 共 226 tests 通过，普通与 profiler 配置的严格 Clippy 均通过，release T14 通过，`pnpm check` 0 errors/0 warnings，`pnpm build` 成功。GUI 未在本轮启动交互式 `pnpm tauri dev`，但共享 frame、RailTie 展示和 compute profile 均有自动化测试覆盖。
 
 修复序列完成时必须同时满足：
 

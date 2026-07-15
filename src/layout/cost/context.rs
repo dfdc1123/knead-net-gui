@@ -59,6 +59,8 @@ pub struct SAContext {
     pub fixed_bboxes: Vec<BBox>,
     /// wire / RailTie endpoint 的点状 bbox，只参与 collision。
     pub fixed_point_obstacles: Vec<BBox>,
+    /// effective rail id → 该 rail 的物理孔数；供拥塞 cost 复用。
+    pub rail_hole_counts: Vec<usize>,
     fixed_problem: Option<AnnealProblem>,
 }
 
@@ -73,7 +75,6 @@ impl SAContext {
             let footprint = &circuit.footprints[fid.0];
 
             let mut pins = Vec::with_capacity(component.pins.len());
-            let mut world_positions: Vec<Position> = Vec::with_capacity(component.pins.len());
 
             for &pin_id in &component.pins {
                 let pin = &circuit.pins[pin_id.0];
@@ -101,15 +102,15 @@ impl SAContext {
                     ],
                     pin.net,
                 ));
-                world_positions.push(offset_r0);
             }
 
-            let bbox_r0 = BBox::from_points(world_positions).unwrap_or(BBox {
-                min_x: 0,
-                max_x: 0,
-                min_y: 0,
-                max_y: 0,
-            });
+            let bbox_r0 =
+                BBox::from_points(footprint.pins.iter().map(|pin| pin.offset)).unwrap_or(BBox {
+                    min_x: 0,
+                    max_x: 0,
+                    min_y: 0,
+                    max_y: 0,
+                });
 
             comp_infos.push(CompInfo {
                 pins,
@@ -127,6 +128,7 @@ impl SAContext {
             fixed_world: Vec::new(),
             fixed_bboxes: Vec::new(),
             fixed_point_obstacles: Vec::new(),
+            rail_hole_counts: Vec::new(),
             fixed_problem: None,
         }
     }
@@ -173,6 +175,11 @@ impl SAContext {
         board: &Breadboard,
         bridged_pins: &[(crate::circuit::PinId, crate::layout::breadboard::HoleId)],
     ) {
+        self.rail_hole_counts.clear();
+        self.rail_hole_counts.resize(board.num_rails(), 0);
+        for hole in board.holes() {
+            self.rail_hole_counts[board.effective_rail_id_of(hole.id) as usize] += 1;
+        }
         for (idx, info) in self.comp_infos.iter_mut().enumerate() {
             if !state.is_bridgeable[idx] {
                 continue;
@@ -245,6 +252,8 @@ pub(crate) struct CostBuf {
     pub mst_rails: Vec<u32>,
     pub nets: Vec<Option<NetId>>,
     pub is_virtual: Vec<bool>,
+    /// Hot-path pin owner (`Some(state index)` for movable pins, `None` for fixed/virtual).
+    pub pin_owners: Vec<Option<usize>>,
     pub bboxes: Vec<Option<BBox>>,
     /// net_id → pin 在 holes/nets 里的 index 列表 (按 net.0 索引)
     pub net_buckets: Vec<Vec<usize>>,
@@ -263,6 +272,7 @@ impl CostBuf {
             mst_rails: Vec::new(),
             nets: Vec::new(),
             is_virtual: Vec::new(),
+            pin_owners: Vec::new(),
             bboxes: Vec::new(),
             net_buckets: vec![Vec::new(); num_nets],
             rail_map: vec![Vec::new(); num_rails],
@@ -277,6 +287,7 @@ impl CostBuf {
         self.mst_rails.clear();
         self.nets.clear();
         self.is_virtual.clear();
+        self.pin_owners.clear();
         self.bboxes.clear();
         for bucket in &mut self.net_buckets {
             bucket.clear();
