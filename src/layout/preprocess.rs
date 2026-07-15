@@ -141,7 +141,7 @@ fn r90_bbox_size(fp: &crate::circuit::Footprint) -> (usize, usize) {
 /// 尝试为元件计算 y-lock 位置。
 ///
 /// 条件: 在指定旋转下, 所有冲突 pin 分布在恰好 2 个 y 值上,
-/// 且两行之间的空行数 == blocked_rows 数。
+/// 且两行之间的空行数足以跨过 blocked rows。
 ///
 /// `r90` 控制使用 R0 还是 R90 旋转后的坐标。
 /// 返回锁定的 state.y 值 (使上排 pin 落在上半区底部行)。
@@ -206,9 +206,10 @@ fn try_y_lock(
     let y_low = ys[0];
     let y_high = ys[1];
 
-    // 两行之间空行数 = y_high - y_low - 1
+    // 两行之间空行数 = y_high - y_low - 1。封装可以比中央槽更宽；
+    // 只要能完整跨过中央槽，就仍然把上排 pin 对齐到上半区底部。
     let gap = (y_high - y_low - 1) as usize;
-    if gap != blocked_count {
+    if gap < blocked_count {
         return None;
     }
 
@@ -218,5 +219,80 @@ fn try_y_lock(
     let upper_bottom = first_blocked as i32 - 1;
     let locked_y = upper_bottom - y_low;
 
+    // 宽封装的下排可能跨过中央槽后再空出真实孔位；但不能锁到板外。
+    if board.at(0, locked_y + y_low).is_none() || board.at(0, locked_y + y_high).is_none() {
+        return None;
+    }
+
     Some(locked_y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::circuit::{
+        Component, Footprint, FootprintId, Net, PhysicalPin, Pin, PinId, Position,
+    };
+
+    fn dip(pin_row_spacing: i32, pins_per_side: usize) -> Circuit {
+        let pin_positions: Vec<(i32, i32)> = [0, pin_row_spacing]
+            .into_iter()
+            .flat_map(|x| (0..pins_per_side).map(move |y| (x, y as i32)))
+            .collect();
+        Circuit {
+            components: vec![Component {
+                id: ComponentId(0),
+                ref_: "U1".into(),
+                kind: "DIP".into(),
+                value: None,
+                pins: (0..pin_positions.len()).map(PinId).collect(),
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            }],
+            pins: pin_positions
+                .iter()
+                .enumerate()
+                .map(|(id, _)| Pin {
+                    id: PinId(id),
+                    component: ComponentId(0),
+                    num: (id + 1).to_string(),
+                    pinfunction: None,
+                    net: Some(NetId(id)),
+                    physical_pin_index: id,
+                })
+                .collect(),
+            nets: (0..pin_positions.len())
+                .map(|id| Net {
+                    id: NetId(id),
+                    name: format!("N{id}"),
+                    pins: vec![PinId(id)],
+                })
+                .collect(),
+            footprints: vec![Footprint {
+                id: FootprintId(0),
+                name: format!("DIP_W{pin_row_spacing}"),
+                pins: pin_positions
+                    .iter()
+                    .enumerate()
+                    .map(|(id, &(x, y))| PhysicalPin {
+                        name: (id + 1).to_string(),
+                        offset: Position { x, y },
+                    })
+                    .collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn dip_with_three_empty_rows_locks_upper_pin_row_to_upper_half_bottom() {
+        // KiCad DIP-16_W10.16mm: the imported footprint has two pin columns four
+        // holes apart. Preprocessing rotates it so those columns become pin rows.
+        let circuit = dip(4, 8);
+        let board = Breadboard::standard();
+
+        let result = preprocess_for_breadboard(&circuit, &board);
+
+        assert_eq!(result.y_locked.get(&ComponentId(0)), Some(&4));
+        assert!(result.r90_only.contains(&ComponentId(0)));
+    }
 }
