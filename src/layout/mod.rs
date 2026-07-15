@@ -125,6 +125,13 @@ pub enum ColumnEndpoint {
 pub enum LayoutError {
     /// Component 没有 footprint
     NoFootprint { component: ComponentId },
+    /// Bridged 只能完整表示恰好两脚的元件。
+    InvalidBridgedPinCount {
+        component: ComponentId,
+        pin_count: usize,
+    },
+    /// Bridged 的两条腿重复引用了同一个 pin。
+    DuplicateBridgedPin { component: ComponentId, pin: PinId },
     /// 某个 pin 算出来落在板外
     OutOfBounds {
         component: ComponentId,
@@ -151,6 +158,12 @@ pub enum LayoutError {
         column: i32,
         a: ColumnEndpoint,
         b: ColumnEndpoint,
+    },
+    /// 真实 pin / wire 的 net 与该 effective rail 的绑定 net 不一致。
+    RailBindingConflict {
+        effective_rail: u32,
+        expected: NetId,
+        actual: ColumnEndpoint,
     },
     /// 两个元件的包围盒在板上重叠 — 元件本体互相碰撞 (不论是 pin 撞本体、
     /// 本体撞 pin 还是本体撞本体都报这个)。报告发生冲突的第一个孔。

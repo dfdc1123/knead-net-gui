@@ -355,6 +355,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R2. 收紧 public legality：Bridged bijection + rail binding
 
+- 实施状态：**已完成**（2026-07-15）。T04/T05 已先证明旧实现会接受重复 Bridged PinId、三脚元件漏脚，以及 bound rail 上没有第二个真实端点时的错 net pin/wire；现在这些状态分别返回精确的 Bridged pin-set 错误或 `RailBindingConflict`。
 - 对应：A4、A5。
 - 依赖：R1 的最终 island/tie 语义。
 - 最小失败测试：T04、T05。

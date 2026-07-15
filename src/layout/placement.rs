@@ -139,9 +139,9 @@ impl Placement {
     /// 不一样 (例: TO-92 在 netlist 里 pins = [2, 1, 3], footprint pads =
     /// [1, 2, 3])。zip 下来会全部错位。
     ///
-    /// **Bridged 路径**: 直接拿用户指定的 `(HoleId, PinId)` 对, 验证 pin 属
-    /// 于这个 component, hole 在板上, 两条腿不撞同一个孔。**没有 bbox** (body
-    /// 浮在板外, 不占任何网格)。
+    /// **Bridged 路径**: 只接受恰好两脚的 component；两个 `(HoleId, PinId)`
+    /// 必须完整且唯一覆盖 component 的两只脚，hole 必须在板上且不能重复。
+    /// 两脚之间的 AABB 是固定 body geometry。
     ///
     /// `apply` 本身只检查**单个 placement** 的合法性 (边界 / 孔有效 / 腿不撞);
     /// pin 跟其他元件 pin / wire 的碰撞由 [`Layout::validate`] /
@@ -193,6 +193,12 @@ impl Placement {
                 Ok(PlacedFootprint { pin_holes, bbox })
             }
             Placement::Bridged { pin_holes } => {
+                if component.pins.len() != pin_holes.len() {
+                    return Err(LayoutError::InvalidBridgedPinCount {
+                        component: component.id,
+                        pin_count: component.pins.len(),
+                    });
+                }
                 let mut placed: Vec<PinHole> = Vec::with_capacity(pin_holes.len());
                 for &(hole_id, pin_id) in pin_holes {
                     // pin 必须属于这个 component
@@ -223,6 +229,12 @@ impl Placement {
                     placed.push(PinHole {
                         pin: pin_id,
                         hole: hole_id,
+                    });
+                }
+                if placed[0].pin == placed[1].pin {
+                    return Err(LayoutError::DuplicateBridgedPin {
+                        component: component.id,
+                        pin: placed[0].pin,
                     });
                 }
                 // 两条腿不能落在同一个孔
@@ -649,6 +661,59 @@ mod tests {
         };
         let result = placement.apply(&comp, &fp, &b, &pins);
         assert!(matches!(result, Err(LayoutError::PinCollision { .. })));
+    }
+
+    #[test]
+    fn bridged_rejects_duplicate_pin_in_distinct_holes() {
+        let b = Breadboard::standard();
+        let (comp, fp, pins) = two_pin_resistor();
+        let placement = Placement::Bridged {
+            pin_holes: [
+                (b.at(3, 0).unwrap(), PinId(0)),
+                (b.at(4, 0).unwrap(), PinId(0)),
+            ],
+        };
+
+        assert_eq!(
+            placement.apply(&comp, &fp, &b, &pins).unwrap_err(),
+            LayoutError::DuplicateBridgedPin {
+                component: ComponentId(0),
+                pin: PinId(0),
+            }
+        );
+    }
+
+    #[test]
+    fn bridged_rejects_partial_three_pin_component() {
+        let b = Breadboard::standard();
+        let (mut comp, mut fp, mut pins) = two_pin_resistor();
+        comp.pins.push(PinId(2));
+        fp.pins.push(PhysicalPin {
+            name: "3".into(),
+            offset: Position { x: 10, y: 0 },
+        });
+        pins.push(Pin {
+            id: PinId(2),
+            component: ComponentId(0),
+            num: "3".into(),
+            pinfunction: None,
+            physical_pin_index: 2,
+            net: None,
+        });
+        let placement = Placement::Bridged {
+            pin_holes: [
+                (b.at(3, 0).unwrap(), PinId(0)),
+                (b.at(4, 0).unwrap(), PinId(1)),
+            ],
+        };
+
+        assert_eq!(
+            placement.apply(&comp, &fp, &b, &pins).unwrap_err(),
+            LayoutError::InvalidBridgedPinCount {
+                component: ComponentId(0),
+                pin_count: 3,
+            }
+        );
     }
 
     #[test]

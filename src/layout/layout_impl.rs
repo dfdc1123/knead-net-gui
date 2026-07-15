@@ -67,7 +67,7 @@ impl<'c> super::Layout<'c> {
     ///
     /// `validate` 跟 `occupancy` 走同一条检查路径, 区别是 `validate` 丢掉了
     /// 构建出来的 occupancy 表, 只关心错误。语义上"我只想问合不合法"。
-    /// 可产生的错误种类见 [`LayoutError`] (7 种)。
+    /// 可产生的错误种类见 [`LayoutError`]。
     pub fn validate(&self, board: &Breadboard) -> Result<(), Vec<LayoutError>> {
         self.occupancy(board).map(|_| ())
     }

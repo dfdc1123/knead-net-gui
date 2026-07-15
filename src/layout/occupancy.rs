@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use crate::circuit::{ComponentId, PinId};
+use crate::circuit::{ComponentId, NetId, PinId};
 
 use super::Layout;
 use super::LayoutError;
@@ -49,7 +49,8 @@ impl Occupancy {
     /// 构造严格 occupancy. 任何非法状态都返回 `Err`, 不返回部分 occupancy。
     ///
     /// 错误种类 ([`crate::layout::LayoutError`]): `NoFootprint`, `NoFootprintPad`,
-    /// `OutOfBounds`, `PinCollision`, `BBoxOverlap`, `WireConflict`, `ColumnConflict`。
+    /// `OutOfBounds`, `PinCollision`, `BBoxOverlap`, `WireConflict`, `ColumnConflict`,
+    /// `RailBindingConflict`，以及 Bridged pin-set 错误。
     ///
     /// 下列情况的报告路径:
     /// - pin 跟其它 pin 重叠 → `PinCollision`
@@ -69,6 +70,17 @@ impl Occupancy {
         // 的孔在同一 rail_id (横向短接), 也会被面包板短路。统一用 rail_id。
         let mut by_rail: std::collections::BTreeMap<u32, Vec<super::ColumnEndpoint>> =
             std::collections::BTreeMap::new();
+        let mut bound_by_rail: std::collections::BTreeMap<u32, NetId> =
+            std::collections::BTreeMap::new();
+        if let Some(binding) = board.power_rail_binding() {
+            for (polarity, net) in binding.iter() {
+                if let Some(anchors) = board.power_rail_anchors(polarity) {
+                    for anchor in anchors {
+                        bound_by_rail.insert(board.effective_rail_id_of(anchor), net);
+                    }
+                }
+            }
+        }
 
         for (idx, placement_opt) in layout.placements().iter().enumerate() {
             let Some(placement) = placement_opt else {
@@ -229,6 +241,27 @@ impl Occupancy {
             }
         }
 
+        // Binding 是 effective rail 的期望 owner；即便 rail 上只有一个真实 endpoint，
+        // 它的 net 也必须匹配。不能依赖“至少两个真实 endpoint”才暴露冲突。
+        for (&rail_id, endpoints) in &by_rail {
+            let Some(&expected) = bound_by_rail.get(&rail_id) else {
+                continue;
+            };
+            for &actual in endpoints {
+                let actual_net = match actual {
+                    super::ColumnEndpoint::Pin { net, .. } => net,
+                    super::ColumnEndpoint::Wire { net, .. } => Some(net),
+                };
+                if actual_net != Some(expected) {
+                    errors.push(LayoutError::RailBindingConflict {
+                        effective_rail: rail_id,
+                        expected,
+                        actual,
+                    });
+                }
+            }
+        }
+
         // Rail 冲突检查: 任意 rail_id 上, 任意两个 endpoint 的 net 不一致 → 报 ColumnConflict。
         // "Column" 现在名不副实 (电源轨冲突是 row 冲突), 但 API 名称保留, 只是里面的
         // column 字段改为 rail_id。选第一项作为"基准", 其后只报第一对 (一 rail 报一次避免刷屏)。
@@ -335,8 +368,72 @@ mod rail_tie_tests {
         Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin,
         PinId, Position,
     };
-    use crate::layout::breadboard::standard_power_rails;
+    use crate::layout::breadboard::{PowerRailBinding, standard_power_rails};
     use crate::layout::placement::Placement;
+    use crate::layout::routing::{Wire, WireId};
+
+    fn bound_board() -> Breadboard {
+        Breadboard::standard().with_power_rail_binding(PowerRailBinding {
+            positive: Some(NetId(0)),
+            negative: None,
+        })
+    }
+
+    fn two_net_circuit(with_pin: bool) -> &'static Circuit {
+        let components = if with_pin {
+            vec![Component {
+                id: ComponentId(0),
+                ref_: "TP1".into(),
+                kind: "TESTPOINT".into(),
+                value: None,
+                pins: vec![PinId(0)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            }]
+        } else {
+            Vec::new()
+        };
+        let pins = if with_pin {
+            vec![Pin {
+                id: PinId(0),
+                component: ComponentId(0),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: Some(NetId(1)),
+            }]
+        } else {
+            Vec::new()
+        };
+        Box::leak(Box::new(Circuit {
+            components,
+            pins,
+            nets: vec![
+                Net {
+                    id: NetId(0),
+                    name: "VCC".into(),
+                    pins: Vec::new(),
+                },
+                Net {
+                    id: NetId(1),
+                    name: "SIGNAL".into(),
+                    pins: if with_pin { vec![PinId(0)] } else { Vec::new() },
+                },
+            ],
+            footprints: if with_pin {
+                vec![Footprint {
+                    id: FootprintId(0),
+                    name: "1p".into(),
+                    pins: vec![PhysicalPin {
+                        name: "1".into(),
+                        offset: Position { x: 0, y: 0 },
+                    }],
+                }]
+            } else {
+                Vec::new()
+            },
+        }))
+    }
 
     #[test]
     fn preset_rail_tie_endpoints_are_fixed_occupied_geometry() {
@@ -433,6 +530,57 @@ mod rail_tie_tests {
                 .iter()
                 .any(|error| matches!(error, LayoutError::ColumnConflict { .. }))
         );
+    }
+
+    #[test]
+    fn bound_power_rail_rejects_a_wrong_net_pin_without_another_endpoint() {
+        let board = bound_board();
+        let mut layout = Layout::new(two_net_circuit(true));
+        layout.place(
+            ComponentId(0),
+            Placement::OnBoard {
+                position: Position { x: 1, y: -3 },
+                rotation: crate::layout::placement::Rotation::R0,
+            },
+        );
+
+        let errors = layout.validate(&board).unwrap_err();
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            LayoutError::RailBindingConflict {
+                expected: NetId(0),
+                actual: super::super::ColumnEndpoint::Pin {
+                    pin: PinId(0),
+                    net: Some(NetId(1)),
+                },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn bound_power_rail_rejects_a_wrong_net_wire_without_another_endpoint() {
+        let board = bound_board();
+        let mut layout = Layout::new(two_net_circuit(false));
+        layout.add_wire(Wire {
+            id: WireId(0),
+            net: NetId(1),
+            from: board.at(1, -3).unwrap(),
+            to: board.at(1, 0).unwrap(),
+        });
+
+        let errors = layout.validate(&board).unwrap_err();
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            LayoutError::RailBindingConflict {
+                expected: NetId(0),
+                actual: super::super::ColumnEndpoint::Wire {
+                    wire: WireId(0),
+                    net: NetId(1),
+                },
+                ..
+            }
+        )));
     }
 }
 
