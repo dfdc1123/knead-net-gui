@@ -119,9 +119,8 @@ pub struct SAConfig {
     pub max_iters: usize,
     /// Attempt 0 的温度。
     pub t_start: f64,
-    /// 最后一次 attempt 的温度；schedule 按 `max_iters` 归一化推导。长预算 spectral
-    /// 搜索在该值低于 0.01 时保留前 90% 的 `t_start → 0.01` 深搜索曲线，
-    /// 最后 10% 再淬火到该值。
+    /// 最后一次 attempt 的温度；schedule 按 `max_iters` 归一化推导。spectral
+    /// 搜索在前 70% 从 `t_start` 冷却到 10，最后 30% 再淬火到该值。
     pub t_end: f64,
     pub weights: Weights,
     /// 决定随机扰动序列; 改 seed 可重新跑一遍出不同结果。
@@ -1010,8 +1009,8 @@ pub(super) struct SimulationRun<'a> {
 }
 
 fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
-    const EXPLORATION_END: f64 = 0.01;
-    const QUENCH_START: f64 = 0.9;
+    const EXPLORATION_END: f64 = 10.0;
+    const QUENCH_START: f64 = 0.7;
 
     let start = if config.t_start.is_finite() && config.t_start > 0.0 {
         config.t_start
@@ -1027,13 +1026,13 @@ fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
         return start;
     }
     let progress = attempt.min(config.max_iters - 1) as f64 / (config.max_iters - 1) as f64;
-    if config.use_spectral && config.max_iters >= 20_000 && end < EXPLORATION_END {
+    if config.use_spectral {
+        let exploration_end = EXPLORATION_END.min(start);
         if progress <= QUENCH_START {
-            start * (EXPLORATION_END / start).powf(progress)
+            start * (exploration_end / start).powf(progress / QUENCH_START)
         } else {
-            let quench_start_temperature = start * (EXPLORATION_END / start).powf(QUENCH_START);
             let quench_progress = (progress - QUENCH_START) / (1.0 - QUENCH_START);
-            quench_start_temperature * (end / quench_start_temperature).powf(quench_progress)
+            exploration_end * (end / exploration_end).powf(quench_progress)
         }
     } else {
         start * (end / start).powf(progress)
@@ -2330,24 +2329,24 @@ mod tests {
     }
 
     #[test]
-    fn long_spectral_schedule_reserves_the_first_nine_tenths_for_deep_search() {
-        let config = SAConfig {
-            max_iters: 40_000,
-            t_start: 40.0,
-            t_end: 0.001,
-            use_spectral: true,
-            ..SAConfig::default()
-        };
-        let midpoint = (config.max_iters - 1) / 2;
-        let progress = midpoint as f64 / (config.max_iters - 1) as f64;
-        let exploration_temperature = 40.0 * (0.01_f64 / 40.0).powf(progress);
-
-        assert!(
-            (temperature_at_attempt(&config, midpoint) - exploration_temperature).abs() < 1e-12
-        );
-        assert!(
-            (temperature_at_attempt(&config, config.max_iters - 1) - config.t_end).abs() < 1e-12
-        );
+    fn spectral_schedule_reserves_its_last_thirty_percent_for_quenching() {
+        // Match the three UI profiles, while choosing budgets whose 70% attempt
+        // index is exact so this is a deterministic regression check.
+        for (max_iters, t_end) in [(5_001, 0.1), (20_001, 0.001), (40_001, 0.001)] {
+            let config = SAConfig {
+                max_iters,
+                t_start: 40.0,
+                t_end,
+                use_spectral: true,
+                ..SAConfig::default()
+            };
+            let quench_start = (max_iters - 1) * 7 / 10;
+            assert!((temperature_at_attempt(&config, quench_start) - 10.0).abs() < 1e-12);
+            assert!(
+                (temperature_at_attempt(&config, config.max_iters - 1) - config.t_end).abs()
+                    < 1e-12
+            );
+        }
     }
 
     #[test]
