@@ -8,7 +8,7 @@ use crate::circuit::{
 };
 use crate::layout::breadboard::{PowerRailBinding, Region, standard_power_rails};
 use crate::layout::cost::bridge::collect_matching_rail_ids;
-use crate::layout::placement::{Placement, Rotation};
+use crate::layout::placement::{BBox, Placement, Rotation};
 use crate::layout::{Breadboard, HoleId};
 
 /// 1 列宽, 1 个 pin, R0/R180 等价的 footprint (没有第二个 pin 区分方向)。
@@ -97,6 +97,228 @@ fn weights_legacy() -> Weights {
         row_squash: 0.0,
         ..Weights::default()
     }
+}
+
+fn zero_weights() -> Weights {
+    Weights {
+        mst: 0.0,
+        pin_overlap: 0.0,
+        b_box_overlap: 0.0,
+        column_conflict: 0.0,
+        out_of_bounds: 0.0,
+        compactness: 0.0,
+        rail_crossing: 0.0,
+        row_squash: 0.0,
+        mst_congestion: 0.0,
+    }
+}
+
+fn three_single_pin_components() -> Circuit {
+    Circuit {
+        components: (0..3)
+            .map(|i| Component {
+                id: ComponentId(i),
+                ref_: format!("X{i}"),
+                kind: "X".into(),
+                value: None,
+                pins: vec![PinId(i)],
+                footprint: Some(FootprintId(0)),
+                bridgeable: false,
+            })
+            .collect(),
+        pins: (0..3)
+            .map(|i| Pin {
+                id: PinId(i),
+                component: ComponentId(i),
+                num: "1".into(),
+                pinfunction: None,
+                physical_pin_index: 0,
+                net: Some(if i == 0 { NetId(0) } else { NetId(1) }),
+            })
+            .collect(),
+        nets: vec![
+            Net {
+                id: NetId(0),
+                name: "A".into(),
+                pins: vec![PinId(0)],
+            },
+            Net {
+                id: NetId(1),
+                name: "B".into(),
+                pins: vec![PinId(1), PinId(2)],
+            },
+        ],
+        footprints: vec![one_pin_fp()],
+    }
+}
+
+fn permute_state(state: &SAState, indices: &[usize]) -> SAState {
+    SAState {
+        placeable: indices.iter().map(|&i| state.placeable[i]).collect(),
+        is_bridgeable: indices.iter().map(|&i| state.is_bridgeable[i]).collect(),
+        bridged: indices.iter().map(|&i| state.bridged[i]).collect(),
+        bridged_pin_pairs: indices
+            .iter()
+            .map(|&i| state.bridged_pin_pairs[i].clone())
+            .collect(),
+        active_bridge_idx: indices
+            .iter()
+            .map(|&i| state.active_bridge_idx[i])
+            .collect(),
+        x: indices.iter().map(|&i| state.x[i]).collect(),
+        y: indices.iter().map(|&i| state.y[i]).collect(),
+        rotation: indices.iter().map(|&i| state.rotation[i]).collect(),
+        r90_only: indices.iter().map(|&i| state.r90_only[i]).collect(),
+        y_locked: indices.iter().map(|&i| state.y_locked[i]).collect(),
+    }
+}
+
+#[test]
+fn cost_is_invariant_under_state_permutation() {
+    let circuit = three_single_pin_components();
+    let board = board();
+
+    let owners_abb = SAState {
+        placeable: vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+        x: vec![0, 0, 0],
+        y: vec![0, 1, 2],
+        rotation: vec![Rotation::R0; 3],
+        ..SAState::no_bridging(3)
+    };
+    let owners_bab = permute_state(&owners_abb, &[1, 0, 2]);
+    let mut column_only = zero_weights();
+    column_only.column_conflict = 1.0;
+    assert_eq!(
+        cost(&owners_abb, &circuit, &board, &[], &column_only),
+        cost(&owners_bab, &circuit, &board, &[], &column_only),
+        "[A,B,B] 与 [B,A,B] 是同一物理 rail owner multiset"
+    );
+}
+
+#[test]
+fn row_squash_is_invariant_under_state_permutation() {
+    let circuit = three_single_pin_components();
+    let board = board();
+    let rows_42 = SAState {
+        placeable: vec![ComponentId(0), ComponentId(1)],
+        x: vec![0, 1],
+        y: vec![4, 2],
+        rotation: vec![Rotation::R0; 2],
+        ..SAState::no_bridging(2)
+    };
+    let rows_24 = permute_state(&rows_42, &[1, 0]);
+    let mut row_only = zero_weights();
+    row_only.row_squash = 1.0;
+    assert_eq!(
+        cost(&rows_42, &circuit, &board, &[], &row_only),
+        cost(&rows_24, &circuit, &board, &[], &row_only),
+        "row_squash 的 distinct row 计数不能依赖遍历顺序"
+    );
+}
+
+#[test]
+fn fast_cost_and_breakdown_include_the_same_congestion_total() {
+    let mut circuit = three_single_pin_components();
+    for pin in &mut circuit.pins {
+        pin.net = Some(NetId(0));
+    }
+    circuit.nets = vec![Net {
+        id: NetId(0),
+        name: "N".into(),
+        pins: vec![PinId(0), PinId(1), PinId(2)],
+    }];
+    let board = Breadboard::new(1, 1);
+    let state = SAState {
+        placeable: vec![ComponentId(0), ComponentId(1), ComponentId(2)],
+        x: vec![0, 0, 0],
+        y: vec![0, 0, 0],
+        rotation: vec![Rotation::R0; 3],
+        ..SAState::no_bridging(3)
+    };
+    let mut weights = zero_weights();
+    weights.mst_congestion = 2.0;
+
+    let fast = cost_with_problem(
+        &state,
+        &circuit,
+        &board,
+        &crate::layout::problem::AnnealProblem::default(),
+        &weights,
+    );
+    let (total, breakdown) = cost_breakdown_with_problem(
+        &state,
+        &circuit,
+        &board,
+        &crate::layout::problem::AnnealProblem::default(),
+        &weights,
+    );
+    assert!(fast > 0.0, "fixture 必须触发 congestion");
+    assert_eq!(total, fast);
+    assert_eq!(breakdown.mst_congestion, fast);
+}
+
+#[test]
+fn mixed_fixed_bridged_and_power_inputs_are_permutation_invariant() {
+    let (circuit, board) = bridgeable_two_pin_circuit();
+    let placeable = bridgeable_placeables(&circuit);
+    let mut state = SAState::from_greedy(
+        placeable,
+        &circuit,
+        &board,
+        &crate::layout::preprocess::PreprocessResult {
+            r90_only: std::collections::HashSet::new(),
+            y_locked: std::collections::HashMap::new(),
+        },
+        &crate::layout::problem::AnnealProblem::default(),
+    )
+    .unwrap();
+    populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
+    assert!(state.is_bridgeable[0]);
+    state.bridged[0] = true;
+    let permuted = permute_state(&state, &[1, 0]);
+
+    let fixed_hole = board.at(10, 3).unwrap();
+    let fixed_position = board.hole(fixed_hole).position;
+    let mut problem = crate::layout::problem::AnnealProblem::default();
+    problem
+        .fixed_geometry
+        .endpoints
+        .push(crate::layout::problem::FixedEndpoint {
+            position: fixed_position,
+            effective_rail: board.effective_rail_id_of(fixed_hole),
+            net: Some(NetId(1)),
+        });
+    problem.fixed_geometry.bboxes.push(BBox {
+        min_x: fixed_position.x,
+        max_x: fixed_position.x,
+        min_y: fixed_position.y,
+        max_y: fixed_position.y,
+    });
+
+    let weights = Weights::default();
+    let evaluate = |state: &SAState| {
+        let fast = cost_with_problem(state, &circuit, &board, &problem, &weights);
+        let (total, breakdown) =
+            cost_breakdown_with_problem(state, &circuit, &board, &problem, &weights);
+        assert_eq!(fast, total, "fast 与 breakdown total 必须同源");
+        (
+            fast,
+            [
+                breakdown.mst,
+                breakdown.mst_congestion,
+                breakdown.pin_overlap,
+                breakdown.bbox_overlap,
+                breakdown.column_conflict,
+                breakdown.out_of_bounds,
+                breakdown.compactness,
+                breakdown.row_squash,
+                breakdown.rail_crossing,
+            ],
+        )
+    };
+    let original = evaluate(&state);
+    let reordered = evaluate(&permuted);
+    assert_eq!(original, reordered);
 }
 
 #[test]

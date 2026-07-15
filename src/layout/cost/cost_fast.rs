@@ -19,6 +19,98 @@ use crate::{cp_bbox, cp_call, cp_collect, cp_compact, cp_mst, cp_pin, cp_rail};
 
 // SA 走线估算: 用 net_buckets (Vec<Vec<usize>>) 代替 HashMap
 
+fn mst_and_congestion(buf: &CostBuf, board: &Breadboard, w: &Weights) -> (f64, f64) {
+    let mut mst_sum = 0.0;
+    let mut congestion = 0.0;
+    for bucket in &buf.net_buckets {
+        if bucket.len() < 2 {
+            continue;
+        }
+        mst_sum += mst_wire_length_fast(bucket, &buf.holes, &buf.mst_rails);
+
+        if w.mst_congestion <= 0.0 {
+            continue;
+        }
+        let degrees = mst_degrees(bucket, &buf.holes, &buf.mst_rails);
+        let mut rail_pin_count: std::collections::HashMap<u32, usize> =
+            std::collections::HashMap::new();
+        for &idx in bucket {
+            *rail_pin_count.entry(buf.holes[idx].2).or_default() += 1;
+        }
+        for (i, &idx) in bucket.iter().enumerate() {
+            let rail_id = buf.holes[idx].2;
+            let pins_on_rail = rail_pin_count.get(&rail_id).copied().unwrap_or(1);
+            let total_holes = board
+                .holes()
+                .iter()
+                .filter(|hole| board.effective_rail_id_of(hole.id) == rail_id)
+                .count();
+            let capacity = total_holes.saturating_sub(pins_on_rail);
+            if degrees[i] > capacity {
+                congestion += (degrees[i] - capacity) as f64 * w.mst_congestion;
+            }
+        }
+    }
+    (mst_sum, congestion)
+}
+
+/// Minimum number of endpoints that must leave a rail for all remaining owners to agree.
+/// This is `len - max_owner_frequency`, so it depends only on the owner multiset.
+fn rail_conflict_count(rail_map: &[Vec<Option<crate::circuit::NetId>>]) -> usize {
+    rail_map
+        .iter()
+        .map(|owners| {
+            let max_frequency = owners
+                .iter()
+                .map(|owner| {
+                    owners
+                        .iter()
+                        .filter(|candidate| *candidate == owner)
+                        .count()
+                })
+                .max()
+                .unwrap_or(0);
+            owners.len().saturating_sub(max_frequency)
+        })
+        .sum()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompactTerms {
+    area_sum: f64,
+    row_squash_penalty: f64,
+    occupied_rails: usize,
+}
+
+fn compact_terms(compact_map: &[Vec<BBox>]) -> CompactTerms {
+    let mut terms = CompactTerms {
+        area_sum: 0.0,
+        row_squash_penalty: 0.0,
+        occupied_rails: 0,
+    };
+    for cells in compact_map {
+        if cells.is_empty() {
+            continue;
+        }
+        terms.occupied_rails += 1;
+        let min_x = cells.iter().map(|bbox| bbox.min_x).min().unwrap();
+        let max_x = cells.iter().map(|bbox| bbox.max_x).max().unwrap();
+        terms.area_sum += (max_x - min_x + 1) as f64;
+
+        let unique_rows = cells
+            .iter()
+            .enumerate()
+            .filter(|(index, bbox)| {
+                !cells[..*index]
+                    .iter()
+                    .any(|previous| previous.min_y == bbox.min_y)
+            })
+            .count();
+        terms.row_squash_penalty += cells.len().saturating_sub(unique_rows) as f64;
+    }
+    terms
+}
+
 /// 快速版本: 复用预计算的 context 和 buffers。
 /// 在 simulate() 的热循环里替代 `cost()`。
 pub(crate) fn cost_fast(
@@ -322,51 +414,11 @@ pub(crate) fn cost_fast(
     let _t_mst = std::time::Instant::now();
 
     // 5+6: net_buckets 和 rail_map 都已在 collect 阶段填好。直接扫。
-    let mut mst_sum = 0.0f64;
-    let mut congestion_penalty = 0.0f64;
-    for bucket in &buf.net_buckets {
-        if bucket.len() < 2 {
-            continue;
-        }
-        mst_sum += mst_wire_length_fast(bucket, &buf.holes, &buf.mst_rails);
-
-        if w.mst_congestion > 0.0 {
-            let degrees = mst_degrees(bucket, &buf.holes, &buf.mst_rails);
-            let mut rail_pin_count: std::collections::HashMap<u32, usize> =
-                std::collections::HashMap::new();
-            for &idx in bucket {
-                *rail_pin_count.entry(buf.holes[idx].2).or_default() += 1;
-            }
-            for (i, &idx) in bucket.iter().enumerate() {
-                let rail_id = buf.holes[idx].2;
-                let pins_on_rail = rail_pin_count.get(&rail_id).copied().unwrap_or(1);
-                let total_holes = board
-                    .holes()
-                    .iter()
-                    .filter(|h| board.effective_rail_id_of(h.id) == rail_id)
-                    .count();
-                let capacity = total_holes.saturating_sub(pins_on_rail);
-                if degrees[i] > capacity {
-                    congestion_penalty += (degrees[i] - capacity) as f64 * w.mst_congestion;
-                }
-            }
-        }
-    }
+    let (mst_sum, congestion_penalty) = mst_and_congestion(buf, board, w);
     cp_mst!(_t_mst.elapsed().as_nanos() as u64);
     let _t_rail = std::time::Instant::now();
 
-    let mut col_conflict_pairs = 0usize;
-    for rail_owners in buf.rail_map.iter() {
-        if rail_owners.len() < 2 {
-            continue;
-        }
-        let base = rail_owners[0];
-        for owner in &rail_owners[1..] {
-            if *owner != base {
-                col_conflict_pairs += 1;
-            }
-        }
-    }
+    let col_conflict_count = rail_conflict_count(&buf.rail_map);
     cp_rail!(_t_rail.elapsed().as_nanos() as u64);
     let _t_compact = std::time::Instant::now();
 
@@ -385,43 +437,8 @@ pub(crate) fn cost_fast(
         // rail_top ∈ [0, main_rows) 在上几行已保证
         buf.compact_map[rail_top as usize].push(*bbox);
     }
-    let mut area_sum = 0.0f64;
-    let mut row_squash_penalty = 0.0f64;
-    let mut num_occupied_rails = 0usize;
-    for cells in buf.compact_map.iter() {
-        if cells.is_empty() {
-            continue;
-        }
-        num_occupied_rails += 1;
-        let mut min_x = i32::MAX;
-        let mut max_x = i32::MIN;
-        let mut min_y = i32::MAX;
-        let mut max_y = i32::MIN;
-        // 用 min_y..=max_y 范围内的去重计数代替 HashSet<i32>: cells 一般很少
-        // (单 rail 上 < 5 个元件), bitmap 比 HashSet 快得多。
-        let mut row_seen: u32 = 0;
-        for b in cells {
-            min_x = min_x.min(b.min_x);
-            max_x = max_x.max(b.max_x);
-            min_y = min_y.min(b.min_y);
-            max_y = max_y.max(b.max_y);
-            let row_idx = (b.min_y - min_y) as u32;
-            if row_idx < 32 {
-                row_seen |= 1u32 << row_idx;
-            }
-        }
-        if min_x <= max_x && min_y <= max_y {
-            let width = (max_x - min_x + 1) as f64;
-            area_sum += width;
-        }
-        // 纵向挤压: 元件数 n vs 实际占用行数 ny
-        let ny = row_seen.count_ones() as usize;
-        let n = cells.len();
-        if n > ny {
-            row_squash_penalty += (n - ny) as f64;
-        }
-    }
-    let rail_cross = if num_occupied_rails >= 2 {
+    let compact = compact_terms(&buf.compact_map);
+    let rail_cross = if compact.occupied_rails >= 2 {
         w.rail_crossing
     } else {
         0.0
@@ -431,10 +448,10 @@ pub(crate) fn cost_fast(
     w.mst * mst_sum
         + w.pin_overlap * coll_count as f64
         + w.b_box_overlap * bbox_overlap_count as f64
-        + w.column_conflict * col_conflict_pairs as f64
+        + w.column_conflict * col_conflict_count as f64
         + w.out_of_bounds * oob_count as f64
-        + w.compactness * area_sum
-        + w.row_squash * row_squash_penalty
+        + w.compactness * compact.area_sum
+        + w.row_squash * compact.row_squash_penalty
         + rail_cross
         + congestion_penalty
 }
@@ -643,13 +660,7 @@ fn cost_breakdown_inner(
             buf.net_buckets[net.0].push(i);
         }
     }
-    let mut mst_sum = 0.0f64;
-    for bucket in &buf.net_buckets {
-        if bucket.len() < 2 {
-            continue;
-        }
-        mst_sum += mst_wire_length_fast(bucket, &buf.holes, &buf.mst_rails);
-    }
+    let (mst_sum, congestion_penalty) = mst_and_congestion(buf, board, w);
     for (i, &net_opt) in buf.nets.iter().enumerate() {
         let (_, _, rail_id) = buf.holes[i];
         if rail_id == u32::MAX {
@@ -657,18 +668,7 @@ fn cost_breakdown_inner(
         }
         buf.rail_map[rail_id as usize].push(net_opt);
     }
-    let mut col_conflict_pairs = 0usize;
-    for rail_owners in buf.rail_map.iter() {
-        if rail_owners.len() < 2 {
-            continue;
-        }
-        let base = rail_owners[0];
-        for owner in &rail_owners[1..] {
-            if *owner != base {
-                col_conflict_pairs += 1;
-            }
-        }
-    }
+    let col_conflict_count = rail_conflict_count(&buf.rail_map);
     for bbox_opt in buf.bboxes.iter() {
         let Some(bbox) = bbox_opt else { continue };
         if bbox.min_x < 0
@@ -686,40 +686,8 @@ fn cost_breakdown_inner(
             .unwrap_or(bbox.min_y);
         buf.compact_map[rail_top as usize].push(*bbox);
     }
-    let mut area_sum = 0.0f64;
-    let mut row_squash_penalty = 0.0f64;
-    let mut num_occupied_rails = 0usize;
-    for cells in buf.compact_map.iter() {
-        if cells.is_empty() {
-            continue;
-        }
-        num_occupied_rails += 1;
-        let mut min_x = i32::MAX;
-        let mut max_x = i32::MIN;
-        let mut min_y = i32::MAX;
-        let mut max_y = i32::MIN;
-        let mut row_seen: u32 = 0;
-        for b in cells {
-            min_x = min_x.min(b.min_x);
-            max_x = max_x.max(b.max_x);
-            min_y = min_y.min(b.min_y);
-            max_y = max_y.max(b.max_y);
-            let row_idx = (b.min_y - min_y) as u32;
-            if row_idx < 32 {
-                row_seen |= 1u32 << row_idx;
-            }
-        }
-        if min_x <= max_x && min_y <= max_y {
-            let width = (max_x - min_x + 1) as f64;
-            area_sum += width;
-        }
-        let ny = row_seen.count_ones() as usize;
-        let n = cells.len();
-        if n > ny {
-            row_squash_penalty += (n - ny) as f64;
-        }
-    }
-    let rail_cross = if num_occupied_rails >= 2 {
+    let compact = compact_terms(&buf.compact_map);
+    let rail_cross = if compact.occupied_rails >= 2 {
         w.rail_crossing
     } else {
         0.0
@@ -729,18 +697,19 @@ fn cost_breakdown_inner(
         mst: w.mst * mst_sum,
         pin_overlap: w.pin_overlap * coll_count as f64,
         bbox_overlap: w.b_box_overlap * bbox_overlap_count as f64,
-        column_conflict: w.column_conflict * col_conflict_pairs as f64,
+        column_conflict: w.column_conflict * col_conflict_count as f64,
         out_of_bounds: w.out_of_bounds * oob_count as f64,
-        compactness: w.compactness * area_sum,
-        row_squash: w.row_squash * row_squash_penalty,
+        compactness: w.compactness * compact.area_sum,
+        row_squash: w.row_squash * compact.row_squash_penalty,
         rail_crossing: rail_cross,
+        mst_congestion: congestion_penalty,
         mst_sum,
         oob_count,
-        col_conflict_pairs,
+        col_conflict_count,
         coll_count,
         bbox_overlap_count,
-        area_sum,
-        row_squash_penalty,
+        area_sum: compact.area_sum,
+        row_squash_penalty: compact.row_squash_penalty,
     };
     let total = breakdown.mst
         + breakdown.pin_overlap
@@ -749,7 +718,8 @@ fn cost_breakdown_inner(
         + breakdown.out_of_bounds
         + breakdown.compactness
         + breakdown.row_squash
-        + breakdown.rail_crossing;
+        + breakdown.rail_crossing
+        + breakdown.mst_congestion;
     (total, breakdown)
 }
 
@@ -764,9 +734,10 @@ pub(crate) struct CostBreakdown {
     pub compactness: f64,
     pub row_squash: f64,
     pub rail_crossing: f64,
+    pub mst_congestion: f64,
     pub mst_sum: f64,
     pub oob_count: u32,
-    pub col_conflict_pairs: usize,
+    pub col_conflict_count: usize,
     pub coll_count: u32,
     pub bbox_overlap_count: u32,
     pub area_sum: f64,

@@ -418,6 +418,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R9. 使 cost 和 diagnostics 对排列不变且同源
 
+- 实施状态：**已完成**（2026-07-15）。T07 先分别复现同一 owner multiset `[A,B,B]`/`[B,A,B]` 得到 2/1，以及同一 y 集合按 4→2/2→4 遍历得到 row-squash 1/0；列冲突现定义为每 rail 的 `endpoint_count - dominant_owner_count`，distinct row 直接按稳定集合计数。T10 先复现仅开启 congestion 时 fast total=8、breakdown total=0；MST/congestion、rail conflict、compact/row-squash 现由 fast 与 breakdown 共用项计算，breakdown/debug 显示 congestion 并使用调用方实际 weights。固定 endpoint、SA Bridged、power anchor 混合状态的 component permutation 已逐项验证不变。
 - 对应：A7、A10 的 congestion 漏项。
 - 依赖：R1/R4/R8 后 cost 输入集合和连通语义稳定。
 - 最小失败测试：T07、T10；对固定 geometry、SA Bridged、power anchor 混合输入也做 permutation assertion。

@@ -52,13 +52,14 @@ pub(crate) use bridge::propose_bridged_pair;
 #[cfg(test)]
 pub(crate) use mst::mst_wire_length;
 
-/// SA 成本函数的**八项**权重。
+/// SA 成本函数的九项权重。
 ///
 /// 成本 = `mst * MST_sum + pin_overlap * pin_pin_碰撞 + b_box_overlap * bbox_重叠格数
-///       + column_conflict * 列短路对数 + out_of_bounds * 越界 pin 数
+///       + column_conflict * rail owner 最少移出 endpoint 数 + out_of_bounds * 越界 pin 数
 ///       + compactness * (按 rail 分组的 union bbox 面积之和)
 ///       + row_squash * Σ max(0, n_comps - unique_min_y) (按 rail, 推元件散布到不同行)
-///       + rail_crossing * [用了 ≥2 个 rail]`
+///       + rail_crossing * [用了 ≥2 个 rail]
+///       + mst_congestion * 超出 rail 空孔容量的 MST degree`
 ///
 /// 默认值见 [`Weights::default`], 经验起点; 真用时按板子拥挤程度调。
 #[derive(Debug, Clone, Copy)]
@@ -73,7 +74,8 @@ pub struct Weights {
     /// bbox 碰撞总格数 (本体撞 pin 也算)。一般比 pin_overlap 略高 — 本体挤到
     /// 其它元件身体上比 pin 互相碰还要糟糕 (后面 wire 还会避开本体)。
     pub b_box_overlap: f64,
-    /// 同 rail 不同 net 的 pin 数 (按 rail 分: 取该 rail 第一个 net 为基线, 计后续与基线不同的 pin 总数; 不是严格 pairs 数)
+    /// 同 rail owner 不一致时，为使剩余 owner 一致至少要移走的 endpoint 数。
+    /// 即每条 rail 的 `endpoint_count - dominant_owner_count`，与遍历顺序无关。
     pub column_conflict: f64,
     /// 越界 pin 数 (在 rail_id == `u32::MAX` 的"板外"孔上)。
     pub out_of_bounds: f64,

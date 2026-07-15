@@ -12,7 +12,7 @@ pub(crate) fn diagnose_expensive_seeds(
     circuit: &Circuit,
     board: &Breadboard,
     problem: &AnnealProblem,
-    _weights: &crate::layout::cost::Weights,
+    weights: &crate::layout::cost::Weights,
     base_seed: u64,
 ) {
     if states.is_empty() {
@@ -48,26 +48,21 @@ pub(crate) fn diagnose_expensive_seeds(
                 base_seed.wrapping_add(seed_idx as u64),
                 c
             );
-            // 分解成本: 看是哪一项贡婕的。weight 为 默认值的特例:
-            // out_of_bounds / column_conflict 都是 1e6 / pin (或冲突对),
-            // 其他项 通常 ≤ 几千, 所以高 cost 通常出在这两项。
+            // 使用本次求解的实际 weights 分解成本，避免诊断 total 与选优 total 分叉。
             let breakdown = crate::layout::cost::cost_breakdown_with_problem(
-                state,
-                circuit,
-                board,
-                problem,
-                &crate::layout::cost::Weights::default(),
+                state, circuit, board, problem, weights,
             );
             eprintln!(
-                "  分解:\n    mst           = {:>10.2}  (sum={:.2})\n    pin_overlap   = {:>10.2}  (count={})\n    bbox_overlap  = {:>10.2}  (cells={})\n    column_conf.  = {:>10.2}  (pairs={})\n    out_of_bounds = {:>10.2}  (oob={})\n    compactness   = {:>10.2}  (area={:.2})\n    row_squash    = {:>10.2}  (penalty={:.2})\n    rail_crossing = {:>10.2}\n    total         = {:>10.2}",
+                "  分解:\n    mst            = {:>10.2}  (sum={:.2})\n    mst_congestion = {:>10.2}\n    pin_overlap    = {:>10.2}  (count={})\n    bbox_overlap   = {:>10.2}  (cells={})\n    column_conf.   = {:>10.2}  (moves={})\n    out_of_bounds  = {:>10.2}  (oob={})\n    compactness    = {:>10.2}  (area={:.2})\n    row_squash     = {:>10.2}  (penalty={:.2})\n    rail_crossing  = {:>10.2}\n    total          = {:>10.2}",
                 breakdown.1.mst,
                 breakdown.1.mst_sum,
+                breakdown.1.mst_congestion,
                 breakdown.1.pin_overlap,
                 breakdown.1.coll_count,
                 breakdown.1.bbox_overlap,
                 breakdown.1.bbox_overlap_count,
                 breakdown.1.column_conflict,
-                breakdown.1.col_conflict_pairs,
+                breakdown.1.col_conflict_count,
                 breakdown.1.out_of_bounds,
                 breakdown.1.oob_count,
                 breakdown.1.compactness,
@@ -77,7 +72,7 @@ pub(crate) fn diagnose_expensive_seeds(
                 breakdown.1.rail_crossing,
                 breakdown.0,
             );
-            inspect_state_pins(state, circuit, board, &[], _weights);
+            inspect_state_pins(state, circuit, board, &[], weights);
         }
     }
     if found {
@@ -230,22 +225,32 @@ fn inspect_state_pins(
     }
     let mut conflicts_found = false;
     for (rail_id, pins_in_rail) in by_rail {
-        // cost_fast: base = 第一个 pin 的 net, 后续 pin 与 base net 不同就算冲突。
-        // 进 cost 里包含 None vs Some(N) 也会算冲突。
         if pins_in_rail.len() < 2 {
             continue;
         }
-        let base_pin = pins_in_rail[0];
-        let mut conflict_pins: Vec<&PinInfo> = Vec::new();
-        for &p in &pins_in_rail[1..] {
-            if p.net != base_pin.net {
-                conflict_pins.push(p);
-            }
-        }
+        let owner_key = |net: Option<NetId>| net.map(NetId::raw).unwrap_or(usize::MAX);
+        let dominant_net = pins_in_rail
+            .iter()
+            .map(|pin| pin.net)
+            .min_by_key(|&net| {
+                let count = pins_in_rail.iter().filter(|pin| pin.net == net).count();
+                (std::cmp::Reverse(count), owner_key(net))
+            })
+            .unwrap();
+        let base_pin = pins_in_rail
+            .iter()
+            .filter(|pin| pin.net == dominant_net)
+            .min_by_key(|pin| (pin.comp_id.raw(), pin.pin_num.as_str()))
+            .unwrap();
+        let conflict_pins: Vec<&PinInfo> = pins_in_rail
+            .iter()
+            .copied()
+            .filter(|pin| pin.net != dominant_net)
+            .collect();
         if !conflict_pins.is_empty() {
             if !conflicts_found {
                 eprintln!(
-                    "    Column-conflict (同 rail_id 不同 net, base = {} pad {} net={:?}):",
+                    "    Column-conflict (同 rail_id 不同 net, dominant = {} pad {} net={:?}):",
                     circuit.components[base_pin.comp_id.0].ref_(),
                     base_pin.pin_num,
                     base_pin.net.map(|n| circuit.nets[n.0].name.as_str())
@@ -254,7 +259,7 @@ fn inspect_state_pins(
             }
             eprintln!("      rail_id = {rail_id} (同 rail 上 net 不同):");
             eprintln!(
-                "        base:    {} pad {} (col {:>3}) net = {:?}",
+                "        keep:    {} pad {} (col {:>3}) net = {:?}",
                 circuit.components[base_pin.comp_id.0].ref_(),
                 base_pin.pin_num,
                 base_pin.x,
