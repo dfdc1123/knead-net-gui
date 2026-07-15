@@ -80,18 +80,11 @@ BridgePolicy::Forced
 
 产品决策记录在 [power-rail-connectivity.md](adr/power-rail-connectivity.md)：400/800 preset 默认各包含两条可显示、可占孔、可验证的 `RailTie`，分别短接 negative 和 positive 的 top/bottom。相邻 5 孔 group 天然导通，不生成 group 间 tie。
 
-## 注释目前不能作为设计文档
+## 注释与诊断已按当前实现校正
 
-典型矛盾包括：
+R9/R11 已使 fast cost、breakdown 和 debug 同源，并补齐 congestion。相关代码注释现只描述当前不变量：SA 原地 mutation + 完整 backup、Bridged 的两脚与 body AABB、绑定 rail 才能生成 bridge catalog、九项成本权重、state-aware move 和 attempt-based schedule。版本演进与旧 RNG 消费策略不再写进源码注释。
 
-- [state.rs:1](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/cost/state.rs:1) 说每轮 clone，实际已经改成 in-place backup；
-- [placement.rs:142](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/placement.rs:142) 说 Bridged 没 bbox，后面实际生成 bbox；
-- [bridge.rs:120](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/cost/bridge.rs:120) 说无绑定会 fallback 扫全部 rail，实际 fallback 已删除；
-- [cost/mod.rs:54](/home/dfdc/Documents/Projects/knead-net-gui/src/layout/cost/mod.rs:54) 写“八项权重”，实际已有九项，diagnostic breakdown 还漏掉了 congestion；
-- `sa.rs` 顶部大量 `v7/之前/历史背景` 更像 changelog，不是当前不变量；
-- 注释声称 ShiftGroup“不分配、使用 SmallVec”，实现却连续创建多个 `Vec`。
-
-建议代码注释只保留“当前不变量、单位、前置条件、为什么”，历史演进移到 ADR/git。Seed 可复现应定义为“同算法版本 + 同 seed”，没必要为了保持旧 RNG 消费数保留大量无效 move。
+Seed 可复现契约定义为“同一算法版本、同一输入 + 同一 seed”。
 
 ## 推荐重构顺序
 

@@ -1,56 +1,16 @@
-//! 模拟退火布局: 显式 `(x, y, rotation)` 状态。
+//! 模拟退火布局使用显式 `(x, y, rotation)` 与 bridge pose 状态。
 //!
-//! 流程: [`simulate`] → 写回 `Layout.placements` → `validate`。
-//! 紧凑度已折进 [`cost::cost`], SA 一次跑完搞定。
+//! move generator 只在当前 pose、y lock 和 bridge catalog 下可应用的 move class
+//! 之间重新归一化。OnBoard 可水平/垂直移动和 R0/R180 翻转；Bridged 可沿 catalog
+//! 水平移动或更换候选；Explore policy 还可切换 OnBoard/Bridged。`ShiftGroup` 仅在
+//! 整组都能严格左移时生成。
 //!
-//! 扰动集 (v7, 概率, 默认 `p_toggle_bridge = 0.15` 时生效):
-//! - 37% `ShiftX` —— 单个元件左右微调; OnBoard 改 `state.x`, bridged 在 cache
-//!   里找 `(±dx)` 偏移的 pin pair; 找不到时退一步 `dx+sign(dx)` 跳过电源轨 gap
-//!   (e.g. dx=+1 撞 gap → 自动变 dx=+2)。
-//! - 20% `Flip` —— 翻转单个元件的方向 (R0 ↔ R180); 仅 OnBoard 生效。
-//! - 20% `ShiftY` —— 单个元件上下微调; 仅 OnBoard 生效。
-//! - 15% `ToggleBridging` —— 翻转 bridgeable 元件是否走桥接; 见下文。
-//! - 8% `ShiftGroup` —— 同 rail 内一组紧邻元件整体左移 1 列, 填桥接留下的空洞;
-//!   bridged 元件**也参与** (按 signal pin rail 归组), 但必须能严格左移 1 列 —
-//!   gap 处的 bridged 成员会过滤掉进而让整个组被拒, 不会"跳 gap"。
+//! 每个 attempt 都按 `attempt_index / max_iters` 推进温度，包括没有候选和 hard-invalid
+//! 的 attempt。应用后的状态先过 hard legality，再计算 soft cost；reject 使用逐 move
+//! backup 完整恢复。调用方只会在最终候选验证通过后事务性写回 `Layout`。
 //!
-//! 高温期 `ShiftX`/`ShiftY` 幅度可达 ±3 col/row, 低温退到 ±1。
-//!
-//! v7 相对之前的核心改动 (分布与扰动集都重排):
-//! - 新增 `ShiftGroup` 扰动: 把同 rail 一组紧邻元件左移 1 列, 专门填补
-//!   桥接留下的横向空洞。组由 `find_left_shiftable_group` 计算: 同 rail 按
-//!   逻辑 x (`state.x` 对 OnBoard / signal pin hole 对 bridged) 排序,
-//!   相邻间距 ≤ 2 列同组; 组内每个成员均验证"可左移 1"; 组 ≥2 人或单人左 gap > 3
-//!   列才算可用组。
-//! - 分布重排: `ShiftX` 从 45% → 37%, 让出 8% 给 `ShiftGroup`; `Flip` 30 → 20,
-//!   `ShiftY` 8 → 20, `ToggleBridging` 7 → 15。
-//!
-//! bridged 在扰动集里的行为总结:
-//! - `Flip` / `ShiftY` 命中 bridged → `apply_move` 返 `false`, Move 静默放弃
-//!   (保持 RNG 序列, 现有 reproducibility 测不破)。
-//! - `ShiftX` 命中 bridged → 在 `state.bridged_pin_pairs[i]` cache 里查找
-//!   `(power.x+dx, signal.x+dx)` 的 pair; 失败时按 `dx + sign(dx)` 跳 gap 再试;
-//!   仍未命中则返 `false`。
-//! - `ShiftGroup` 命中 bridged → 走"按 signal pin 位置归组", 严格左移 1 列;
-//!   撞 gap 的 bridged 在 `find_left_shiftable_group` 阶段就被过滤掉。
-//!
-//! `ToggleBridging` 选 index 的逻辑: `random_move` 选 `p ∈ [0, n)`, 然后按
-//! 分布表决定 move 类型; 只有落到 Toggle 区间且 `state.is_bridgeable[p] = true`
-//! 才生成 `ToggleBridging(p)`, 否则退回 `ShiftX`。**不**重抽整个 move,
-//! 避免改变 RNG 消费数 (跟 `rng.usize(0..max_n)` 在 max_n=1 时仍消费一个
-//! 随机数的原则一致, 保持 seed 复现性)。
-//! 桥接位置由 [`crate::layout::cost::propose_bridged_pairs`] 启发式预计算
-//! 并缓存在 `state.bridged_pin_pairs`; Toggle 只决定是否采用, 不重新选孔。
-//!
-//! 回退规则 (保持 RNG 消费序列对 seed 复现, 不重抽整个 move):
-//! - `ToggleBridging` 抽到非 bridgeable 元件 → 退回 `ShiftX`
-//! - `ShiftGroup` 找不到可用组              → 退回 `ShiftX`
-//!
-//! **不**用 R90/R270 (会改变 footprint 的水平宽度, 破坏"显式 2D 状态"假设)。
-//! 上面这条限制仅适用于 OnBoard 路径; Bridged 路径由 `propose_bridged_pair`
-//! 在启发式内部枚举 4 种旋转 (body 浮在板外, 不受"显式 2D 状态"约束)。
-//!
-//! Rng: [`fastrand::Rng`] (WyRand), 不密码学安全但统计性质足够 SA 用。
+//! OnBoard 姿态限定为 R0/R180；Bridged 候选可由 footprint 的四种旋转生成。
+//! seed 可复现契约是同一算法版本、同一输入和同一 seed 得到同一结果。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -168,10 +128,8 @@ pub struct SAConfig {
     pub use_spectral: bool,
     /// Whether Bridged poses are disabled, explored, or mandatory.
     pub bridge_policy: BridgePolicy,
-    /// `random_move` 生成 `Move::ToggleBridging` 的目标概率。
-    /// 仅当 `state.is_bridgeable[i] = true` 时实际生效, 否则该分支退回 `ShiftX`。
-    /// 调高 → SA 更频繁探索 Bridged vs OnBoard; 调低 → Toggle 区间越窄。
-    /// 默认 0.15: 配合 v7 默认分布, Toggle 实际概率 15%。
+    /// 在当前状态存在可 Toggle 元件时，`Move::ToggleBridging` 的相对权重。
+    /// 调高会更频繁探索 Bridged 与 OnBoard 两种 pose。
     /// 只在 [`BridgePolicy::Explore`] 下生效；Disabled / Forced 都不会生成 Toggle。
     /// 0 = 关闭 Explore 的 Toggle 区间；它不再决定是否建立候选或初始姿态。
     pub p_toggle_bridge: f64,
@@ -425,14 +383,13 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
 /// 不可左移)。返回 `false` 时**保证 0 修改**, 调用方应把该候选丢弃。
 ///
 /// 设计要点:
-/// - `Flip` / `ShiftY` 在 bridged 上是 dead-field mutation, 直接返 `false`
-///   避免后续 `state_y_valid` 被 stale `state.y` 误导。
+/// - generator 不会为 Bridged 生成 `Flip` / `ShiftY`；直接调用时仍返回 `None`，
+///   且不得修改任何字段。
 /// - `ShiftX` 在 bridged 上: 在 cache 里找 (power.x+dx, signal.x+dx); 没找到时
 ///   退一步 (dx + sign(dx)) 跳过电源轨 gap 再试一次, 仍失败再返 `false`。
 /// - `ShiftGroup` 见 `apply_group_shift_x`: 两段式验证 / 落写, 任何成员失败
 ///   则全组放弃, 不留半成品。
-///   备份: apply 成功后保存的原始状态, 用于在 reject 时还原。
-///   (不分配: 全部 inline, ShiftGroup 最多同时几项, 用 SmallVec/array 存)。
+/// - backup 保存 move 修改的全部原始字段，用于 reject 时完整恢复。
 #[derive(Debug, Clone)]
 enum Backup {
     Flip {
@@ -1739,9 +1696,7 @@ mod tests {
         );
     }
 
-    /// `p_toggle_bridge=0` 时 Toggle 区间为空, 分布塌缩回 v7 五选四
-    /// (ShiftGroup / ShiftX / Flip / ShiftY 仍按 v7 比例挤压运行,
-    /// 不会有 ToggleBridging 返出)。
+    /// `p_toggle_bridge=0` 时不会生成 Toggle，其他当前可用 move 的权重重新归一化。
     #[test]
     fn random_move_toggle_disabled_when_p_zero() {
         let mut state = SAState::from_order(vec![ComponentId(0), ComponentId(1)], 2, &[2, 2]);

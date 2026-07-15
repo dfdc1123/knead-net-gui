@@ -1275,7 +1275,7 @@ fn place_sa_handles_various_seeds() {
     }
 }
 
-/// SA 结果不包含 R90/R270 (v1 限制)。
+/// OnBoard SA pose 只允许 R0/R180；R90/R270 仅用于生成 Bridged 候选。
 #[test]
 fn place_sa_never_uses_r90_or_r270() {
     let board = board();

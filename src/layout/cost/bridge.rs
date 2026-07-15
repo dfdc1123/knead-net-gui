@@ -96,13 +96,8 @@ pub(crate) fn propose_bridged_pairs(
     //    会让 power pin 落到错极性 rail, 生成 1e6 列冲突惩罚 (物理上不该走)。
     let matching_rail_ids = collect_matching_rail_ids(board, power_net);
 
-    // 4. 单次扫描: 只 matching。matching 没产出合法 pair 则返空 (启发式退化为
-    //    bridgeable 元件保持 OnBoard)。
-    //
-    //    历史背景: 之前会接着扫 “其他” rail (fallback) — 这个 fallback 让 power pin
-    //    有机会落到错极性 rail, 从而跟虚拟 rail 锚点冲突, 启动 cost 就是 1e6。
-    //    SA 从这种起点难走出来, 最后选定 1e6 解。去掉 fallback 后 cache 仅含
-    //    极性对齐的 pair, 杜绝这个类死锁。
+    // 4. 只扫描绑定到 power pin net 的 rail。没有合法 pair 时返回空 catalog；
+    //    Explore 保持 OnBoard，Forced 则由初始化器返回结构化错误。
     let all_power_holes: Vec<HoleId> = (0..board.holes().len())
         .map(HoleId)
         .filter(|h| board.region_of(*h) == Region::PowerRail)
@@ -148,7 +143,7 @@ pub(crate) fn propose_bridged_pair(
 }
 
 /// 收集 rail_id 集合: 这些 power rail 被 bound 到 `pin_net`。
-/// `pin_net == None` 返空集 (用户不绑 → 没有 "net 匹配" 的 rail, 启发式走 fallback 扫所有 rail)。
+/// `pin_net == None` 或未配置 binding 时返回空集，不猜测 rail 极性。
 pub(super) fn collect_matching_rail_ids(
     board: &Breadboard,
     pin_net: Option<NetId>,

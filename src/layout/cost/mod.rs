@@ -12,8 +12,7 @@
 //!   推动 SA 主动寻找 rail 短接的低跳线数布局。
 //! - **紧凑度**: 按 rail 分组算 union bbox 水平跨度加和, 阻止 SA 停在"零冲突但水平留白大"的状态。
 //! - 成本是各项**加权和**, 权在 [`Weights`] 里调。
-//! - `SAState` 是 SA 内部状态, 只在 layout 子模块内共享; v2 起每个元件显式
-//!   持有 `(x, y, rotation)`, 不再由 order 推 x。
+//! - `SAState` 是 SA 内部状态；每个元件显式持有 `(x, y, rotation)` 和 bridge pose。
 
 use crate::circuit::Circuit;
 use crate::layout::breadboard::Breadboard;

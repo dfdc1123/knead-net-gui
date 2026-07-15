@@ -1,6 +1,7 @@
 //! `SAState`: SA 内部状态 (每个元件的 (x, y, rotation) + 桥接候选)。
 //!
-//! `SAState` 在 simulate() 入口构造一次, SA 主循环里反复拷 (clone) 试新解, 拒绝解丢弃。
+//! SA 主循环原地应用 move；拒绝时用 move 对应的 backup 完整恢复。只有保存
+//! best state 或生成 progress snapshot 时才克隆整个状态。
 
 use std::collections::HashMap;
 

@@ -337,6 +337,22 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 以下是单一路径：`R0 -> R1 -> ... -> R13`。不得并行，也不得越过尚未满足的完成条件。correctness 修复必须先提交最小失败测试，确认在旧实现上因预期原因失败，再改允许范围内的生产代码；产品决策和纯性能项使用各自列出的 gate。
 
+- [x] R0：冻结电源轨产品语义
+- [x] R1：conductive-island / RailTie 基础模型
+- [x] R2：Bridged bijection + rail binding legality
+- [x] R3：事务性 SA write-back
+- [x] R4：已有 placement/wire immutable geometry
+- [x] R5：preprocess-aware 合法初始化器
+- [x] R6：每次 prepare 重算 bridge eligibility
+- [x] R7：reject 完整状态恢复
+- [x] R8：BridgePolicy 与初始化候选比较
+- [x] R9：排列不变、同源 cost/diagnostics
+- [x] R10：state-aware move 与归一化 attempt schedule
+- [x] R11：当前不变量注释与诊断说明
+- [ ] R12：真实 PCB 全链路连通图回归
+- [ ] R13：benchmark-gated 质量与性能重构
+- [ ] 最终全量验证与完成审计
+
 ### R0. 冻结电源轨产品语义（决策门）
 
 - 对应：A9。
@@ -436,6 +452,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R11. 清理 correctness 路径上的失真注释和诊断说明
 
+- [x] **已完成**（2026-07-15）。`SAState` 现说明原地 mutation + backup；Bridged 注释明确完整两脚与 body AABB；bridge catalog 不再声称存在未绑定 fallback；成本说明与九项权重、共享 congestion breakdown 一致；`sa.rs` 删除版本 changelog、失真的 dead-move/RNG 回退和 SmallVec 零分配说法，改为当前 move applicability、attempt schedule、hard/soft legality、事务写回与 seed 契约。生产逻辑无变化。
 - 对应：A10 的非功能部分。
 - 依赖：R1-R10，避免为即将改变的实现写第二遍说明。
 - 最小失败检查：T10 已在 R9 保证诊断事实；本步不添加针对注释文本的脆弱单测。
