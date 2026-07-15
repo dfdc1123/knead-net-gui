@@ -156,7 +156,7 @@ impl Default for SAConfig {
             n_seeds: 1,
             use_spectral: false,
             bridge_policy: BridgePolicy::default(),
-            p_toggle_bridge: 0.15,
+            p_toggle_bridge: 0.10,
             p_change_bridge_candidate: 0.10,
         }
     }
@@ -230,11 +230,15 @@ fn random_move(
     } else {
         0.0
     };
+    // 默认时 Flip / ShiftY / ShiftGroup 各占 10%；Toggle、Change、Swap
+    // 保留自己的相对权重，剩余全部交给 ShiftX。若调用方把桥接权重调得
+    // 过高，则等比缩小这三个固定项，确保权重不会出现负数。
     let standard_scale = (1.0 - p_toggle - p_change - p_swap).max(0.10);
-    let shift_x_weight = standard_scale * 0.37 / 0.85;
-    let flip_weight = standard_scale * 0.20 / 0.85;
-    let shift_y_weight = standard_scale * 0.20 / 0.85;
-    let group_weight = standard_scale * 0.08 / 0.85;
+    let fixed_weight = 0.10_f64.min(standard_scale / 3.0);
+    let shift_x_weight = standard_scale - 3.0 * fixed_weight;
+    let flip_weight = fixed_weight;
+    let shift_y_weight = fixed_weight;
+    let group_weight = fixed_weight;
 
     for offset in 0..n {
         let p = (start + offset) % n;
@@ -2241,7 +2245,9 @@ mod tests {
             }
         }
         let standard_scale = 1.0 - cfg.p_toggle_bridge - cfg.p_change_bridge_candidate;
-        let applicable_standard = standard_scale * (0.37 + 0.20 + 0.20) / 0.85;
+        let fixed_weight = 0.10_f64.min(standard_scale / 3.0);
+        // 本测试的初始布局不能左移 group，故仅 ShiftX / Flip / ShiftY 可用。
+        let applicable_standard = (standard_scale - 3.0 * fixed_weight) + 2.0 * fixed_weight;
         let expected =
             samples as f64 * cfg.p_toggle_bridge / (cfg.p_toggle_bridge + applicable_standard);
         assert!(
