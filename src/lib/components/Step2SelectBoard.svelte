@@ -13,7 +13,13 @@
     onBoardChange?: (board: BreadboardSelection | null) => void;
   } = $props();
 
-  type Info = { preset: string; cols: number; holes: number; has_power_rails: boolean };
+  type Info = {
+    preset: string;
+    cols: number;
+    holes: number;
+    has_power_rails: boolean;
+    upper_half_only: boolean;
+  };
   type PowerNetOptions = {
     net_names: string[];
     positive_net: string | null;
@@ -28,6 +34,7 @@
 
   let preset = $state<BreadboardPreset>("hole400");
   let cols = $state(30);
+  let upperHalfOnly = $state(false);
   let info = $state<Info | null>(null);
   let netNames = $state<string[]>([]);
   let topPositiveNet = $state("");
@@ -72,7 +79,7 @@
   // cols 变化 → 自动重提交 (debounce 250ms)
   let timer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    cols; preset; topPositiveNet; topNegativeNet; bottomPositiveNet; bottomNegativeNet; powerOptionsReady;
+    cols; preset; upperHalfOnly; topPositiveNet; topNegativeNet; bottomPositiveNet; bottomNegativeNet; powerOptionsReady;
     if (timer) clearTimeout(timer);
     if (!powerOptionsReady) return;
     timer = setTimeout(() => submit(preset, cols), 250);
@@ -86,15 +93,16 @@
       info = await invoke<Info>("set_breadboard", {
         preset: p,
         cols: c,
+        upperHalfOnly,
         powerNets: {
           top_positive_net: hasPowerRails && topPositiveNet ? topPositiveNet : null,
           top_negative_net: hasPowerRails && topNegativeNet ? topNegativeNet : null,
-          bottom_positive_net: hasPowerRails && bottomPositiveNet ? bottomPositiveNet : null,
-          bottom_negative_net: hasPowerRails && bottomNegativeNet ? bottomNegativeNet : null,
+          bottom_positive_net: hasPowerRails && !upperHalfOnly && bottomPositiveNet ? bottomPositiveNet : null,
+          bottom_negative_net: hasPowerRails && !upperHalfOnly && bottomNegativeNet ? bottomNegativeNet : null,
         },
         locale,
       });
-      onBoardChange({ preset: p, cols: info.cols });
+      onBoardChange({ preset: p, cols: info.cols, upperHalfOnly: info.upper_half_only });
       onStatusChange(true);
     } catch (e) {
       info = null;
@@ -142,6 +150,14 @@
           </label>
         </fieldset>
 
+        <fieldset class="fieldset" disabled={busy}>
+          <label class="fieldset-label cursor-pointer justify-start gap-3">
+            <input class="toggle toggle-primary toggle-sm" type="checkbox" bind:checked={upperHalfOnly} />
+            <span>{ui.step2.upperHalfOnly}</span>
+          </label>
+          <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.upperHalfOnlyHint}</p>
+        </fieldset>
+
         {#if hasPowerRails}
           <fieldset class="fieldset" disabled={busy || !powerOptionsReady}>
             <legend class="fieldset-legend">{ui.step2.powerRailBinding}</legend>
@@ -163,23 +179,25 @@
               </label>
             </div>
 
-            <p class="label mt-2 font-semibold">{ui.step2.bottomPowerRails}</p>
-            <div class="grid grid-cols-2 gap-2">
-              <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-negative-power-net">
-                <span>{ui.step2.negativeRail}</span>
-                <select id="bottom-negative-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomNegativeNet}>
-                  <option value="">{ui.step2.unbound}</option>
-                  {#each netNames as net}<option value={net}>{net}</option>{/each}
-                </select>
-              </label>
-              <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-positive-power-net">
-                <span>{ui.step2.positiveRail}</span>
-                <select id="bottom-positive-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomPositiveNet}>
-                  <option value="">{ui.step2.unbound}</option>
-                  {#each netNames as net}<option value={net}>{net}</option>{/each}
-                </select>
-              </label>
-            </div>
+            {#if !upperHalfOnly}
+              <p class="label mt-2 font-semibold">{ui.step2.bottomPowerRails}</p>
+              <div class="grid grid-cols-2 gap-2">
+                <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-negative-power-net">
+                  <span>{ui.step2.negativeRail}</span>
+                  <select id="bottom-negative-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomNegativeNet}>
+                    <option value="">{ui.step2.unbound}</option>
+                    {#each netNames as net}<option value={net}>{net}</option>{/each}
+                  </select>
+                </label>
+                <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-positive-power-net">
+                  <span>{ui.step2.positiveRail}</span>
+                  <select id="bottom-positive-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomPositiveNet}>
+                    <option value="">{ui.step2.unbound}</option>
+                    {#each netNames as net}<option value={net}>{net}</option>{/each}
+                  </select>
+                </label>
+              </div>
+            {/if}
             <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.powerRailHint}</p>
           </fieldset>
         {/if}
@@ -201,13 +219,14 @@
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
           <h2 class="card-title text-sm">{ui.common.preview}</h2>
-          {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × 10</span>{/if}
+          {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × {info.upper_half_only ? 5 : 10}</span>{/if}
         </div>
         <div inert class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           {#if info}
             <BreadboardPreview
               {preset}
               cols={info.cols}
+              upperHalfOnly={info.upper_half_only}
               panCanvas={false}
               tieNegativeRails={topNegativeNet === bottomNegativeNet}
               tiePositiveRails={topPositiveNet === bottomPositiveNet}

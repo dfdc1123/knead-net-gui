@@ -13,6 +13,7 @@
   let {
     preset,
     cols,
+    upperHalfOnly = false,
     frame,
     zoom = 1,
     panCanvas = true,
@@ -24,6 +25,7 @@
   }: {
     preset: BreadboardPreset;
     cols: number;
+    upperHalfOnly?: boolean;
     frame?: LayoutFrame | null;
     zoom?: number;
     panCanvas?: boolean;
@@ -113,7 +115,7 @@
     ),
   );
   let boardWidth = $derived(xInset * 2 + contentWidth);
-  let boardHeight = $derived(isMini ? 168.2 : 252);
+  let boardHeight = $derived(isMini ? (upperHalfOnly ? 84.2 : 168.2) : (upperHalfOnly ? 132 : 252));
   let displayWidth = $derived(Math.max(isMini ? 420 : 440, boardWidth));
   let displayHeight = $derived((displayWidth / boardWidth) * boardHeight);
 
@@ -234,7 +236,9 @@
     const wires = frame?.wires ?? [];
     return frame
       ? wires
-      : [...wires, ...presetRailTies(preset, safeCols, tieNegativeRails, tiePositiveRails)];
+      : upperHalfOnly
+        ? wires
+        : [...wires, ...presetRailTies(preset, safeCols, tieNegativeRails, tiePositiveRails)];
   });
   let plannedWires = $derived(planWires(visibleWires));
 
@@ -732,8 +736,10 @@
     <rect x="0.8" y="0.8" width={boardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
 
     {#if isMini}
-      <rect x={xInset - 5} y="78.05" width={boardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
-      <path d="M {xInset - 5} 78.6 H {boardWidth - xInset + 5}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+      {#if !upperHalfOnly}
+        <rect x={xInset - 5} y="78.05" width={boardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
+        <path d="M {xInset - 5} 78.6 H {boardWidth - xInset + 5}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+      {/if}
 
       {#each columns as column}
         {#each mainRows as row}
@@ -741,21 +747,29 @@
             <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
             <circle r="1.6" fill="var(--color-base-content)" />
           </g>
-          <g transform="translate({xInset + column * pitch} {102.1 + row * pitch})">
-            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
-            <circle r="1.6" fill="var(--color-base-content)" />
-          </g>
+          {#if !upperHalfOnly}
+            <g transform="translate({xInset + column * pitch} {102.1 + row * pitch})">
+              <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+              <circle r="1.6" fill="var(--color-base-content)" />
+            </g>
+          {/if}
         {/each}
       {/each}
     {:else}
       <path d="M 1 4 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
       <path d="M 1 32 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 220 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 248 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 35 H {boardWidth - 1} M 1 217 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+      {#if !upperHalfOnly}
+        <path d="M 1 220 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
+        <path d="M 1 248 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
+        <path d="M 1 35 H {boardWidth - 1} M 1 217 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+      {:else}
+        <path d="M 1 35 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+      {/if}
 
-      <rect x="1" y="118.7" width={boardWidth - 2} height="12" fill="var(--color-base-300)" />
-      <path d="M 1 119.2 H {boardWidth - 1} M 1 130.2 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+      {#if !upperHalfOnly}
+        <rect x="1" y="118.7" width={boardWidth - 2} height="12" fill="var(--color-base-300)" />
+        <path d="M 1 119.2 H {boardWidth - 1} M 1 130.2 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+      {/if}
 
       {#each columns as column}
         {#each mainRows as row}
@@ -763,15 +777,17 @@
             <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
             <circle r="1.6" fill="var(--color-base-content)" />
           </g>
-          <g transform="translate({xInset + column * pitch} {144 + row * pitch})">
-            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
-            <circle r="1.6" fill="var(--color-base-content)" />
-          </g>
+          {#if !upperHalfOnly}
+            <g transform="translate({xInset + column * pitch} {144 + row * pitch})">
+              <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+              <circle r="1.6" fill="var(--color-base-content)" />
+            </g>
+          {/if}
         {/each}
       {/each}
 
       {#each powerColumns as column}
-        {#each [12, 24, 228, 240] as y}
+        {#each upperHalfOnly ? [12, 24] : [12, 24, 228, 240] as y}
           <g transform="translate({xInset + railOffset + column * pitch} {y})">
             <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
             <circle r="1.6" fill="var(--color-base-content)" />
@@ -782,8 +798,10 @@
       <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="7" font-weight="700" text-anchor="middle">
         <text x="7" y="14.5" fill="var(--color-primary)">−</text>
         <text x="7" y="26.5" fill="var(--color-error)">+</text>
-        <text x="7" y="230.5" fill="var(--color-primary)">−</text>
-        <text x="7" y="242.5" fill="var(--color-error)">+</text>
+        {#if !upperHalfOnly}
+          <text x="7" y="230.5" fill="var(--color-primary)">−</text>
+          <text x="7" y="242.5" fill="var(--color-error)">+</text>
+        {/if}
       </g>
     {/if}
 

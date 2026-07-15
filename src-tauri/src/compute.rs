@@ -904,7 +904,7 @@ fn display_hole(board: &Breadboard, hole_id: HoleId) -> BreadboardHole {
             .filter(|&&row| row < hole.position.y as usize)
             .count();
     let visible_rows = board.main_rows() - blocked.len();
-    let top_rows = visible_rows / 2;
+    let top_rows = blocked.first().copied().unwrap_or(visible_rows / 2);
     if visible_row < top_rows {
         BreadboardHole {
             region: "main-top",

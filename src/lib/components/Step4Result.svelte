@@ -17,11 +17,13 @@
   let {
     preset,
     cols,
+    upperHalfOnly = false,
     frame,
     schematicSvg = "",
   }: {
     preset: BreadboardPreset;
     cols: number;
+    upperHalfOnly?: boolean;
     frame: LayoutFrame;
     schematicSvg?: string;
   } = $props();
@@ -459,6 +461,7 @@
             <BreadboardPreview
               {preset}
               {cols}
+              {upperHalfOnly}
               {frame}
               zoom={breadboardZoom}
               {selected}

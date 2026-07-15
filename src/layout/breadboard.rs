@@ -291,6 +291,29 @@ impl Preset {
         }
     }
 
+    /// 生成仅启用上半主插接区的预设板。
+    ///
+    /// 下半主插接区（含中央通道以下的五行）全部标为 blocked，且下方电源轨
+    /// 没有孔位；因而布局、合法性校验和布线都不能使用下半板。带电源轨的
+    /// 预设保留上方电源轨可用，同时不创建上下轨短接线。
+    pub fn make_upper_half(self, cols: usize) -> Breadboard {
+        match self {
+            Self::Hole170 => Breadboard::with_blocked_rows(cols, 12, 5..12),
+            Self::Hole400 => Breadboard::with_power_rails(
+                cols,
+                12,
+                5..12,
+                top_power_rails_only(standard_power_rails(cols as i32)),
+            ),
+            Self::Hole800 => Breadboard::with_power_rails(
+                cols,
+                12,
+                5..12,
+                top_power_rails_only(wide_power_rails_800(cols as i32)),
+            ),
+        }
+    }
+
     /// 默认 `cols` 值 (这个预设“典型”的宽度)。
     pub fn default_cols(self) -> usize {
         match self {
@@ -1032,6 +1055,14 @@ fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize 
     count
 }
 
+/// 保留上方两条电源轨的定义，同时移除下方两条轨的所有孔位。
+fn top_power_rails_only(mut rails: PowerRails) -> PowerRails {
+    for rail in &mut rails.bottom.rows {
+        rail.groups.clear();
+    }
+    rails
+}
+
 /// 默认电源轨配置: `cols` 参数化; 按 6-col 节拍生成 (5 连续孔 + 1 个无插孔位置)。
 /// `cols=30` 时 5 组 5 孔; `cols=50` 时 9 组 (最后一组 2 孔); `cols=60` 时 10 组。
 /// y 坐标固定为 -4 / -3 (top) 和 14 / 15 (bottom)。
@@ -1709,6 +1740,24 @@ mod tests {
         let b = Breadboard::preset_170(17);
         assert!(b.positive_names().is_empty());
         assert!(b.negative_names().is_empty());
+    }
+
+    #[test]
+    fn upper_half_preset_blocks_the_entire_lower_main_region() {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+            let board = preset.make_upper_half(30);
+
+            for y in 0..5 {
+                assert!(board.at(0, y).is_some(), "{preset:?}: upper row {y}");
+            }
+            for y in 5..12 {
+                assert!(board.at(0, y).is_none(), "{preset:?}: disabled row {y}");
+            }
+            if preset != Preset::Hole170 {
+                assert!(board.at(0, 14).is_none(), "{preset:?}: lower power rail");
+            }
+            assert!(board.rail_ties().is_empty(), "{preset:?}");
+        }
     }
 
     #[test]
