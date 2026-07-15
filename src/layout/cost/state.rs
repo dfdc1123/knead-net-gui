@@ -11,9 +11,9 @@ use crate::layout::placement::{BBox, PlacedFootprint, Rotation, rotate};
 use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
 
-use super::Weights;
 use super::legalize::{PlacementHints, legalize};
 use super::spectral::{compute_fiedler, compute_second_evec, spectral_hints};
+use super::{Weights, cost_with_problem};
 
 pub(super) struct InitialGeometry {
     pins: Vec<(i32, i32, Option<crate::circuit::NetId>)>,
@@ -447,9 +447,30 @@ impl SAState {
         // ============================================================
         // Phase 3: v₂/v₃ → 位置提示，公共 legalizer 负责合法落格与真实 cost 选优。
         // ============================================================
-        let hints = spectral_hints(&v2, &v3, board, &placeable, preprocess)?;
-        legalize(
-            placeable, circuit, board, preprocess, problem, weights, hints,
-        )
+        let neg_v2: Vec<f64> = v2.iter().map(|value| -*value).collect();
+        let neg_v3: Vec<f64> = v3.iter().map(|value| -*value).collect();
+        [(&v2, &v3), (&neg_v2, &v3), (&v2, &neg_v3), (&v3, &v2)]
+            .into_iter()
+            .map(|(horizontal, vertical)| {
+                let hints = spectral_hints(horizontal, vertical, board, &placeable, preprocess)?;
+                let state = legalize(
+                    placeable.clone(),
+                    circuit,
+                    board,
+                    preprocess,
+                    problem,
+                    weights,
+                    hints,
+                )?;
+                let cost = cost_with_problem(&state, circuit, board, problem, weights);
+                Ok((cost, state))
+            })
+            .collect::<Result<Vec<_>, crate::layout::LayoutError>>()?
+            .into_iter()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, state)| state)
+            .ok_or(crate::layout::LayoutError::NoLegalInitialPlacement {
+                component: placeable[0],
+            })
     }
 }

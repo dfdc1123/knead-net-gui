@@ -112,16 +112,9 @@ pub(super) fn spectral_hints(
     let v2_max = v2.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let v2_range = (v2_max - v2_min).max(1e-9);
 
-    let mut order_y: Vec<usize> = (0..n).collect();
-    order_y.sort_by(|&a, &b| {
-        v3[a]
-            .partial_cmp(&v3[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut rank_y = vec![0usize; n];
-    for (rank, &idx) in order_y.iter().enumerate() {
-        rank_y[idx] = rank;
-    }
+    let v3_min = v3.iter().copied().fold(f64::INFINITY, f64::min);
+    let v3_max = v3.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let v3_range = (v3_max - v3_min).max(1e-9);
 
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| {
@@ -147,9 +140,11 @@ pub(super) fn spectral_hints(
             if let Some(row) = preprocess.y_locked.get(component) {
                 return vec![*row];
             }
-            (0..n_rows)
-                .map(|offset| valid_rows[(rank_y[idx] + offset) % n_rows])
-                .collect()
+            let fraction = (v3[idx] - v3_min) / v3_range;
+            let target = (fraction * (n_rows - 1) as f64).round() as usize;
+            let mut row_indices: Vec<usize> = (0..n_rows).collect();
+            row_indices.sort_by_key(|row| (row.abs_diff(target), *row));
+            row_indices.into_iter().map(|row| valid_rows[row]).collect()
         })
         .collect();
 
@@ -158,4 +153,29 @@ pub(super) fn spectral_hints(
         target_x,
         row_preferences,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_preferences_preserve_spectral_distance() {
+        let placeable = vec![ComponentId(0), ComponentId(1), ComponentId(2)];
+        let hints = spectral_hints(
+            &[0.0, 0.5, 1.0],
+            &[0.0, 0.01, 1.0],
+            &Breadboard::new(10, 5),
+            &placeable,
+            &PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(hints.row_preferences[0][0], 0);
+        assert_eq!(hints.row_preferences[1][0], 0);
+        assert_eq!(hints.row_preferences[2][0], 4);
+    }
 }
