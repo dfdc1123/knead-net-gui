@@ -1517,8 +1517,9 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
     // 引脚: 合并实例单元与 KiCad unit 0 中的共享引脚，再按 (number, at) 去重。
     let pins = instance_pins(inst, libs);
 
-    // SVG 分组本身没有可点击面积。先绘制覆盖本体和完整引脚范围的透明矩形，
-    // 让电阻内部、三极管线条之间等空白区域也能选中元器件。
+    // SVG 分组本身没有可点击面积。先绘制覆盖本体的透明矩形，让电阻内部、
+    // 三极管线条之间等空白区域也能选中元器件。不要把伸出的引脚纳入矩形，
+    // 否则矩形会挡住引脚附近的导线命中区域。
     if property_value(inst, "Reference").is_some() {
         let mut bounds: Option<(f64, f64, f64, f64)> = None;
         let mut include_bounds = |(min_x, min_y, max_x, max_y)| {
@@ -1541,20 +1542,24 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
                 inst.mirror_y,
             ));
         }
-        for pin in &pins {
-            let rad = pin.at.2 * std::f64::consts::PI / 180.0;
-            let tip = (
-                pin.at.0 + pin.length * rad.cos(),
-                pin.at.1 + pin.length * rad.sin(),
-            );
-            let start = transform(pin.at.0, pin.at.1, inst.at, inst.mirror_x, inst.mirror_y);
-            let end = transform(tip.0, tip.1, inst.at, inst.mirror_x, inst.mirror_y);
-            include_bounds((
-                start.0.min(end.0),
-                start.1.min(end.1),
-                start.0.max(end.0),
-                start.1.max(end.1),
-            ));
+
+        // 极少数符号没有本体图形；这时退回到引脚范围，避免它完全无法点击。
+        if body_graphics.is_empty() {
+            for pin in &pins {
+                let rad = pin.at.2 * std::f64::consts::PI / 180.0;
+                let tip = (
+                    pin.at.0 + pin.length * rad.cos(),
+                    pin.at.1 + pin.length * rad.sin(),
+                );
+                let start = transform(pin.at.0, pin.at.1, inst.at, inst.mirror_x, inst.mirror_y);
+                let end = transform(tip.0, tip.1, inst.at, inst.mirror_x, inst.mirror_y);
+                include_bounds((
+                    start.0.min(end.0),
+                    start.1.min(end.1),
+                    start.0.max(end.0),
+                    start.1.max(end.1),
+                ));
+            }
         }
 
         if let Some((min_x, min_y, max_x, max_y)) = bounds {
@@ -2529,7 +2534,7 @@ mod tests {
     }
 
     #[test]
-    fn referenced_component_has_transparent_hit_area_before_visible_graphics() {
+    fn referenced_component_hit_area_covers_body_but_not_extended_pins() {
         let inst = Inst {
             lib_id: "Device:R".into(),
             at: (0.0, 0.0, 0.0),
@@ -2587,7 +2592,7 @@ mod tests {
         let visible_graphic = svg.find("<polygon").unwrap();
         assert!(hit_area < visible_graphic);
         assert!(svg.contains(r#"fill="transparent" pointer-events="all""#));
-        assert!(svg.contains(r#"width="42.00" height="32.00""#));
+        assert!(svg.contains(r#"width="32.00" height="32.00""#));
     }
 
     #[test]
