@@ -70,8 +70,33 @@ struct Pin {
     length: f64,
     name: String,
     number: String,
+    name_text: PinText,
+    number_text: PinText,
+    name_offset: f64,
     electrical_type: String,
     shape: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PinText {
+    visible: bool,
+    font_size: f64,
+}
+
+impl Default for PinText {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            font_size: 1.27,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PinTextSettings {
+    names: PinText,
+    numbers: PinText,
+    name_offset: f64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -221,6 +246,35 @@ fn parse_fill(v: &Value) -> Fill {
         .unwrap_or(Fill::None)
 }
 
+fn is_hidden(v: &Value) -> bool {
+    child(v, "hide")
+        .and_then(|hide| list_items(hide).nth(1))
+        .and_then(as_symbol)
+        == Some("yes")
+}
+
+fn text_font_size(v: &Value) -> Option<f64> {
+    child(v, "effects")
+        .and_then(|effects| child(effects, "font"))
+        .and_then(|font| child(font, "size"))
+        .and_then(|size| list_items(size).nth(1))
+        .and_then(as_f64)
+}
+
+fn extract_pin_text_settings(symbol: &Value) -> PinTextSettings {
+    let mut settings = PinTextSettings::default();
+    if let Some(pin_names) = child(symbol, "pin_names") {
+        settings.names.visible = !is_hidden(pin_names);
+        settings.name_offset = child(pin_names, "offset")
+            .and_then(parse_number_child)
+            .unwrap_or(0.0);
+    }
+    if let Some(pin_numbers) = child(symbol, "pin_numbers") {
+        settings.numbers.visible = !is_hidden(pin_numbers);
+    }
+    settings
+}
+
 // ─────────────────────────── 提取 ───────────────────────────
 
 fn extract_lib_symbols(root: &Value) -> Result<LibMap, RenderError> {
@@ -237,6 +291,7 @@ fn extract_lib_symbols(root: &Value) -> Result<LibMap, RenderError> {
         }
 
         let mut unit_map: HashMap<u32, HashMap<u32, SubSymbol>> = HashMap::new();
+        let pin_text_settings = extract_pin_text_settings(sym_node);
 
         // 子 symbol: (symbol "NAME_UNIT_STYLE" ... graphics/pins ...)
         for sub in children(sym_node, "symbol") {
@@ -253,7 +308,7 @@ fn extract_lib_symbols(root: &Value) -> Result<LibMap, RenderError> {
 
             // 把 sub 转成可迭代 Value
             let body = sub.as_cons().unwrap().cdr().clone();
-            let (graphics, pins) = extract_body(&body);
+            let (graphics, pins) = extract_body(&body, pin_text_settings);
 
             unit_map
                 .entry(unit)
@@ -267,7 +322,7 @@ fn extract_lib_symbols(root: &Value) -> Result<LibMap, RenderError> {
     Ok(libs)
 }
 
-fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
+fn extract_body(v: &Value, pin_text_settings: PinTextSettings) -> (Vec<Graphic>, Vec<Pin>) {
     let mut graphics = Vec::new();
     let mut pins = Vec::new();
     for item in list_items(v) {
@@ -300,7 +355,9 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
                 let center = child(item, "center")
                     .and_then(parse_xy)
                     .unwrap_or((0.0, 0.0));
-                let radius = child(item, "radius").and_then(as_f64).unwrap_or(0.0);
+                let radius = child(item, "radius")
+                    .and_then(parse_number_child)
+                    .unwrap_or(0.0);
                 graphics.push(Graphic::Circle {
                     center,
                     radius,
@@ -329,14 +386,24 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
                 let length = child(item, "length")
                     .and_then(parse_number_child)
                     .unwrap_or(0.0);
-                let name = child(item, "name")
+                let name_node = child(item, "name");
+                let name = name_node
                     .and_then(|value| value.list_iter().into_iter().flatten().nth(1))
                     .and_then(as_str)
                     .unwrap_or_default();
-                let number = child(item, "number")
+                let number_node = child(item, "number");
+                let number = number_node
                     .and_then(|value| value.list_iter().into_iter().flatten().nth(1))
                     .and_then(as_str)
                     .unwrap_or_default();
+                let mut name_text = pin_text_settings.names;
+                if let Some(font_size) = name_node.and_then(text_font_size) {
+                    name_text.font_size = font_size;
+                }
+                let mut number_text = pin_text_settings.numbers;
+                if let Some(font_size) = number_node.and_then(text_font_size) {
+                    number_text.font_size = font_size;
+                }
                 let electrical_type = list_items(item)
                     .nth(1)
                     .and_then(as_symbol)
@@ -352,6 +419,9 @@ fn extract_body(v: &Value) -> (Vec<Graphic>, Vec<Pin>) {
                     length,
                     name,
                     number,
+                    name_text,
+                    number_text,
+                    name_offset: pin_text_settings.name_offset,
                     electrical_type,
                     shape,
                 });
@@ -491,32 +561,51 @@ fn library_metadata(root: &Value) -> HashMap<String, LibraryMetadata> {
 }
 
 fn instance_pins_for_metadata<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a Pin> {
-    let Some(units) = libs.get(&inst.lib_id) else {
-        return Vec::new();
-    };
-    let Some(styles) = units.get(&inst.unit).or_else(|| units.get(&0)) else {
-        return Vec::new();
-    };
-    // Shared pins can live in body style 0 while the visible body uses another style.
-    // Keep the selected style authoritative, then supplement it deterministically.
     let mut seen = HashSet::new();
-    let mut style_order: Vec<u32> = styles.keys().copied().collect();
-    style_order.sort_by_key(|style| {
-        let priority = if *style == inst.body_style {
-            0
-        } else if *style == 0 {
-            1
-        } else {
-            2
-        };
-        (priority, *style)
-    });
-    style_order
+    pin_sub_symbols(inst, libs)
         .into_iter()
-        .filter_map(|style| styles.get(&style))
         .flat_map(|sub| sub.pins.iter())
         .filter(|pin| seen.insert(pin.number.clone()))
         .collect()
+}
+
+/// Return pin-bearing symbol fragments in KiCad precedence order.
+///
+/// A symbol instance selects one numbered unit, while pins shared by every unit
+/// can be stored separately in unit 0. Within each unit, the selected body style
+/// is authoritative and style 0 contains fields shared by all body styles.
+fn pin_sub_symbols<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a SubSymbol> {
+    let Some(units) = libs.get(&inst.lib_id) else {
+        return Vec::new();
+    };
+    let mut unit_order = vec![inst.unit];
+    if inst.unit != 0 {
+        unit_order.push(0);
+    }
+
+    let mut sub_symbols = Vec::new();
+    for unit in unit_order {
+        let Some(styles) = units.get(&unit) else {
+            continue;
+        };
+        let mut style_order: Vec<u32> = styles.keys().copied().collect();
+        style_order.sort_by_key(|style| {
+            let priority = if *style == inst.body_style {
+                0
+            } else if *style == 0 {
+                1
+            } else {
+                2
+            };
+            (priority, *style)
+        });
+        sub_symbols.extend(
+            style_order
+                .into_iter()
+                .filter_map(|style| styles.get(&style)),
+        );
+    }
+    sub_symbols
 }
 
 /// 聚合同一参考标号下的全部多单元符号定义。
@@ -767,23 +856,12 @@ fn property_value<'a>(inst: &'a Inst, key: &str) -> Option<&'a str> {
 }
 
 fn instance_pins<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a Pin> {
-    let Some(units) = libs.get(&inst.lib_id) else {
-        return Vec::new();
-    };
     let mut seen = HashSet::new();
-    units
-        .get(&inst.unit)
-        .or_else(|| units.get(&0))
-        .map(|styles| {
-            styles
-                .values()
-                .flat_map(|sub| sub.pins.iter())
-                .filter(|pin| {
-                    seen.insert((pin.number.clone(), pin.at.0.to_bits(), pin.at.1.to_bits()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    pin_sub_symbols(inst, libs)
+        .into_iter()
+        .flat_map(|sub| sub.pins.iter())
+        .filter(|pin| seen.insert((pin.number.clone(), pin.at.0.to_bits(), pin.at.1.to_bits())))
+        .collect()
 }
 
 fn point_on_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> bool {
@@ -984,6 +1062,68 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
     }
 }
 
+fn render_pin_labels(svg: &mut String, pin: &Pin, start: (f64, f64), end: (f64, f64)) {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let length = dx.hypot(dy);
+    if length <= f64::EPSILON {
+        return;
+    }
+    let direction = (dx / length, dy / length);
+
+    if pin.name_text.visible && !pin.name.is_empty() {
+        let font_size = pin.name_text.font_size * SCALE;
+        let spacing = pin.name_offset * SCALE + font_size * 0.15;
+        let x = end.0 + direction.0 * spacing;
+        let y = end.1 + direction.1 * spacing;
+        let vertical = direction.1.abs() > direction.0.abs();
+        let text_anchor = if !vertical {
+            if direction.0 >= 0.0 {
+                "start"
+            } else {
+                "end"
+            }
+        } else {
+            "start"
+        };
+        let rotation = if vertical {
+            format!(
+                r#" transform="rotate({:.2} {:.2} {:.2})""#,
+                direction.1.atan2(direction.0).to_degrees(),
+                x,
+                y
+            )
+        } else {
+            String::new()
+        };
+        svg.push_str(&format!(
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" text-anchor="{}" dominant-baseline="central"{} class="sch-pin-name">{}</text>"##,
+            x,
+            y,
+            font_size,
+            COLOR_PIN,
+            text_anchor,
+            rotation,
+            escape_xml_text(&pin.name)
+        ));
+    }
+
+    if pin.number_text.visible && !pin.number.is_empty() {
+        let font_size = pin.number_text.font_size * SCALE;
+        let normal = (direction.1, -direction.0);
+        let x = (start.0 + end.0) / 2.0 + normal.0 * font_size * 0.65;
+        let y = (start.1 + end.1) / 2.0 + normal.1 * font_size * 0.65;
+        svg.push_str(&format!(
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" text-anchor="middle" dominant-baseline="central" class="sch-pin-number">{}</text>"##,
+            x,
+            y,
+            font_size,
+            COLOR_PIN,
+            escape_xml_text(&pin.number)
+        ));
+    }
+}
+
 fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f64) {
     let Some(unit) = libs.get(&inst.lib_id) else {
         return;
@@ -998,19 +1138,8 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
         .map(|ss| ss.graphics.iter().collect())
         .unwrap_or_default();
 
-    // 引脚:取所有 style 并按 (number, at) 去重 (同样回退到 unit=0)
-    let mut seen = HashSet::new();
-    let pins: Vec<&Pin> = unit
-        .get(&inst.unit)
-        .or_else(|| unit.get(&0))
-        .map(|styles| {
-            styles
-                .values()
-                .flat_map(|ss| ss.pins.iter())
-                .filter(|p| seen.insert((p.number.clone(), p.at.0.to_bits(), p.at.1.to_bits())))
-                .collect()
-        })
-        .unwrap_or_default();
+    // 引脚: 合并实例单元与 KiCad unit 0 中的共享引脚，再按 (number, at) 去重。
+    let pins = instance_pins(inst, libs);
 
     // SVG 分组本身没有可点击面积。先绘制覆盖本体和完整引脚范围的透明矩形，
     // 让电阻内部、三极管线条之间等空白区域也能选中元器件。
@@ -1090,6 +1219,7 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
             r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
             sx1, sy1, sx2, sy2, COLOR_PIN
         ));
+        render_pin_labels(svg, p, (sx1, sy1), (sx2, sy2));
     }
 
     // 文本标注
@@ -1208,6 +1338,105 @@ pub(crate) fn render_with_pcb_and_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn example_schematic(relative_path: &str) -> Value {
+        let path = format!(
+            "{}/../examples/folders/{relative_path}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        lexpr::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn extracts_bjt_circle_radius_from_kicad_radius_node() {
+        let root = example_schematic("h-bridge/h-bridge.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let circle = libs["Simulation_SPICE:NPN"][&0][&1]
+            .graphics
+            .iter()
+            .find_map(|graphic| match graphic {
+                Graphic::Circle { radius, .. } => Some(*radius),
+                _ => None,
+            })
+            .expect("NPN symbol should contain the circle stored by KiCad");
+
+        assert!((circle - 2.8194).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ne555_instance_includes_shared_power_pins_from_unit_zero() {
+        let root = example_schematic("NE555+CD4017/NE555+CD4017.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let instances = extract_instances(&root);
+        let ne555 = instances
+            .iter()
+            .find(|inst| property_value(inst, "Reference") == Some("U1"))
+            .unwrap();
+        let pins = instance_pins(ne555, &libs);
+        let numbers: HashSet<&str> = pins.iter().map(|pin| pin.number.as_str()).collect();
+
+        assert_eq!(
+            numbers,
+            HashSet::from(["1", "2", "3", "4", "5", "6", "7", "8"])
+        );
+
+        let ground = pins.iter().find(|pin| pin.number == "1").unwrap();
+        let connection = transform(
+            ground.at.0,
+            ground.at.1,
+            ne555.at,
+            ne555.mirror_x,
+            ne555.mirror_y,
+        );
+        assert!((connection.0 - 129.54).abs() < 1e-9);
+        assert!((connection.1 - 102.87).abs() < 1e-9);
+        assert!(
+            extract_wires(&root)
+                .iter()
+                .any(|wire| point_on_wire(connection, wire)),
+            "the KiCad GND pin connection point should touch the wire below U1"
+        );
+
+        let metadata = extract_component_metadata(&root, &libs);
+        let ne555_metadata = &metadata["U1"];
+        assert_eq!(ne555_metadata.pins.len(), 8);
+        assert_eq!(ne555_metadata.pins["1"].name.as_deref(), Some("GND"));
+        assert_eq!(ne555_metadata.pins["8"].name.as_deref(), Some("VCC"));
+    }
+
+    #[test]
+    fn renders_pin_labels_using_kicad_text_and_visibility() {
+        let root = example_schematic("NE555+CD4017/NE555+CD4017.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let instances = extract_instances(&root);
+        let ne555 = instances
+            .iter()
+            .find(|inst| property_value(inst, "Reference") == Some("U1"))
+            .unwrap();
+        let mut svg = String::new();
+
+        render_instance(&mut svg, ne555, &libs, 0.0, 0.0);
+
+        assert!(svg.contains(r#"class="sch-pin-name">GND</text>"#));
+        assert!(svg.contains(r#"class="sch-pin-name">TRIG</text>"#));
+        assert!(svg.contains(r#"class="sch-pin-number">1</text>"#));
+        assert!(svg.contains(r#"class="sch-pin-number">8</text>"#));
+
+        let root = example_schematic("h-bridge/h-bridge.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let instances = extract_instances(&root);
+        let bjt = instances
+            .iter()
+            .find(|inst| property_value(inst, "Reference") == Some("Q1"))
+            .unwrap();
+        let mut svg = String::new();
+
+        render_instance(&mut svg, bjt, &libs, 0.0, 0.0);
+
+        assert!(svg.contains(r#"class="sch-pin-name">B</text>"#));
+        assert!(!svg.contains(r#"class="sch-pin-number""#));
+    }
 
     #[test]
     fn extracts_meaningful_multi_unit_pin_metadata_from_sn4hc00() {
@@ -1365,6 +1594,9 @@ mod tests {
             length: 2.54,
             name: "IN".into(),
             number: "1".into(),
+            name_text: PinText::default(),
+            number_text: PinText::default(),
+            name_offset: 0.0,
             electrical_type: "input".into(),
             shape: "line".into(),
         };
@@ -1423,6 +1655,9 @@ mod tests {
                             length: 1.0,
                             name: "1".into(),
                             number: "1".into(),
+                            name_text: PinText::default(),
+                            number_text: PinText::default(),
+                            name_offset: 0.0,
                             electrical_type: "passive".into(),
                             shape: "line".into(),
                         }],
