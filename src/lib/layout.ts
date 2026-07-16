@@ -40,6 +40,16 @@ export type LayoutPart = {
   package?: "generic" | "dip" | "axial";
   device?: "generic" | "diode" | "led";
   pins: LayoutPin[];
+  properties?: Array<{
+    name: string;
+    value: string;
+    hidden: boolean;
+  }>;
+  exclude_from_sim?: boolean;
+  in_bom?: boolean;
+  on_board?: boolean;
+  in_pos_files?: boolean;
+  dnp?: boolean;
   color?: string;
 };
 
@@ -67,6 +77,44 @@ export type LayoutFrame = {
 };
 
 export type ComputePhase = "idle" | "spectral" | "annealing" | "routing" | "done" | "error";
+
+export type KiCadTextSegment = {
+  text: string;
+  overbar: boolean;
+};
+
+/** Parse KiCad's ~{text} markup without turning file content into HTML. */
+export function parseKiCadTextMarkup(text: string): KiCadTextSegment[] {
+  const segments: KiCadTextSegment[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf("~{", cursor);
+    if (start < 0) {
+      segments.push({ text: text.slice(cursor), overbar: false });
+      break;
+    }
+    if (start > cursor) segments.push({ text: text.slice(cursor, start), overbar: false });
+    let depth = 1;
+    let closing = -1;
+    for (let index = start + 2; index < text.length; index += 1) {
+      if (text[index] === "{") depth += 1;
+      else if (text[index] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          closing = index;
+          break;
+        }
+      }
+    }
+    if (closing < 0) {
+      segments.push({ text: text.slice(start), overbar: false });
+      break;
+    }
+    segments.push({ text: text.slice(start + 2, closing), overbar: true });
+    cursor = closing + 1;
+  }
+  return segments.filter((segment) => segment.text.length > 0);
+}
 
 export type ComputeRequest = {
   profile: "quick" | "standard" | "full";

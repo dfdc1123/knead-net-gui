@@ -8,6 +8,7 @@
     LayoutPin,
     LayoutWire,
   } from "$lib/layout";
+  import { parseKiCadTextMarkup } from "$lib/layout";
   import { ui } from "$lib/i18n";
 
   let {
@@ -1044,7 +1045,7 @@
                   font-size="5.8"
                   font-weight="700"
                   fill="var(--color-base-content)"
-                >{pinLabel.text}</text>
+                >{#each parseKiCadTextMarkup(pinLabel.text) as segment}<tspan text-decoration={segment.overbar ? "overline" : undefined}>{segment.text}</tspan>{/each}</text>
               {/each}
             </g>
           </g>
