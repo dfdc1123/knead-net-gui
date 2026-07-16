@@ -173,6 +173,19 @@
     return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
   }
 
+  function syncViewportSize(target: DiagramTarget) {
+    const viewport = target === "schematic" ? schematicHost : breadboardHost;
+    if (!viewport) return;
+    const bounds = viewport.getBoundingClientRect();
+    applyViewportSize(target, Math.round(bounds.width), Math.round(bounds.height));
+  }
+
+  function setDiagramZoom(zoom: number, target: DiagramTarget) {
+    if (zoom === 1) syncViewportSize(target);
+    if (target === "schematic") schematicZoom = zoom;
+    else breadboardZoom = zoom;
+  }
+
   function applyViewportSize(target: DiagramTarget, width: number, height: number) {
     if (target === "schematic") {
       schematicViewportWidth = width;
@@ -199,8 +212,11 @@
     for (const target of ["schematic", "breadboard"] as const) {
       const pending = pendingViewportSizes[target];
       if (!pending) continue;
-      applyViewportSize(target, pending.width, pending.height);
-      centerFittedViewport(pending.viewport, target);
+      const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+      if (zoom === 1) {
+        applyViewportSize(target, pending.width, pending.height);
+        centerFittedViewport(pending.viewport, target);
+      }
     }
     pendingViewportSizes = {};
   }
@@ -223,6 +239,8 @@
         }
         return;
       }
+      const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+      if (zoom !== 1) return;
       applyViewportSize(target, size.width, size.height);
       cancelAnimationFrame(animationFrame);
       animationFrame = requestAnimationFrame(() => centerFittedViewport(viewport, target));
@@ -358,8 +376,7 @@
     const focusX = (event.clientX - before.left) / before.width;
     const focusY = (event.clientY - before.top) / before.height;
 
-    if (target === "schematic") schematicZoom = nextZoom;
-    else breadboardZoom = nextZoom;
+    setDiagramZoom(nextZoom, target);
     await tick();
 
     const after = diagram.getBoundingClientRect();
@@ -368,11 +385,11 @@
   }
 
   async function resetDiagram(target: "schematic" | "breadboard") {
-    if (target === "schematic") schematicZoom = 1;
-    else breadboardZoom = 1;
+    const viewport = target === "schematic" ? schematicHost : breadboardHost;
+    syncViewportSize(target);
+    setDiagramZoom(1, target);
     await tick();
 
-    const viewport = target === "schematic" ? schematicHost : breadboardHost;
     if (viewport) centerCanvasNow(viewport);
   }
 
@@ -599,7 +616,7 @@
               <span class="badge badge-ghost badge-sm">SCH</span>
               <ZoomControls
                 zoom={schematicZoom}
-                onZoom={(zoom) => (schematicZoom = clampZoom(zoom))}
+                onZoom={(zoom) => setDiagramZoom(clampZoom(zoom), "schematic")}
                 onReset={() => resetDiagram("schematic")}
               />
             </div>
@@ -678,7 +695,7 @@
               <span class="flex items-center gap-1.5 text-base-content/60"><span class="status status-neutral"></span>{ui.step4.pendingDashed}</span>
               <ZoomControls
                 zoom={breadboardZoom}
-                onZoom={(zoom) => (breadboardZoom = clampZoom(zoom))}
+                onZoom={(zoom) => setDiagramZoom(clampZoom(zoom), "breadboard")}
                 onReset={() => resetDiagram("breadboard")}
               />
             </div>
