@@ -40,6 +40,8 @@
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
+  let breadboardViewportWidth = $state(0);
+  let breadboardViewportHeight = $state(0);
   let assemblyPanelWidth = $state(360);
   let schematicPanelHeight = $state<number | null>(null);
 
@@ -158,6 +160,32 @@
 
   function clampZoom(zoom: number) {
     return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
+  }
+
+  function observeDiagramViewport(viewport: HTMLDivElement, target: "schematic" | "breadboard") {
+    let animationFrame = 0;
+    const update = () => {
+      if (target === "breadboard") {
+        breadboardViewportWidth = viewport.clientWidth;
+        breadboardViewportHeight = viewport.clientHeight;
+      }
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(async () => {
+        await tick();
+        const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+        if (zoom === 1) centerCanvasNow(viewport);
+      });
+    };
+    const resizeObserver = new ResizeObserver(update);
+    resizeObserver.observe(viewport);
+    update();
+
+    return {
+      destroy() {
+        cancelAnimationFrame(animationFrame);
+        resizeObserver.disconnect();
+      },
+    };
   }
 
   function maxAssemblyPanelWidth() {
@@ -528,6 +556,7 @@
               class="diagram-viewport schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
               bind:this={schematicHost}
               use:centerCanvas
+              use:observeDiagramViewport={"schematic"}
               onclick={handleSchematicClick}
               onwheel={(event) => handleZoomWheel(event, "schematic")}
               onpointerdown={startPan}
@@ -597,6 +626,7 @@
             class="diagram-viewport min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
             bind:this={breadboardHost}
             use:centerCanvas
+            use:observeDiagramViewport={"breadboard"}
             onwheel={(event) => handleZoomWheel(event, "breadboard")}
             onpointerdown={startPan}
             onpointermove={movePan}
@@ -613,6 +643,8 @@
               {upperHalfOnly}
               {frame}
               zoom={breadboardZoom}
+              fitWidth={breadboardViewportWidth}
+              fitHeight={breadboardViewportHeight}
               {selected}
               {completedWireIds}
               onSelect={choose}
