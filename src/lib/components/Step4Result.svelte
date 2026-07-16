@@ -34,10 +34,12 @@
   let schematicHost = $state<HTMLDivElement>();
   let breadboardHost = $state<HTMLDivElement>();
   let assemblyListHost = $state<HTMLDivElement>();
+  let resultLayoutHost = $state<HTMLDivElement>();
   let wireListOpen = $state(true);
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
+  let assemblyPanelWidth = $state(360);
 
   type PanGesture = {
     pointerId: number;
@@ -48,6 +50,17 @@
   };
 
   let panGesture: PanGesture | null = null;
+
+  const MIN_ASSEMBLY_PANEL_WIDTH = 320;
+  const MIN_CONTENT_WIDTH = 320;
+
+  type PanelResizeGesture = {
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+  };
+
+  let panelResizeGesture: PanelResizeGesture | null = null;
 
   const breadboardRegionOrder: Record<BreadboardHole["region"], number> = {
     "rail-top": 0,
@@ -134,6 +147,55 @@
 
   function clampZoom(zoom: number) {
     return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
+  }
+
+  function maxAssemblyPanelWidth() {
+    const layoutWidth = resultLayoutHost?.getBoundingClientRect().width ?? 0;
+    return Math.max(MIN_ASSEMBLY_PANEL_WIDTH, layoutWidth - MIN_CONTENT_WIDTH - 12);
+  }
+
+  function clampAssemblyPanelWidth(width: number) {
+    return Math.round(Math.min(maxAssemblyPanelWidth(), Math.max(MIN_ASSEMBLY_PANEL_WIDTH, width)));
+  }
+
+  function startAssemblyResize(event: PointerEvent) {
+    if (event.button !== 0) return;
+    panelResizeGesture = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: assemblyPanelWidth,
+    };
+    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function resizeAssemblyPanel(event: PointerEvent) {
+    if (!panelResizeGesture || event.pointerId !== panelResizeGesture.pointerId) return;
+    assemblyPanelWidth = clampAssemblyPanelWidth(panelResizeGesture.startWidth - (event.clientX - panelResizeGesture.startX));
+  }
+
+  function stopAssemblyResize(event: PointerEvent) {
+    if (!panelResizeGesture || event.pointerId !== panelResizeGesture.pointerId) return;
+    const handle = event.currentTarget as HTMLButtonElement;
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+    panelResizeGesture = null;
+  }
+
+  function resizeAssemblyPanelWithKeyboard(event: KeyboardEvent) {
+    if (event.key === "ArrowLeft") {
+      assemblyPanelWidth = clampAssemblyPanelWidth(assemblyPanelWidth + 24);
+    } else if (event.key === "ArrowRight") {
+      assemblyPanelWidth = clampAssemblyPanelWidth(assemblyPanelWidth - 24);
+    } else if (event.key === "Home") {
+      assemblyPanelWidth = MIN_ASSEMBLY_PANEL_WIDTH;
+    } else if (event.key === "End") {
+      assemblyPanelWidth = maxAssemblyPanelWidth();
+    } else {
+      return;
+    }
+    event.preventDefault();
   }
 
   async function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
@@ -374,7 +436,11 @@
     {/if}
   </div>
 
-  <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)] gap-3">
+  <div
+    class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_0.75rem_minmax(20rem,1fr)]"
+    bind:this={resultLayoutHost}
+    style:grid-template-columns={`minmax(0, 1fr) 0.75rem ${assemblyPanelWidth}px`}
+  >
     <div class="grid min-h-0 grid-rows-2 gap-3">
       <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body min-h-0 gap-2 p-3">
@@ -472,6 +538,21 @@
         </div>
       </section>
     </div>
+
+    <button
+      type="button"
+      class="group relative cursor-col-resize touch-none border-0 bg-transparent p-0 outline-none focus-visible:bg-primary/20"
+      aria-label={ui.step4.resizeAssemblyList}
+      title={ui.step4.resizeAssemblyList}
+      onpointerdown={startAssemblyResize}
+      onpointermove={resizeAssemblyPanel}
+      onpointerup={stopAssemblyResize}
+      onpointercancel={stopAssemblyResize}
+      onlostpointercapture={stopAssemblyResize}
+      onkeydown={resizeAssemblyPanelWithKeyboard}
+    >
+      <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-base-300 group-hover:bg-primary"></div>
+    </button>
 
     <aside class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm" aria-label={ui.step4.assemblyList}>
       <div class="card-body min-h-0 gap-3 p-3">
