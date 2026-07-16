@@ -120,7 +120,7 @@
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[22rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+    <aside class="card min-h-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body gap-4 p-4">
         <fieldset class="fieldset" disabled={busy}>
           <legend class="fieldset-legend">{ui.step2.boardType}</legend>
