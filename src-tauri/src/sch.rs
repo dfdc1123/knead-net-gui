@@ -24,6 +24,9 @@ const COLOR_SYMBOL: &str = "#840000";
 const COLOR_SYMBOL_FILL: &str = "#ffffc2";
 const COLOR_PIN: &str = "#840000";
 const COLOR_WIRE: &str = "#009600";
+const COLOR_BUS: &str = "#0000c2";
+const COLOR_LABEL: &str = "#0000c2";
+const COLOR_SHEET: &str = "#840084";
 const COLOR_REFERENCE: &str = "#008484";
 const COLOR_VALUE: &str = "#0000c2";
 const COMPONENT_HIT_PADDING: f64 = 6.0;
@@ -36,6 +39,7 @@ enum Graphic {
     Polyline {
         pts: Vec<(f64, f64)>,
         stroke: f64,
+        fill: Fill,
     },
     Rectangle {
         start: (f64, f64),
@@ -61,6 +65,7 @@ enum Graphic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fill {
     None,
+    Outline,
     Background,
 }
 
@@ -92,11 +97,22 @@ impl Default for PinText {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 struct PinTextSettings {
     names: PinText,
     numbers: PinText,
     name_offset: f64,
+}
+
+impl Default for PinTextSettings {
+    fn default() -> Self {
+        Self {
+            names: PinText::default(),
+            numbers: PinText::default(),
+            // KiCad's file-format default when the pin_names section is absent.
+            name_offset: 0.508,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -114,6 +130,8 @@ struct Property {
     value: String,
     at: (f64, f64, f64),
     hide: bool,
+    show_name: bool,
+    font_size: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +143,60 @@ struct Inst {
     unit: u32,
     body_style: u32,
     properties: Vec<Property>,
+    exclude_from_sim: Option<bool>,
+    in_bom: Option<bool>,
+    on_board: Option<bool>,
+    in_pos_files: Option<bool>,
+    dnp: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct StrokePath {
+    pts: Vec<(f64, f64)>,
+    stroke: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BusEntry {
+    at: (f64, f64),
+    size: (f64, f64),
+    stroke: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchematicTextKind {
+    Text,
+    LocalLabel,
+    GlobalLabel,
+    HierarchicalLabel,
+}
+
+#[derive(Debug, Clone)]
+struct SchematicText {
+    kind: SchematicTextKind,
+    text: String,
+    at: (f64, f64, f64),
+    shape: Option<String>,
+    font_size: f64,
+    hide: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SheetPin {
+    name: String,
+    electrical_type: String,
+    at: (f64, f64, f64),
+    font_size: f64,
+    hide: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Sheet {
+    at: (f64, f64),
+    size: (f64, f64),
+    stroke: f64,
+    properties: Vec<Property>,
+    pins: Vec<SheetPin>,
 }
 
 /// 从 `.kicad_sch` 提取的、供装配视图使用的逻辑引脚信息。
@@ -135,6 +207,19 @@ pub(crate) struct ComponentMetadata {
     pub(crate) description: Option<String>,
     pub(crate) datasheet: Option<String>,
     pub(crate) pins: HashMap<String, PinMetadata>,
+    pub(crate) properties: Vec<ComponentProperty>,
+    pub(crate) exclude_from_sim: Option<bool>,
+    pub(crate) in_bom: Option<bool>,
+    pub(crate) on_board: Option<bool>,
+    pub(crate) in_pos_files: Option<bool>,
+    pub(crate) dnp: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ComponentProperty {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) hidden: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -237,20 +322,42 @@ fn parse_stroke(v: &Value) -> f64 {
 
 fn parse_fill(v: &Value) -> Fill {
     child(v, "fill")
-        .and_then(|f| f.list_iter().into_iter().flatten().nth(1))
+        .and_then(|fill| {
+            child(fill, "type")
+                .and_then(|kind| list_items(kind).nth(1))
+                .or_else(|| list_items(fill).nth(1))
+        })
         .and_then(as_symbol)
         .map(|s| match s {
             "background" => Fill::Background,
+            "outline" => Fill::Outline,
             _ => Fill::None,
         })
         .unwrap_or(Fill::None)
 }
 
+fn token_bool(v: &Value, name: &str) -> Option<bool> {
+    for item in list_items(v) {
+        if item.as_symbol() == Some(name) {
+            return Some(true);
+        }
+        let Some(cons) = item.as_cons() else {
+            continue;
+        };
+        if cons.car().as_symbol() != Some(name) {
+            continue;
+        }
+        return match list_items(item).nth(1).and_then(as_symbol) {
+            Some("yes") => Some(true),
+            Some("no") => Some(false),
+            _ => Some(true),
+        };
+    }
+    None
+}
+
 fn is_hidden(v: &Value) -> bool {
-    child(v, "hide")
-        .and_then(|hide| list_items(hide).nth(1))
-        .and_then(as_symbol)
-        == Some("yes")
+    token_bool(v, "hide") == Some(true)
 }
 
 fn text_font_size(v: &Value) -> Option<f64> {
@@ -267,12 +374,29 @@ fn extract_pin_text_settings(symbol: &Value) -> PinTextSettings {
         settings.names.visible = !is_hidden(pin_names);
         settings.name_offset = child(pin_names, "offset")
             .and_then(parse_number_child)
-            .unwrap_or(0.0);
+            .unwrap_or(settings.name_offset);
     }
     if let Some(pin_numbers) = child(symbol, "pin_numbers") {
         settings.numbers.visible = !is_hidden(pin_numbers);
     }
     settings
+}
+
+fn parse_property(property: &Value) -> Property {
+    let mut iter = list_items(property);
+    let _ = iter.next();
+    let key = iter.next().and_then(as_str).unwrap_or_default();
+    let value = iter.next().and_then(as_str).unwrap_or_default();
+    Property {
+        key,
+        value,
+        at: child(property, "at")
+            .and_then(parse_at)
+            .unwrap_or((0.0, 0.0, 0.0)),
+        hide: is_hidden(property),
+        show_name: token_bool(property, "show_name") == Some(true),
+        font_size: text_font_size(property).unwrap_or(1.27),
+    }
 }
 
 // ─────────────────────────── 提取 ───────────────────────────
@@ -337,6 +461,7 @@ fn extract_body(v: &Value, pin_text_settings: PinTextSettings) -> (Vec<Graphic>,
                 graphics.push(Graphic::Polyline {
                     pts,
                     stroke: parse_stroke(item),
+                    fill: parse_fill(item),
                 });
             }
             Some("rectangle") => {
@@ -445,6 +570,112 @@ fn extract_wires(root: &Value) -> Vec<Vec<(f64, f64)>> {
         .collect()
 }
 
+fn extract_stroke_paths(root: &Value, name: &str) -> Vec<StrokePath> {
+    children(root, name)
+        .iter()
+        .map(|path| StrokePath {
+            pts: children(path, "pts")
+                .iter()
+                .flat_map(|pts| children(pts, "xy"))
+                .filter_map(parse_xy)
+                .collect(),
+            stroke: parse_stroke(path),
+        })
+        .collect()
+}
+
+fn extract_bus_entries(root: &Value) -> Vec<BusEntry> {
+    children(root, "bus_entry")
+        .iter()
+        .filter_map(|entry| {
+            Some(BusEntry {
+                at: child(entry, "at").and_then(parse_xy)?,
+                size: child(entry, "size").and_then(parse_xy)?,
+                stroke: parse_stroke(entry),
+            })
+        })
+        .collect()
+}
+
+fn extract_no_connects(root: &Value) -> Vec<(f64, f64)> {
+    children(root, "no_connect")
+        .iter()
+        .filter_map(|marker| child(marker, "at").and_then(parse_xy))
+        .collect()
+}
+
+fn extract_schematic_texts(root: &Value) -> Vec<SchematicText> {
+    let mut texts = Vec::new();
+    for (token, kind) in [
+        ("text", SchematicTextKind::Text),
+        ("label", SchematicTextKind::LocalLabel),
+        ("global_label", SchematicTextKind::GlobalLabel),
+        ("hierarchical_label", SchematicTextKind::HierarchicalLabel),
+    ] {
+        for node in children(root, token) {
+            let Some(text) = list_items(node).nth(1).and_then(as_str) else {
+                continue;
+            };
+            let Some(at) = child(node, "at").and_then(parse_at) else {
+                continue;
+            };
+            let shape = child(node, "shape")
+                .and_then(|shape| list_items(shape).nth(1))
+                .and_then(as_symbol)
+                .map(str::to_string);
+            texts.push(SchematicText {
+                kind,
+                text,
+                at,
+                shape,
+                font_size: text_font_size(node).unwrap_or(1.27),
+                hide: child(node, "effects").is_some_and(is_hidden),
+            });
+        }
+    }
+    texts
+}
+
+fn extract_sheets(root: &Value) -> Vec<Sheet> {
+    children(root, "sheet")
+        .iter()
+        .filter_map(|sheet| {
+            let at = child(sheet, "at").and_then(parse_xy)?;
+            let size = child(sheet, "size").and_then(parse_xy)?;
+            let properties = children(sheet, "property")
+                .into_iter()
+                .map(parse_property)
+                .collect();
+            let pins = children(sheet, "pin")
+                .into_iter()
+                .filter_map(|pin| {
+                    let name = list_items(pin).nth(1).and_then(as_str)?;
+                    let electrical_type = list_items(pin)
+                        .nth(2)
+                        .and_then(as_symbol)
+                        .unwrap_or_default()
+                        .to_string();
+                    let at = child(pin, "at").and_then(parse_at)?;
+                    Some(SheetPin {
+                        name,
+                        electrical_type,
+                        at,
+                        font_size: text_font_size(pin).unwrap_or(1.27),
+                        hide: child(pin, "effects").is_some_and(is_hidden),
+                    })
+                })
+                .collect();
+            Some(Sheet {
+                at,
+                size,
+                stroke: parse_stroke(sheet),
+                properties,
+                pins,
+            })
+        })
+        .collect()
+}
+
 fn extract_junctions(root: &Value) -> Vec<(f64, f64)> {
     children(root, "junction")
         .iter()
@@ -493,20 +724,7 @@ fn extract_instances(root: &Value) -> Vec<Inst> {
 
             let properties = children(sym, "property")
                 .iter()
-                .map(|p| {
-                    let mut iter = p.list_iter().into_iter().flatten();
-                    iter.next(); // 'property'
-                    let key = iter.next().and_then(as_str).unwrap_or_default();
-                    let value = iter.next().and_then(as_str).unwrap_or_default();
-                    let at = child(p, "at").and_then(parse_at).unwrap_or((0.0, 0.0, 0.0));
-                    let hide = child(p, "hide").is_some();
-                    Property {
-                        key,
-                        value,
-                        at,
-                        hide,
-                    }
-                })
+                .map(|property| parse_property(property))
                 .collect();
 
             Some(Inst {
@@ -517,6 +735,11 @@ fn extract_instances(root: &Value) -> Vec<Inst> {
                 unit,
                 body_style,
                 properties,
+                exclude_from_sim: token_bool(sym, "exclude_from_sim"),
+                in_bom: token_bool(sym, "in_bom"),
+                on_board: token_bool(sym, "on_board"),
+                in_pos_files: token_bool(sym, "in_pos_files"),
+                dnp: token_bool(sym, "dnp"),
             })
         })
         .collect()
@@ -562,48 +785,36 @@ fn library_metadata(root: &Value) -> HashMap<String, LibraryMetadata> {
 
 fn instance_pins_for_metadata<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a Pin> {
     let mut seen = HashSet::new();
-    pin_sub_symbols(inst, libs)
+    selected_sub_symbols(inst, libs)
         .into_iter()
         .flat_map(|sub| sub.pins.iter())
         .filter(|pin| seen.insert(pin.number.clone()))
         .collect()
 }
 
-/// Return pin-bearing symbol fragments in KiCad precedence order.
+/// Return exactly the KiCad fragments selected by an instance.
 ///
-/// A symbol instance selects one numbered unit, while pins shared by every unit
-/// can be stored separately in unit 0. Within each unit, the selected body style
-/// is authoritative and style 0 contains fields shared by all body styles.
-fn pin_sub_symbols<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a SubSymbol> {
+/// Unit 0 is shared by every unit and body style 0 is shared by every alternate
+/// representation. Other numbered units/styles are alternatives and must never
+/// leak into the rendered instance.
+fn selected_sub_symbols<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a SubSymbol> {
     let Some(units) = libs.get(&inst.lib_id) else {
         return Vec::new();
     };
-    let mut unit_order = vec![inst.unit];
-    if inst.unit != 0 {
-        unit_order.push(0);
-    }
-
     let mut sub_symbols = Vec::new();
-    for unit in unit_order {
-        let Some(styles) = units.get(&unit) else {
+    let mut seen = HashSet::new();
+    for key in [
+        (inst.unit, inst.body_style),
+        (inst.unit, 0),
+        (0, inst.body_style),
+        (0, 0),
+    ] {
+        if !seen.insert(key) {
             continue;
-        };
-        let mut style_order: Vec<u32> = styles.keys().copied().collect();
-        style_order.sort_by_key(|style| {
-            let priority = if *style == inst.body_style {
-                0
-            } else if *style == 0 {
-                1
-            } else {
-                2
-            };
-            (priority, *style)
-        });
-        sub_symbols.extend(
-            style_order
-                .into_iter()
-                .filter_map(|style| styles.get(&style)),
-        );
+        }
+        if let Some(fragment) = units.get(&key.0).and_then(|styles| styles.get(&key.1)) {
+            sub_symbols.push(fragment);
+        }
     }
     sub_symbols
 }
@@ -633,6 +844,23 @@ fn extract_component_metadata(root: &Value, libs: &LibMap) -> ComponentMetadataM
             entry.datasheet = non_empty(property_value(&inst, "Datasheet"))
                 .or_else(|| library.and_then(|metadata| metadata.datasheet.clone()));
         }
+        if entry.properties.is_empty() {
+            entry.properties = inst
+                .properties
+                .iter()
+                .filter(|property| !property.value.is_empty())
+                .map(|property| ComponentProperty {
+                    name: property.key.clone(),
+                    value: property.value.clone(),
+                    hidden: property.hide,
+                })
+                .collect();
+        }
+        entry.exclude_from_sim = entry.exclude_from_sim.or(inst.exclude_from_sim);
+        entry.in_bom = entry.in_bom.or(inst.in_bom);
+        entry.on_board = entry.on_board.or(inst.on_board);
+        entry.in_pos_files = entry.in_pos_files.or(inst.in_pos_files);
+        entry.dnp = entry.dnp.or(inst.dnp);
 
         for pin in instance_pins_for_metadata(&inst, libs) {
             if pin.number.is_empty() {
@@ -756,28 +984,29 @@ fn compute_bbox(
         bbs.push((x, y, x, y));
     }
     for inst in insts {
-        if let Some(unit) = libs.get(&inst.lib_id) {
-            // 复用 render 时的 lookup 逻辑: 优先 (unit, style), graphics 为空时回退 unit=0
-            let sub_opt = unit
-                .get(&inst.unit)
-                .and_then(|styles| styles.get(&inst.body_style))
-                .filter(|ss| !ss.graphics.is_empty())
-                .or_else(|| unit.get(&0).and_then(|styles| styles.get(&inst.body_style)));
-
-            if let Some(sub) = sub_opt {
-                for g in &sub.graphics {
-                    bbs.push(bbox_of_graphic(g, inst.at, inst.mirror_x, inst.mirror_y));
-                }
+        for fragment in selected_sub_symbols(inst, libs) {
+            for graphic in &fragment.graphics {
+                bbs.push(bbox_of_graphic(
+                    graphic,
+                    inst.at,
+                    inst.mirror_x,
+                    inst.mirror_y,
+                ));
             }
-            // pins: 取 unit 的所有 style
-            if let Some(styles) = unit.get(&inst.unit).or_else(|| unit.get(&0)) {
-                for sub in styles.values() {
-                    for p in &sub.pins {
-                        let (gx, gy) =
-                            transform(p.at.0, p.at.1, inst.at, inst.mirror_x, inst.mirror_y);
-                        bbs.push((gx, gy, gx, gy));
-                    }
-                }
+            for pin in &fragment.pins {
+                let rad = pin.at.2.to_radians();
+                let tip = (
+                    pin.at.0 + pin.length * rad.cos(),
+                    pin.at.1 + pin.length * rad.sin(),
+                );
+                let start = transform(pin.at.0, pin.at.1, inst.at, inst.mirror_x, inst.mirror_y);
+                let end = transform(tip.0, tip.1, inst.at, inst.mirror_x, inst.mirror_y);
+                bbs.push((
+                    start.0.min(end.0),
+                    start.1.min(end.1),
+                    start.0.max(end.0),
+                    start.1.max(end.1),
+                ));
             }
         }
     }
@@ -828,6 +1057,14 @@ fn fmt_pts(pts: &[(f64, f64)]) -> String {
         .join(" ")
 }
 
+fn fill_color(fill: Fill) -> &'static str {
+    match fill {
+        Fill::None => "none",
+        Fill::Outline => COLOR_SYMBOL,
+        Fill::Background => COLOR_SYMBOL_FILL,
+    }
+}
+
 /// Escape untrusted KiCad text before embedding it in an SVG text node.
 ///
 /// KiCad files can be supplied by the user, and the generated SVG is inserted
@@ -848,6 +1085,48 @@ fn escape_xml_text(text: &str) -> String {
     escaped
 }
 
+/// Convert KiCad's `~{text}` overbar markup into safe SVG tspans.
+///
+/// Every literal segment is XML-escaped before insertion. Balanced braces are
+/// tracked so nested markup or text containing braces cannot terminate a span
+/// early; malformed markup remains visible as literal source text.
+fn render_kicad_text_markup(text: &str) -> String {
+    let mut rendered = String::new();
+    let mut cursor = 0;
+    while let Some(relative_start) = text[cursor..].find("~{") {
+        let start = cursor + relative_start;
+        rendered.push_str(&escape_xml_text(&text[cursor..start]));
+
+        let inner_start = start + 2;
+        let mut depth = 1usize;
+        let mut closing = None;
+        for (relative, ch) in text[inner_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        closing = Some(inner_start + relative);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(closing) = closing else {
+            rendered.push_str(&escape_xml_text(&text[start..]));
+            return rendered;
+        };
+        rendered.push_str(r#"<tspan text-decoration="overline">"#);
+        rendered.push_str(&render_kicad_text_markup(&text[inner_start..closing]));
+        rendered.push_str("</tspan>");
+        cursor = closing + 1;
+    }
+    rendered.push_str(&escape_xml_text(&text[cursor..]));
+    rendered
+}
+
 fn property_value<'a>(inst: &'a Inst, key: &str) -> Option<&'a str> {
     inst.properties
         .iter()
@@ -857,7 +1136,7 @@ fn property_value<'a>(inst: &'a Inst, key: &str) -> Option<&'a str> {
 
 fn instance_pins<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a Pin> {
     let mut seen = HashSet::new();
-    pin_sub_symbols(inst, libs)
+    selected_sub_symbols(inst, libs)
         .into_iter()
         .flat_map(|sub| sub.pins.iter())
         .filter(|pin| seen.insert((pin.number.clone(), pin.at.0.to_bits(), pin.at.1.to_bits())))
@@ -865,12 +1144,15 @@ fn instance_pins<'a>(inst: &Inst, libs: &'a LibMap) -> Vec<&'a Pin> {
 }
 
 fn point_on_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> bool {
+    let length_sq = (end.0 - start.0).powi(2) + (end.1 - start.1).powi(2);
+    if length_sq <= 1e-10 {
+        return (point.0 - start.0).powi(2) + (point.1 - start.1).powi(2) <= 1e-10;
+    }
     let cross = (point.0 - start.0) * (end.1 - start.1) - (point.1 - start.1) * (end.0 - start.0);
     if cross.abs() > 1e-5 {
         return false;
     }
     let dot = (point.0 - start.0) * (end.0 - start.0) + (point.1 - start.1) * (end.1 - start.1);
-    let length_sq = (end.0 - start.0).powi(2) + (end.1 - start.1).powi(2);
     dot >= -1e-5 && dot <= length_sq + 1e-5
 }
 
@@ -883,27 +1165,23 @@ fn wire_net_names(
     wires: &[Vec<(f64, f64)>],
     instances: &[Inst],
     libs: &LibMap,
+    schematic_texts: &[SchematicText],
     pcb_path: Option<&str>,
 ) -> Vec<Option<String>> {
-    let Some(pcb_path) = pcb_path else {
-        return vec![None; wires.len()];
-    };
-    let Ok(text) = fs::read_to_string(pcb_path) else {
-        return vec![None; wires.len()];
-    };
-    let Ok(circuit) = parse_pcb(&text) else {
-        return vec![None; wires.len()];
-    };
-
     let mut pin_nets = HashMap::new();
-    for component in circuit.components() {
-        for pin_id in component.pins() {
-            let pin = &circuit.pins()[pin_id.raw()];
-            if let Some(net_id) = pin.net() {
-                pin_nets.insert(
-                    (component.ref_().to_string(), pin.num().to_string()),
-                    circuit.nets()[net_id.raw()].name().to_string(),
-                );
+    if let Some(circuit) = pcb_path
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|text| parse_pcb(&text).ok())
+    {
+        for component in circuit.components() {
+            for pin_id in component.pins() {
+                let pin = &circuit.pins()[pin_id.raw()];
+                if let Some(net_id) = pin.net() {
+                    pin_nets.insert(
+                        (component.ref_().to_string(), pin.num().to_string()),
+                        circuit.nets()[net_id.raw()].name().to_string(),
+                    );
+                }
             }
         }
     }
@@ -935,6 +1213,24 @@ fn wire_net_names(
     }
 
     let mut component_nets: HashMap<usize, String> = HashMap::new();
+    for label in schematic_texts.iter().filter(|text| {
+        matches!(
+            text.kind,
+            SchematicTextKind::LocalLabel
+                | SchematicTextKind::GlobalLabel
+                | SchematicTextKind::HierarchicalLabel
+        )
+    }) {
+        let point = (label.at.0, label.at.1);
+        for (index, wire) in wires.iter().enumerate() {
+            if point_on_wire(point, wire) {
+                let group = root(&mut parents, index);
+                component_nets
+                    .entry(group)
+                    .or_insert_with(|| label.text.clone());
+            }
+        }
+    }
     for inst in instances {
         let Some(reference) = property_value(inst, "Reference") else {
             continue;
@@ -965,7 +1261,7 @@ fn wire_net_names(
 
 fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) {
     match g {
-        Graphic::Polyline { pts, stroke } => {
+        Graphic::Polyline { pts, stroke, fill } => {
             let svg_pts: Vec<(f64, f64)> = pts
                 .iter()
                 .map(|&(x, y)| {
@@ -974,8 +1270,9 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
                 })
                 .collect();
             svg.push_str(&format!(
-                r##"<polyline points="{}" fill="none" stroke="{}" stroke-width="{:.2}"/>"##,
+                r##"<polyline points="{}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
                 fmt_pts(&svg_pts),
+                fill_color(*fill),
                 COLOR_SYMBOL,
                 stroke_w(*stroke)
             ));
@@ -993,15 +1290,10 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
                 transform(start.0, end.1, inst.at, inst.mirror_x, inst.mirror_y),
             ];
             let svg_pts: Vec<(f64, f64)> = pts.iter().map(|&(x, y)| to_svg(x, y, ox, oy)).collect();
-            let fill_str = if *fill == Fill::Background {
-                COLOR_SYMBOL_FILL
-            } else {
-                "none"
-            };
             svg.push_str(&format!(
                 r##"<polygon points="{}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
                 fmt_pts(&svg_pts),
-                fill_str,
+                fill_color(*fill),
                 COLOR_SYMBOL,
                 stroke_w(*stroke)
             ));
@@ -1014,17 +1306,12 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
         } => {
             let (cx, cy) = transform(center.0, center.1, inst.at, inst.mirror_x, inst.mirror_y);
             let (sx, sy) = to_svg(cx, cy, ox, oy);
-            let fill_str = if *fill == Fill::Background {
-                COLOR_SYMBOL_FILL
-            } else {
-                "none"
-            };
             svg.push_str(&format!(
                 r##"<circle cx="{:.2}" cy="{:.2}" r="{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
                 sx,
                 sy,
                 radius * SCALE,
-                fill_str,
+                fill_color(*fill),
                 COLOR_SYMBOL,
                 stroke_w(*stroke)
             ));
@@ -1048,14 +1335,9 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
             let sweep = if cross_se >= 0.0 { 1 } else { 0 };
             let (sx, sy) = to_svg(s.0, s.1, ox, oy);
             let (ex, ey) = to_svg(e.0, e.1, ox, oy);
-            let fill_str = if *fill == Fill::Background {
-                COLOR_SYMBOL_FILL
-            } else {
-                "none"
-            };
             svg.push_str(&format!(
                 r##"<path d="M {:.2},{:.2} A {:.2},{:.2} 0 {},{} {:.2},{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
-                sx, sy, r * SCALE, r * SCALE, large_arc, sweep, ex, ey, fill_str,
+                sx, sy, r * SCALE, r * SCALE, large_arc, sweep, ex, ey, fill_color(*fill),
                 COLOR_SYMBOL, stroke_w(*stroke)
             ));
         }
@@ -1104,7 +1386,7 @@ fn render_pin_labels(svg: &mut String, pin: &Pin, start: (f64, f64), end: (f64, 
             COLOR_PIN,
             text_anchor,
             rotation,
-            escape_xml_text(&pin.name)
+            render_kicad_text_markup(&pin.name)
         ));
     }
 
@@ -1119,24 +1401,118 @@ fn render_pin_labels(svg: &mut String, pin: &Pin, start: (f64, f64), end: (f64, 
             y,
             font_size,
             COLOR_PIN,
-            escape_xml_text(&pin.number)
+            render_kicad_text_markup(&pin.number)
         ));
     }
 }
 
-fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f64) {
-    let Some(unit) = libs.get(&inst.lib_id) else {
+fn render_pin(svg: &mut String, pin: &Pin, start: (f64, f64), end: (f64, f64)) {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let length = dx.hypot(dy);
+    if length <= f64::EPSILON {
         return;
+    }
+    let direction = (dx / length, dy / length);
+    let normal = (-direction.1, direction.0);
+    let size = (pin.name_text.font_size.max(pin.number_text.font_size) * SCALE * 0.5).max(3.0);
+    let point = |along: f64, across: f64| {
+        (
+            end.0 + direction.0 * along + normal.0 * across,
+            end.1 + direction.1 * along + normal.1 * across,
+        )
     };
 
-    // 本体图形:优先 (unit, style), 找到但 graphics 为空则回退 unit=0 (单单元符号的本体所在)
-    let body_graphics: Vec<&Graphic> = unit
-        .get(&inst.unit)
-        .and_then(|styles| styles.get(&inst.body_style))
-        .filter(|ss| !ss.graphics.is_empty())
-        .or_else(|| unit.get(&0).and_then(|styles| styles.get(&inst.body_style)))
-        .map(|ss| ss.graphics.iter().collect())
-        .unwrap_or_default();
+    svg.push_str(&format!(
+        r#"<g class="sch-pin" data-pin-shape="{}">"#,
+        escape_xml_text(&pin.shape)
+    ));
+    svg.push_str(&format!(
+        r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+        start.0, start.1, end.0, end.1, COLOR_PIN
+    ));
+    if pin.electrical_type == "no_connect" {
+        render_cross(svg, "sch-pin-no-connect", start, size, COLOR_PIN);
+    }
+
+    let render_clock = |svg: &mut String| {
+        let apex = point(0.0, 0.0);
+        let upper = point(-size, size);
+        let lower = point(-size, -size);
+        svg.push_str(&format!(
+            r##"<polyline points="{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}" fill="none" stroke="{}" stroke-width="1"/>"##,
+            upper.0, upper.1, apex.0, apex.1, lower.0, lower.1, COLOR_PIN
+        ));
+    };
+    let render_bubble = |svg: &mut String| {
+        let center = point(-size, 0.0);
+        svg.push_str(&format!(
+            r##"<circle cx="{:.2}" cy="{:.2}" r="{:.2}" fill="{}" stroke="{}" stroke-width="1"/>"##,
+            center.0, center.1, size, COLOR_BACKGROUND, COLOR_PIN
+        ));
+    };
+    let render_low = |svg: &mut String| {
+        let outside = point(-size * 1.5, size);
+        let root = point(0.0, 0.0);
+        svg.push_str(&format!(
+            r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+            outside.0, outside.1, root.0, root.1, COLOR_PIN
+        ));
+    };
+
+    match pin.shape.as_str() {
+        "inverted" => render_bubble(svg),
+        "clock" => render_clock(svg),
+        "inverted_clock" => {
+            render_clock(svg);
+            render_bubble(svg);
+        }
+        "input_low" | "output_low" => render_low(svg),
+        "clock_low" => {
+            render_clock(svg);
+            render_low(svg);
+        }
+        "edge_clock_high" => {
+            let apex = point(-size, 0.0);
+            let upper = point(0.0, size);
+            let lower = point(0.0, -size);
+            svg.push_str(&format!(
+                r##"<polyline points="{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}" fill="none" stroke="{}" stroke-width="1"/>"##,
+                upper.0, upper.1, apex.0, apex.1, lower.0, lower.1, COLOR_PIN
+            ));
+        }
+        "non_logic" => {
+            let center = point(-size, 0.0);
+            for sign in [-1.0, 1.0] {
+                let first = (
+                    center.0 + direction.0 * size + normal.0 * size * sign,
+                    center.1 + direction.1 * size + normal.1 * size * sign,
+                );
+                let second = (
+                    center.0 - direction.0 * size - normal.0 * size * sign,
+                    center.1 - direction.1 * size - normal.1 * size * sign,
+                );
+                svg.push_str(&format!(
+                    r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+                    first.0, first.1, second.0, second.1, COLOR_PIN
+                ));
+            }
+        }
+        _ => {}
+    }
+    svg.push_str("</g>");
+    render_pin_labels(svg, pin, start, end);
+}
+
+fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f64) {
+    if !libs.contains_key(&inst.lib_id) {
+        return;
+    }
+
+    let body_graphics: Vec<&Graphic> = selected_sub_symbols(inst, libs)
+        .into_iter()
+        .flat_map(|fragment| fragment.graphics.iter())
+        .collect();
 
     // 引脚: 合并实例单元与 KiCad unit 0 中的共享引脚，再按 (number, at) 去重。
     let pins = instance_pins(inst, libs);
@@ -1215,28 +1591,36 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
         let (gx2, gy2) = transform(tip.0, tip.1, inst.at, inst.mirror_x, inst.mirror_y);
         let (sx1, sy1) = to_svg(gx1, gy1, ox, oy);
         let (sx2, sy2) = to_svg(gx2, gy2, ox, oy);
-        svg.push_str(&format!(
-            r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
-            sx1, sy1, sx2, sy2, COLOR_PIN
-        ));
-        render_pin_labels(svg, p, (sx1, sy1), (sx2, sy2));
+        render_pin(&mut *svg, p, (sx1, sy1), (sx2, sy2));
     }
 
     // 文本标注
     for prop in &inst.properties {
-        if prop.hide || (prop.key != "Reference" && prop.key != "Value") {
+        if prop.hide || prop.value.is_empty() {
             continue;
         }
         let (sx, sy) = to_svg(prop.at.0, prop.at.1, ox, oy);
-        let value = escape_xml_text(&prop.value);
+        let displayed = if prop.show_name {
+            format!("{}: {}", prop.key, prop.value)
+        } else {
+            prop.value.clone()
+        };
+        let value = render_kicad_text_markup(&displayed);
         let color = if prop.key == "Reference" {
             COLOR_REFERENCE
         } else {
             COLOR_VALUE
         };
         svg.push_str(&format!(
-            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="10" fill="{}">{}</text>"##,
-            sx, sy, color, value
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" transform="rotate({:.2} {:.2} {:.2})">{}</text>"##,
+            sx,
+            sy,
+            prop.font_size * SCALE,
+            color,
+            -prop.at.2,
+            sx,
+            sy,
+            value
         ));
     }
 }
@@ -1247,6 +1631,154 @@ fn render_junction(svg: &mut String, x: f64, y: f64, ox: f64, oy: f64) {
         r##"<circle cx="{:.2}" cy="{:.2}" r="2.5" fill="{}"/>"##,
         sx, sy, COLOR_WIRE
     ));
+}
+
+fn render_cross(svg: &mut String, class_name: &str, center: (f64, f64), radius: f64, color: &str) {
+    svg.push_str(&format!(r#"<g class="{}">"#, class_name));
+    for sign in [-1.0, 1.0] {
+        svg.push_str(&format!(
+            r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1.5"/>"##,
+            center.0 - radius,
+            center.1 - radius * sign,
+            center.0 + radius,
+            center.1 + radius * sign,
+            color
+        ));
+    }
+    svg.push_str("</g>");
+}
+
+fn render_stroke_path(
+    svg: &mut String,
+    path: &StrokePath,
+    class_name: &str,
+    color: &str,
+    ox: f64,
+    oy: f64,
+) {
+    for segment in path.pts.windows(2) {
+        let start = to_svg(segment[0].0, segment[0].1, ox, oy);
+        let end = to_svg(segment[1].0, segment[1].1, ox, oy);
+        svg.push_str(&format!(
+            r##"<line class="{}" x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="{:.2}"/>"##,
+            class_name,
+            start.0,
+            start.1,
+            end.0,
+            end.1,
+            color,
+            stroke_w(path.stroke)
+        ));
+    }
+}
+
+fn render_schematic_text(svg: &mut String, text: &SchematicText, ox: f64, oy: f64) {
+    if text.hide {
+        return;
+    }
+    let (x, y) = to_svg(text.at.0, text.at.1, ox, oy);
+    let class_name = match text.kind {
+        SchematicTextKind::Text => "sch-text",
+        SchematicTextKind::LocalLabel => "sch-local-label",
+        SchematicTextKind::GlobalLabel => "sch-global-label",
+        SchematicTextKind::HierarchicalLabel => "sch-hierarchical-label",
+    };
+    let shape = text.shape.as_deref().unwrap_or("");
+    let angle = -text.at.2;
+    svg.push_str(&format!(
+        r#"<g class="{}" data-shape="{}" transform="rotate({:.2} {:.2} {:.2})">"#,
+        class_name,
+        escape_xml_text(shape),
+        angle,
+        x,
+        y
+    ));
+    if text.kind != SchematicTextKind::Text && text.kind != SchematicTextKind::LocalLabel {
+        let direction = match shape {
+            "output" => -1.0,
+            _ => 1.0,
+        };
+        let points = [
+            (x, y),
+            (x + direction * 8.0, y - 6.0),
+            (x + direction * 8.0, y + 6.0),
+        ];
+        svg.push_str(&format!(
+            r##"<polygon points="{}" fill="none" stroke="{}" stroke-width="1"/>"##,
+            fmt_pts(&points),
+            COLOR_LABEL
+        ));
+    }
+    svg.push_str(&format!(
+        r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" dominant-baseline="central">{}</text>"##,
+        x + 10.0,
+        y,
+        text.font_size * SCALE,
+        COLOR_LABEL,
+        render_kicad_text_markup(&text.text)
+    ));
+    svg.push_str("</g>");
+}
+
+fn render_sheet(svg: &mut String, sheet: &Sheet, ox: f64, oy: f64) {
+    let start = to_svg(sheet.at.0, sheet.at.1, ox, oy);
+    let end = to_svg(sheet.at.0 + sheet.size.0, sheet.at.1 + sheet.size.1, ox, oy);
+    svg.push_str(r#"<g class="sch-sheet">"#);
+    svg.push_str(&format!(
+        r##"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"##,
+        start.0.min(end.0),
+        start.1.min(end.1),
+        (end.0 - start.0).abs(),
+        (end.1 - start.1).abs(),
+        COLOR_SYMBOL_FILL,
+        COLOR_SHEET,
+        stroke_w(sheet.stroke)
+    ));
+    for property in &sheet.properties {
+        if property.hide || property.value.is_empty() {
+            continue;
+        }
+        let (x, y) = to_svg(property.at.0, property.at.1, ox, oy);
+        let displayed = if property.show_name {
+            format!("{}: {}", property.key, property.value)
+        } else {
+            property.value.clone()
+        };
+        svg.push_str(&format!(
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}">{}</text>"##,
+            x,
+            y,
+            property.font_size * SCALE,
+            COLOR_SHEET,
+            render_kicad_text_markup(&displayed)
+        ));
+    }
+    for pin in &sheet.pins {
+        if pin.hide {
+            continue;
+        }
+        let start = to_svg(pin.at.0, pin.at.1, ox, oy);
+        let rad = -pin.at.2.to_radians();
+        let end = (start.0 + 12.0 * rad.cos(), start.1 + 12.0 * rad.sin());
+        svg.push_str(&format!(
+            r#"<g class="sch-sheet-pin" data-pin-type="{}">"#,
+            escape_xml_text(&pin.electrical_type)
+        ));
+        svg.push_str(&format!(
+            r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{}" stroke-width="1"/>"##,
+            start.0, start.1, end.0, end.1, COLOR_SHEET
+        ));
+        svg.push_str(&format!(
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" dominant-baseline="central">{}</text>"##,
+            end.0,
+            end.1,
+            pin.font_size * SCALE,
+            COLOR_SHEET,
+            render_kicad_text_markup(&pin.name)
+        ));
+        svg.push_str("</g>");
+    }
+    svg.push_str("</g>");
 }
 
 // ─────────────────────────── 入口 ───────────────────────────
@@ -1271,11 +1803,45 @@ pub(crate) fn render_with_pcb_and_metadata(
     let libs = extract_lib_symbols(&root)?;
     let component_metadata = extract_component_metadata(&root, &libs);
     let wires = extract_wires(&root);
+    let buses = extract_stroke_paths(&root, "bus");
+    let bus_entries = extract_bus_entries(&root);
+    let no_connects = extract_no_connects(&root);
+    let schematic_texts = extract_schematic_texts(&root);
+    let sheets = extract_sheets(&root);
     let junctions = extract_junctions(&root);
     let instances = extract_instances(&root);
-    let wire_nets = wire_net_names(&wires, &instances, &libs, pcb_path);
+    let wire_nets = wire_net_names(&wires, &instances, &libs, &schematic_texts, pcb_path);
 
-    let (min_x, min_y, max_x, max_y) = compute_bbox(&wires, &junctions, &instances, &libs);
+    let (mut min_x, mut min_y, mut max_x, mut max_y) =
+        compute_bbox(&wires, &junctions, &instances, &libs);
+    let mut include_point = |(x, y): (f64, f64)| {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    };
+    for bus in &buses {
+        for &point in &bus.pts {
+            include_point(point);
+        }
+    }
+    for entry in &bus_entries {
+        include_point(entry.at);
+        include_point((entry.at.0 + entry.size.0, entry.at.1 + entry.size.1));
+    }
+    for &point in &no_connects {
+        include_point(point);
+    }
+    for text in &schematic_texts {
+        include_point((text.at.0, text.at.1));
+    }
+    for sheet in &sheets {
+        include_point(sheet.at);
+        include_point((sheet.at.0 + sheet.size.0, sheet.at.1 + sheet.size.1));
+        for pin in &sheet.pins {
+            include_point((pin.at.0, pin.at.1));
+        }
+    }
     let margin = 5.0;
     let ox = min_x - margin;
     let oy = min_y - margin;
@@ -1291,6 +1857,26 @@ pub(crate) fn render_with_pcb_and_metadata(
         r##"<rect width="100%" height="100%" fill="{}"/>"##,
         COLOR_BACKGROUND
     ));
+
+    for bus in &buses {
+        render_stroke_path(&mut svg, bus, "sch-bus-line", COLOR_BUS, ox, oy);
+    }
+    for entry in &bus_entries {
+        render_stroke_path(
+            &mut svg,
+            &StrokePath {
+                pts: vec![
+                    entry.at,
+                    (entry.at.0 + entry.size.0, entry.at.1 + entry.size.1),
+                ],
+                stroke: entry.stroke,
+            },
+            "sch-bus-entry",
+            COLOR_BUS,
+            ox,
+            oy,
+        );
+    }
 
     // 导线
     for (wire_index, pts) in wires.iter().enumerate() {
@@ -1317,13 +1903,47 @@ pub(crate) fn render_with_pcb_and_metadata(
         render_junction(&mut svg, x, y, ox, oy);
     }
 
+    for &(x, y) in &no_connects {
+        render_cross(
+            &mut svg,
+            "sch-no-connect",
+            to_svg(x, y, ox, oy),
+            4.0,
+            COLOR_PIN,
+        );
+    }
+
+    for text in &schematic_texts {
+        render_schematic_text(&mut svg, text, ox, oy);
+    }
+
+    for sheet in &sheets {
+        render_sheet(&mut svg, sheet, ox, oy);
+    }
+
     // 符号实例
     for inst in &instances {
         if let Some(reference) = property_value(inst, "Reference") {
-            svg.push_str(&format!(
-                r##"<g class="sch-component" data-component="{}">"##,
+            let mut attributes = format!(
+                r#" class="sch-component" data-component="{}""#,
                 escape_xml_text(reference)
-            ));
+            );
+            for (name, value) in [
+                ("data-dnp", inst.dnp),
+                ("data-in-bom", inst.in_bom),
+                ("data-on-board", inst.on_board),
+                ("data-in-pos-files", inst.in_pos_files),
+                ("data-exclude-from-sim", inst.exclude_from_sim),
+            ] {
+                if let Some(value) = value {
+                    attributes.push_str(&format!(
+                        r#" {}="{}""#,
+                        name,
+                        if value { "yes" } else { "no" }
+                    ));
+                }
+            }
+            svg.push_str(&format!("<g{attributes}>"));
         } else {
             svg.push_str("<g>");
         }
@@ -1338,6 +1958,7 @@ pub(crate) fn render_with_pcb_and_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn example_schematic(relative_path: &str) -> Value {
         let path = format!(
@@ -1346,6 +1967,278 @@ mod tests {
         );
         let text = std::fs::read_to_string(path).unwrap();
         lexpr::from_str(&text).unwrap()
+    }
+
+    fn render_fixture(name: &str, text: &str) -> String {
+        let path: PathBuf = std::env::temp_dir().join(format!(
+            "knead-net-{name}-{}-{}.kicad_sch",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, text).unwrap();
+        let rendered = render(path.to_str().unwrap());
+        std::fs::remove_file(path).unwrap();
+        rendered.unwrap()
+    }
+
+    #[test]
+    fn missing_pin_names_section_uses_kicad_default_offset() {
+        let root = lexpr::from_str(
+            r#"(kicad_sch
+                (lib_symbols
+                    (symbol "Test:Part"
+                        (symbol "Part_1_1"
+                            (pin input line
+                                (at 0 0 0)
+                                (length 2.54)
+                                (name "IN" (effects (font (size 1.27 1.27))))
+                                (number "1" (effects (font (size 1.27 1.27)))))))))"#,
+        )
+        .unwrap();
+        let libs = extract_lib_symbols(&root).unwrap();
+        let pin = &libs["Test:Part"][&1][&1].pins[0];
+
+        assert!((pin.name_offset - 0.508).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parses_nested_fill_types_and_pin_visibility_flags() {
+        let root = lexpr::from_str(
+            r#"(kicad_sch
+                (lib_symbols
+                    (symbol "Test:Part"
+                        (pin_numbers hide)
+                        (pin_names (offset 0.75) (hide no))
+                        (symbol "Part_0_1"
+                            (polyline (pts (xy 0 0) (xy 1 0) (xy 1 1))
+                                (stroke (width 0.1)) (fill (type outline)))
+                            (rectangle (start 0 0) (end 1 1)
+                                (stroke (width 0.1)) (fill (type background)))
+                            (pin input line (at 0 0 0) (length 1)
+                                (name "IN") (number "1"))))))"#,
+        )
+        .unwrap();
+        let libs = extract_lib_symbols(&root).unwrap();
+        let fragment = &libs["Test:Part"][&0][&1];
+
+        assert!(matches!(
+            fragment.graphics[0],
+            Graphic::Polyline {
+                fill: Fill::Outline,
+                ..
+            }
+        ));
+        assert!(matches!(
+            fragment.graphics[1],
+            Graphic::Rectangle {
+                fill: Fill::Background,
+                ..
+            }
+        ));
+        assert!(fragment.pins[0].name_text.visible);
+        assert!(!fragment.pins[0].number_text.visible);
+        assert!((fragment.pins[0].name_offset - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zero_length_wire_segment_only_contains_its_own_point() {
+        assert!(point_on_segment((1.0, 2.0), (1.0, 2.0), (1.0, 2.0)));
+        assert!(!point_on_segment((8.0, 9.0), (1.0, 2.0), (1.0, 2.0)));
+    }
+
+    #[test]
+    fn renders_no_connect_markers_from_existing_ne555_example() {
+        let svg = render(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/folders/NE555+CD4017/NE555+CD4017.kicad_sch"
+        ))
+        .unwrap();
+
+        assert_eq!(svg.matches(r#"class="sch-no-connect""#).count(), 2);
+    }
+
+    #[test]
+    fn renders_kicad_overbar_markup_without_raw_delimiters() {
+        let root = example_schematic("NE555+CD4017/NE555+CD4017.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let instances = extract_instances(&root);
+        let ne555 = instances
+            .iter()
+            .find(|inst| property_value(inst, "Reference") == Some("U1"))
+            .unwrap();
+        let mut svg = String::new();
+
+        render_instance(&mut svg, ne555, &libs, 0.0, 0.0);
+
+        assert!(!svg.contains("~{RST}"));
+        assert!(svg.contains(r#"<tspan text-decoration="overline">RST</tspan>"#));
+    }
+
+    #[test]
+    fn overbar_markup_is_partial_malformed_safe_and_xml_escaped() {
+        assert_eq!(
+            render_kicad_text_markup("~{FO}O"),
+            r#"<tspan text-decoration="overline">FO</tspan>O"#
+        );
+        assert_eq!(render_kicad_text_markup("~{RST"), "~{RST");
+        assert_eq!(render_kicad_text_markup("A ~ B"), "A ~ B");
+        assert_eq!(
+            render_kicad_text_markup("~{<script>&}"),
+            r#"<tspan text-decoration="overline">&lt;script&gt;&amp;</tspan>"#
+        );
+    }
+
+    #[test]
+    fn renders_library_no_connect_pin_at_its_connection_point() {
+        let svg = render(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/folders/lm741/lm741.kicad_sch"
+        ))
+        .unwrap();
+
+        assert!(svg.contains(r#"class="sch-pin-no-connect""#));
+    }
+
+    #[test]
+    fn renders_every_kicad_pin_graphic_shape_from_pin_data() {
+        let fixture = r#"(kicad_sch
+            (lib_symbols
+                (symbol "Test:Shapes"
+                    (pin_names (hide yes))
+                    (pin_numbers (hide yes))
+                    (symbol "Shapes_1_1"
+                        (pin input line (at 0 0 0) (length 2.54) (name "") (number "1"))
+                        (pin input inverted (at 0 2.54 0) (length 2.54) (name "") (number "2"))
+                        (pin input clock (at 0 5.08 0) (length 2.54) (name "") (number "3"))
+                        (pin input inverted_clock (at 0 7.62 0) (length 2.54) (name "") (number "4"))
+                        (pin input input_low (at 0 10.16 0) (length 2.54) (name "") (number "5"))
+                        (pin input clock_low (at 0 12.7 0) (length 2.54) (name "") (number "6"))
+                        (pin output output_low (at 0 15.24 0) (length 2.54) (name "") (number "7"))
+                        (pin input edge_clock_high (at 0 17.78 0) (length 2.54) (name "") (number "8"))
+                        (pin input non_logic (at 0 20.32 0) (length 2.54) (name "") (number "9")))))
+            (symbol
+                (lib_id "Test:Shapes")
+                (at 20 20 0)
+                (unit 1)
+                (body_style 1)
+                (property "Reference" "U1" (at 20 15 0))
+                (property "Value" "Shapes" (at 20 17 0))))"#;
+        let svg = render_fixture("pin-shapes", fixture);
+
+        for shape in [
+            "line",
+            "inverted",
+            "clock",
+            "inverted_clock",
+            "input_low",
+            "clock_low",
+            "output_low",
+            "edge_clock_high",
+            "non_logic",
+        ] {
+            assert!(
+                svg.contains(&format!(r#"data-pin-shape="{shape}""#)),
+                "missing rendered shape {shape}"
+            );
+        }
+    }
+
+    #[test]
+    fn renders_bus_labels_hierarchy_text_and_visible_custom_properties() {
+        let fixture = r#"(kicad_sch
+            (lib_symbols
+                (symbol "Test:Part"
+                    (symbol "Part_1_1"
+                        (rectangle (start -2.54 2.54) (end 2.54 -2.54)
+                            (stroke (width 0.254) (type default)) (fill (type background))))))
+            (bus (pts (xy 10 10) (xy 40 10))
+                (stroke (width 0) (type default)))
+            (bus_entry (at 15 10) (size 2.54 2.54)
+                (stroke (width 0) (type default)))
+            (label "D0" (at 17.54 12.54 0) (effects (font (size 1.27 1.27))))
+            (global_label "ENABLE" (shape input) (at 10 20 0)
+                (effects (font (size 1.27 1.27))))
+            (hierarchical_label "RESULT" (shape output) (at 40 20 180)
+                (effects (font (size 1.27 1.27))))
+            (text "~{RESET}" (at 25 25 0) (effects (font (size 1.27 1.27))))
+            (sheet
+                (at 15 30)
+                (size 20 12)
+                (stroke (width 0.254) (type default))
+                (fill (color 0 0 0 0))
+                (property "Sheetname" "Controller" (at 15 29 0)
+                    (effects (font (size 1.27 1.27))))
+                (property "Sheetfile" "controller.kicad_sch" (at 15 43 0)
+                    (effects (font (size 1.27 1.27))))
+                (pin "START" input (at 15 35 0)
+                    (effects (font (size 1.27 1.27)))))
+            (symbol
+                (lib_id "Test:Part")
+                (at 50 30 0)
+                (unit 1)
+                (body_style 1)
+                (exclude_from_sim yes)
+                (in_bom no)
+                (on_board no)
+                (in_pos_files no)
+                (dnp yes)
+                (property "Reference" "U1" (at 50 25 0))
+                (property "Value" "Part" (at 50 27 0))
+                (property "Manufacturer" "Acme" (at 50 35 0)
+                    (effects (font (size 1.27 1.27))))))"#;
+        let svg = render_fixture("schematic-features", fixture);
+
+        for class in [
+            "sch-bus-line",
+            "sch-bus-entry",
+            "sch-local-label",
+            "sch-global-label",
+            "sch-hierarchical-label",
+            "sch-sheet",
+            "sch-sheet-pin",
+            "sch-text",
+        ] {
+            assert!(
+                svg.contains(&format!(r#"class="{class}""#)),
+                "missing {class}"
+            );
+        }
+        assert!(svg.contains(">Acme</text>"));
+        assert!(svg.contains(r#"data-dnp="yes""#));
+        assert!(svg.contains(r#"data-in-bom="no""#));
+        assert!(svg.contains(r#"data-on-board="no""#));
+        assert!(svg.contains(r#"data-exclude-from-sim="yes""#));
+
+        let root = lexpr::from_str(fixture).unwrap();
+        let libs = extract_lib_symbols(&root).unwrap();
+        let metadata = extract_component_metadata(&root, &libs);
+        let part = &metadata["U1"];
+        assert_eq!(part.dnp, Some(true));
+        assert_eq!(part.in_bom, Some(false));
+        assert_eq!(part.on_board, Some(false));
+        assert_eq!(part.in_pos_files, Some(false));
+        assert_eq!(part.exclude_from_sim, Some(true));
+        assert!(part
+            .properties
+            .iter()
+            .any(|property| property.name == "Manufacturer" && property.value == "Acme"));
+    }
+
+    #[test]
+    fn schematic_labels_name_wires_without_a_pcb_file() {
+        let fixture = r#"(kicad_sch
+            (lib_symbols)
+            (wire (pts (xy 10 10) (xy 20 10)) (stroke (width 0) (type default)))
+            (wire (pts (xy 30 10) (xy 40 10)) (stroke (width 0) (type default)))
+            (label "SIG" (at 10 10 0) (effects (font (size 1.27 1.27))))
+            (label "SIG" (at 30 10 0) (effects (font (size 1.27 1.27)))))"#;
+        let svg = render_fixture("labeled-wires", fixture);
+
+        assert_eq!(
+            svg.matches(r#"class="sch-net-line" data-net="SIG""#)
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -1508,7 +2401,7 @@ mod tests {
     }
 
     #[test]
-    fn pin_metadata_uses_selected_then_shared_then_numbered_body_styles() {
+    fn pin_metadata_uses_selected_and_shared_but_not_alternate_body_styles() {
         let root = lexpr::from_str(
             r#"(kicad_sch
                 (lib_symbols
@@ -1534,7 +2427,7 @@ mod tests {
 
         assert_eq!(pins.get("1").unwrap().name.as_deref(), Some("selected-1"));
         assert_eq!(pins.get("2").unwrap().name.as_deref(), Some("shared-2"));
-        assert_eq!(pins.get("3").unwrap().name.as_deref(), Some("style-1-3"));
+        assert!(!pins.contains_key("3"));
     }
 
     #[test]
@@ -1547,18 +2440,27 @@ mod tests {
             mirror_y: false,
             unit: 0,
             body_style: 1,
+            exclude_from_sim: None,
+            in_bom: None,
+            on_board: None,
+            in_pos_files: None,
+            dnp: None,
             properties: vec![
                 Property {
                     key: "Reference".into(),
                     value: malicious.into(),
                     at: (0.0, 0.0, 0.0),
                     hide: false,
+                    show_name: false,
+                    font_size: 1.27,
                 },
                 Property {
                     key: "Value".into(),
                     value: "R1 > R2 & R3".into(),
                     at: (0.0, 1.0, 0.0),
                     hide: false,
+                    show_name: false,
+                    font_size: 1.27,
                 },
             ],
         };
@@ -1574,8 +2476,8 @@ mod tests {
         assert!(!svg.contains(malicious));
         assert!(svg.contains("&lt;script&gt;alert(&quot;owned&quot;)&lt;/script&gt;&amp;&apos;"));
         assert!(svg.contains("R1 &gt; R2 &amp; R3"));
-        assert!(svg.contains(r##"fill="#008484">&lt;script"##));
-        assert!(svg.contains(r##"fill="#0000c2">R1"##));
+        assert!(svg.contains(r##"fill="#008484""##));
+        assert!(svg.contains(r##"fill="#0000c2""##));
     }
 
     #[test]
@@ -1588,6 +2490,11 @@ mod tests {
             unit: 1,
             body_style: 1,
             properties: vec![],
+            exclude_from_sim: None,
+            in_bom: None,
+            on_board: None,
+            in_pos_files: None,
+            dnp: None,
         };
         let pin = Pin {
             at: (0.0, 0.0, 0.0),
@@ -1630,11 +2537,18 @@ mod tests {
             mirror_y: false,
             unit: 1,
             body_style: 1,
+            exclude_from_sim: None,
+            in_bom: None,
+            on_board: None,
+            in_pos_files: None,
+            dnp: None,
             properties: vec![Property {
                 key: "Reference".into(),
                 value: "R1".into(),
                 at: (0.0, 0.0, 0.0),
                 hide: false,
+                show_name: false,
+                font_size: 1.27,
             }],
         };
         let libs = HashMap::from([(

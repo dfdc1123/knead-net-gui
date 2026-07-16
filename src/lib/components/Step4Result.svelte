@@ -13,6 +13,7 @@
     LayoutPin,
     LayoutWire,
   } from "$lib/layout";
+  import { parseKiCadTextMarkup } from "$lib/layout";
 
   let {
     preset,
@@ -775,6 +776,13 @@
                 {#if selectedPart.description}
                   <p class="mt-1 truncate text-xs text-base-content/65" title={selectedPart.description}>{selectedPart.description}</p>
                 {/if}
+                <div class="mt-1 flex flex-wrap gap-1">
+                  {#if selectedPart.dnp}<span class="badge badge-error badge-xs">{ui.step4.dnp}</span>{/if}
+                  {#if selectedPart.in_bom !== undefined}<span class="badge badge-ghost badge-xs">{selectedPart.in_bom ? ui.step4.includedInBom : ui.step4.excludedFromBom}</span>{/if}
+                  {#if selectedPart.on_board !== undefined}<span class="badge badge-ghost badge-xs">{selectedPart.on_board ? ui.step4.onBoard : ui.step4.offBoard}</span>{/if}
+                  {#if selectedPart.in_pos_files !== undefined}<span class="badge badge-ghost badge-xs">{selectedPart.in_pos_files ? ui.step4.includedInPos : ui.step4.excludedFromPos}</span>{/if}
+                  {#if selectedPart.exclude_from_sim !== undefined}<span class="badge badge-ghost badge-xs">{selectedPart.exclude_from_sim ? ui.step4.excludedFromSim : ui.step4.includedInSim}</span>{/if}
+                </div>
               </div>
               <span class="badge badge-outline badge-sm shrink-0">{ui.step4.pinCount(selectedPart.pins.length)}</span>
             </div>
@@ -794,7 +802,11 @@
                       <td class="font-mono font-semibold">{pin.number || ui.common.placeholder}</td>
                       <td>
                         <div class="flex flex-wrap items-center gap-1">
-                          <span>{pin.name || ui.common.placeholder}</span>
+                          <span>
+                            {#each parseKiCadTextMarkup(pin.name || ui.common.placeholder) as segment}
+                              <span class:overline={segment.overbar}>{segment.text}</span>
+                            {/each}
+                          </span>
                           {#if pin.pin_type}<span class="badge badge-ghost badge-xs">{pin.pin_type}</span>{/if}
                           {#if pin.pin_shape}<span class="badge badge-ghost badge-xs">{pin.pin_shape}</span>{/if}
                         </div>
@@ -807,6 +819,22 @@
                 </tbody>
               </table>
             </div>
+            {#if selectedPart.properties?.length}
+              <details class="border-t border-warning/30 px-3 py-2 text-xs">
+                <summary class="cursor-pointer font-medium">{ui.step4.properties} ({selectedPart.properties.length})</summary>
+                <dl class="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-1">
+                  {#each selectedPart.properties as property}
+                    <dt class="font-mono text-base-content/60">{property.name}</dt>
+                    <dd class="min-w-0 truncate" title={property.value}>
+                      {#each parseKiCadTextMarkup(property.value) as segment}
+                        <span class:overline={segment.overbar}>{segment.text}</span>
+                      {/each}
+                      {#if property.hidden}<span class="badge badge-ghost badge-xs ml-1">{ui.step4.hiddenProperty}</span>{/if}
+                    </dd>
+                  {/each}
+                </dl>
+              </details>
+            {/if}
             <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-warning/30 px-3 py-2 text-[0.68rem] text-base-content/55">
               <span class="truncate" title={selectedPart.footprint}>{ui.step4.footprint}: {selectedPart.footprint}</span>
               {#if selectedPart.datasheet}<span class="truncate" title={selectedPart.datasheet}>{ui.step4.datasheet}: {selectedPart.datasheet}</span>{/if}

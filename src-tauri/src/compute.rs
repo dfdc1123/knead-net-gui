@@ -93,6 +93,24 @@ struct LayoutPart {
     package: &'static str,
     device: &'static str,
     pins: Vec<LayoutPin>,
+    properties: Vec<LayoutProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exclude_from_sim: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_bom: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    on_board: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_pos_files: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dnp: Option<bool>,
+}
+
+#[derive(Clone, Serialize)]
+struct LayoutProperty {
+    name: String,
+    value: String,
+    hidden: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -702,6 +720,24 @@ fn snapshot_frame(
             package,
             device,
             pins,
+            properties: component_metadata
+                .map(|metadata| {
+                    metadata
+                        .properties
+                        .iter()
+                        .map(|property| LayoutProperty {
+                            name: property.name.clone(),
+                            value: property.value.clone(),
+                            hidden: property.hidden,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            exclude_from_sim: component_metadata.and_then(|metadata| metadata.exclude_from_sim),
+            in_bom: component_metadata.and_then(|metadata| metadata.in_bom),
+            on_board: component_metadata.and_then(|metadata| metadata.on_board),
+            in_pos_files: component_metadata.and_then(|metadata| metadata.in_pos_files),
+            dnp: component_metadata.and_then(|metadata| metadata.dnp),
         });
     }
 
