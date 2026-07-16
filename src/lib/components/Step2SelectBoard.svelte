@@ -14,7 +14,7 @@
   } = $props();
 
   type Info = {
-    preset: string;
+    preset: BreadboardPreset;
     cols: number;
     holes: number;
     has_power_rails: boolean;
@@ -45,12 +45,15 @@
   let busy = $state(false);
   let error = $state("");
   let hasPowerRails = $derived(preset !== "hole170");
+  let submitGeneration = 0;
+  let columnTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(() => {
     void loadPowerNetOptions();
   });
 
   async function loadPowerNetOptions() {
+    let loaded = false;
     busy = true;
     error = "";
     onStatusChange(false);
@@ -62,54 +65,73 @@
       bottomPositiveNet = options.positive_net ?? "";
       bottomNegativeNet = options.negative_net ?? "";
       powerOptionsReady = true;
+      loaded = true;
     } catch (e) {
       powerOptionsReady = false;
       error = String(e);
     } finally {
       busy = false;
     }
+    if (loaded) submitNow();
   }
 
   function pick(p: BreadboardPreset) {
     if (busy) return;
+    const defaultCols = PRESETS.find((x) => x.id === p)!.defaultCols;
     preset = p;
-    cols = PRESETS.find((x) => x.id === p)!.defaultCols;
+    cols = defaultCols;
+    submitNow(p, defaultCols);
   }
 
-  // cols 变化 → 自动重提交 (debounce 250ms)
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  $effect(() => {
-    cols; preset; upperHalfOnly; topPositiveNet; topNegativeNet; bottomPositiveNet; bottomNegativeNet; powerOptionsReady;
-    if (timer) clearTimeout(timer);
-    if (!powerOptionsReady) return;
-    timer = setTimeout(() => submit(preset, cols), 250);
-  });
+  function submitNow(p = preset, c = cols) {
+    if (columnTimer) {
+      clearTimeout(columnTimer);
+      columnTimer = null;
+    }
+    if (powerOptionsReady && Number.isFinite(c)) void submit(p, c);
+  }
+
+  function updateColumns(value: number) {
+    cols = value;
+    if (columnTimer) clearTimeout(columnTimer);
+    if (!Number.isFinite(value)) return;
+    columnTimer = setTimeout(() => {
+      columnTimer = null;
+      if (powerOptionsReady) void submit(preset, cols);
+    }, 250);
+  }
 
   async function submit(p: BreadboardPreset, c: number) {
+    const generation = ++submitGeneration;
+    const useUpperHalfOnly = upperHalfOnly;
+    const usePowerRails = p !== "hole170";
     busy = true;
     error = "";
     onStatusChange(false);
     try {
-      info = await invoke<Info>("set_breadboard", {
+      const nextInfo = await invoke<Info>("set_breadboard", {
         preset: p,
         cols: c,
-        upperHalfOnly,
+        upperHalfOnly: useUpperHalfOnly,
         powerNets: {
-          top_positive_net: hasPowerRails && topPositiveNet ? topPositiveNet : null,
-          top_negative_net: hasPowerRails && topNegativeNet ? topNegativeNet : null,
-          bottom_positive_net: hasPowerRails && !upperHalfOnly && bottomPositiveNet ? bottomPositiveNet : null,
-          bottom_negative_net: hasPowerRails && !upperHalfOnly && bottomNegativeNet ? bottomNegativeNet : null,
+          top_positive_net: usePowerRails && topPositiveNet ? topPositiveNet : null,
+          top_negative_net: usePowerRails && topNegativeNet ? topNegativeNet : null,
+          bottom_positive_net: usePowerRails && !useUpperHalfOnly && bottomPositiveNet ? bottomPositiveNet : null,
+          bottom_negative_net: usePowerRails && !useUpperHalfOnly && bottomNegativeNet ? bottomNegativeNet : null,
         },
         locale,
       });
+      if (generation !== submitGeneration) return;
+      info = nextInfo;
       onBoardChange({ preset: p, cols: info.cols, upperHalfOnly: info.upper_half_only });
       onStatusChange(true);
     } catch (e) {
+      if (generation !== submitGeneration) return;
       info = null;
       onBoardChange(null);
       error = String(e);
     } finally {
-      busy = false;
+      if (generation === submitGeneration) busy = false;
     }
   }
 </script>
@@ -145,14 +167,30 @@
         <fieldset class="fieldset">
           <legend class="fieldset-legend">{ui.step2.columnCount}</legend>
           <label class="input w-full">
-            <input type="number" min="3" max="120" bind:value={cols} aria-label={ui.step2.availableColumns} />
+            <input
+              type="number"
+              min="3"
+              max="120"
+              value={cols}
+              disabled={busy}
+              oninput={(event) => updateColumns(event.currentTarget.valueAsNumber)}
+              aria-label={ui.step2.availableColumns}
+            />
             <span class="label">3–120</span>
           </label>
         </fieldset>
 
         <fieldset class="fieldset" disabled={busy}>
           <label class="fieldset-label cursor-pointer justify-start gap-3">
-            <input class="toggle toggle-primary toggle-sm" type="checkbox" bind:checked={upperHalfOnly} />
+            <input
+              class="toggle toggle-primary toggle-sm"
+              type="checkbox"
+              checked={upperHalfOnly}
+              onchange={(event) => {
+                upperHalfOnly = event.currentTarget.checked;
+                submitNow();
+              }}
+            />
             <span>{ui.step2.upperHalfOnly}</span>
           </label>
           <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.upperHalfOnlyHint}</p>
@@ -165,14 +203,30 @@
             <div class="grid grid-cols-2 gap-2">
               <label class="fieldset-label flex-col items-stretch gap-1" for="top-negative-power-net">
                 <span>{ui.step2.negativeRail}</span>
-                <select id="top-negative-power-net" class="select w-full min-w-0 font-mono" bind:value={topNegativeNet}>
+                <select
+                  id="top-negative-power-net"
+                  class="select w-full min-w-0 font-mono"
+                  value={topNegativeNet}
+                  onchange={(event) => {
+                    topNegativeNet = event.currentTarget.value;
+                    submitNow();
+                  }}
+                >
                   <option value="">{ui.step2.unbound}</option>
                   {#each netNames as net}<option value={net}>{net}</option>{/each}
                 </select>
               </label>
               <label class="fieldset-label flex-col items-stretch gap-1" for="top-positive-power-net">
                 <span>{ui.step2.positiveRail}</span>
-                <select id="top-positive-power-net" class="select w-full min-w-0 font-mono" bind:value={topPositiveNet}>
+                <select
+                  id="top-positive-power-net"
+                  class="select w-full min-w-0 font-mono"
+                  value={topPositiveNet}
+                  onchange={(event) => {
+                    topPositiveNet = event.currentTarget.value;
+                    submitNow();
+                  }}
+                >
                   <option value="">{ui.step2.unbound}</option>
                   {#each netNames as net}<option value={net}>{net}</option>{/each}
                 </select>
@@ -184,14 +238,30 @@
               <div class="grid grid-cols-2 gap-2">
                 <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-negative-power-net">
                   <span>{ui.step2.negativeRail}</span>
-                  <select id="bottom-negative-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomNegativeNet}>
+                  <select
+                    id="bottom-negative-power-net"
+                    class="select w-full min-w-0 font-mono"
+                    value={bottomNegativeNet}
+                    onchange={(event) => {
+                      bottomNegativeNet = event.currentTarget.value;
+                      submitNow();
+                    }}
+                  >
                     <option value="">{ui.step2.unbound}</option>
                     {#each netNames as net}<option value={net}>{net}</option>{/each}
                   </select>
                 </label>
                 <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-positive-power-net">
                   <span>{ui.step2.positiveRail}</span>
-                  <select id="bottom-positive-power-net" class="select w-full min-w-0 font-mono" bind:value={bottomPositiveNet}>
+                  <select
+                    id="bottom-positive-power-net"
+                    class="select w-full min-w-0 font-mono"
+                    value={bottomPositiveNet}
+                    onchange={(event) => {
+                      bottomPositiveNet = event.currentTarget.value;
+                      submitNow();
+                    }}
+                  >
                     <option value="">{ui.step2.unbound}</option>
                     {#each netNames as net}<option value={net}>{net}</option>{/each}
                   </select>
@@ -223,14 +293,16 @@
         </div>
         <div inert class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           {#if info}
-            <BreadboardPreview
-              {preset}
-              cols={info.cols}
-              upperHalfOnly={info.upper_half_only}
-              panCanvas={false}
-              tieNegativeRails={topNegativeNet === bottomNegativeNet}
-              tiePositiveRails={topPositiveNet === bottomPositiveNet}
-            />
+            {#key `${info.preset}:${info.cols}:${info.upper_half_only}`}
+              <BreadboardPreview
+                preset={info.preset}
+                cols={info.cols}
+                upperHalfOnly={info.upper_half_only}
+                panCanvas={false}
+                tieNegativeRails={topNegativeNet === bottomNegativeNet}
+                tiePositiveRails={topPositiveNet === bottomPositiveNet}
+              />
+            {/key}
           {:else}
             <div class="absolute inset-0 grid place-items-center"><span class="loading loading-spinner loading-md text-primary"></span></div>
           {/if}

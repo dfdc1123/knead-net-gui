@@ -16,6 +16,8 @@
     upperHalfOnly = false,
     frame,
     zoom = 1,
+    fitWidth = 0,
+    fitHeight = 0,
     panCanvas = true,
     solidWires = false,
     selected = null,
@@ -29,6 +31,8 @@
     upperHalfOnly?: boolean;
     frame?: LayoutFrame | null;
     zoom?: number;
+    fitWidth?: number;
+    fitHeight?: number;
     panCanvas?: boolean;
     solidWires?: boolean;
     selected?: CircuitSelection | null;
@@ -120,6 +124,14 @@
   let boardHeight = $derived(isMini ? (upperHalfOnly ? 84.2 : 168.2) : (upperHalfOnly ? 132 : 252));
   let displayWidth = $derived(Math.max(isMini ? 420 : 440, boardWidth));
   let displayHeight = $derived((displayWidth / boardWidth) * boardHeight);
+  let renderedZoom = $derived.by(() => {
+    if (fitWidth <= 0 || fitHeight <= 0) return zoom;
+    const availableWidth = Math.max(1, fitWidth - 24);
+    const availableHeight = Math.max(1, fitHeight - 24);
+    const fitScale = Math.min(availableWidth / displayWidth, availableHeight / displayHeight);
+    return zoom * fitScale;
+  });
+  let hasPanPadding = $derived(panCanvas);
 
   function holePosition(hole: BreadboardHole) {
     const x = xInset + hole.col * pitch + (hole.region.startsWith("rail") ? railOffset : 0);
@@ -720,15 +732,15 @@
 
 <div
   class="grid place-items-center bg-base-200 p-3 text-base-content"
-  style:width={panCanvas ? `calc(100% + ${displayWidth * zoom + 24}px)` : `max(100%, ${displayWidth * zoom + 24}px)`}
-  style:height={panCanvas ? `calc(100% + ${displayHeight * zoom + 24}px)` : `max(100%, ${displayHeight * zoom + 24}px)`}
+  style:width={hasPanPadding ? `calc(100% + ${displayWidth * renderedZoom + 24}px)` : `max(100%, ${displayWidth * renderedZoom + 24}px)`}
+  style:height={hasPanPadding ? `calc(100% + ${displayHeight * renderedZoom + 24}px)` : `max(100%, ${displayHeight * renderedZoom + 24}px)`}
   data-theme="corporate"
   role="presentation"
   onclick={() => onSelect(null)}
 >
   <svg
-    width={displayWidth * zoom}
-    height={displayHeight * zoom}
+    width={displayWidth * renderedZoom}
+    height={displayHeight * renderedZoom}
     viewBox="0 0 {boardWidth} {boardHeight}"
     style:overflow="visible"
     role="img"

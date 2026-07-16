@@ -34,10 +34,18 @@
   let schematicHost = $state<HTMLDivElement>();
   let breadboardHost = $state<HTMLDivElement>();
   let assemblyListHost = $state<HTMLDivElement>();
+  let resultLayoutHost = $state<HTMLDivElement>();
+  let visualPanelsHost = $state<HTMLDivElement>();
   let wireListOpen = $state(true);
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
+  let schematicViewportWidth = $state(0);
+  let schematicViewportHeight = $state(0);
+  let breadboardViewportWidth = $state(0);
+  let breadboardViewportHeight = $state(0);
+  let assemblyPanelWidth = $state(360);
+  let schematicPanelHeight = $state<number | null>(null);
 
   type PanGesture = {
     pointerId: number;
@@ -48,6 +56,35 @@
   };
 
   let panGesture: PanGesture | null = null;
+
+  const MIN_ASSEMBLY_PANEL_WIDTH = 320;
+  const MIN_CONTENT_WIDTH = 320;
+  const MIN_VISUAL_PANEL_HEIGHT = 160;
+
+  type PanelResizeGesture = {
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+  };
+
+  let panelResizeGesture: PanelResizeGesture | null = null;
+
+  type VisualPanelResizeGesture = {
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+  };
+
+  let visualPanelResizeGesture: VisualPanelResizeGesture | null = null;
+
+  type DiagramTarget = "schematic" | "breadboard";
+  type PendingViewportSize = {
+    viewport: HTMLDivElement;
+    width: number;
+    height: number;
+  };
+
+  let pendingViewportSizes: Partial<Record<DiagramTarget, PendingViewportSize>> = {};
 
   const breadboardRegionOrder: Record<BreadboardHole["region"], number> = {
     "rail-top": 0,
@@ -136,6 +173,194 @@
     return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
   }
 
+  function syncViewportSize(target: DiagramTarget) {
+    const viewport = target === "schematic" ? schematicHost : breadboardHost;
+    if (!viewport) return;
+    const bounds = viewport.getBoundingClientRect();
+    applyViewportSize(target, Math.round(bounds.width), Math.round(bounds.height));
+  }
+
+  function setDiagramZoom(zoom: number, target: DiagramTarget) {
+    if (zoom === 1) syncViewportSize(target);
+    if (target === "schematic") schematicZoom = zoom;
+    else breadboardZoom = zoom;
+  }
+
+  function applyViewportSize(target: DiagramTarget, width: number, height: number) {
+    if (target === "schematic") {
+      schematicViewportWidth = width;
+      schematicViewportHeight = height;
+    } else {
+      breadboardViewportWidth = width;
+      breadboardViewportHeight = height;
+    }
+  }
+
+  function layoutResizeActive() {
+    return panelResizeGesture !== null || visualPanelResizeGesture !== null;
+  }
+
+  function centerFittedViewport(viewport: HTMLDivElement, target: DiagramTarget) {
+    requestAnimationFrame(async () => {
+      await tick();
+      const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+      if (zoom === 1) centerCanvasNow(viewport);
+    });
+  }
+
+  function flushPendingViewportSizes() {
+    for (const target of ["schematic", "breadboard"] as const) {
+      const pending = pendingViewportSizes[target];
+      if (!pending) continue;
+      const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+      if (zoom === 1) {
+        applyViewportSize(target, pending.width, pending.height);
+        centerFittedViewport(pending.viewport, target);
+      }
+    }
+    pendingViewportSizes = {};
+  }
+
+  function observeDiagramViewport(viewport: HTMLDivElement, target: DiagramTarget) {
+    let animationFrame = 0;
+    const update = () => {
+      const bounds = viewport.getBoundingClientRect();
+      const size = {
+        viewport,
+        width: Math.round(bounds.width),
+        height: Math.round(bounds.height),
+      };
+      if (layoutResizeActive()) {
+        pendingViewportSizes[target] = size;
+        const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+        if (zoom === 1) {
+          cancelAnimationFrame(animationFrame);
+          animationFrame = requestAnimationFrame(() => centerCanvasNow(viewport));
+        }
+        return;
+      }
+      const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+      if (zoom !== 1) return;
+      applyViewportSize(target, size.width, size.height);
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(() => centerFittedViewport(viewport, target));
+    };
+    const resizeObserver = new ResizeObserver(update);
+    resizeObserver.observe(viewport);
+    update();
+
+    return {
+      destroy() {
+        cancelAnimationFrame(animationFrame);
+        resizeObserver.disconnect();
+      },
+    };
+  }
+
+  function maxAssemblyPanelWidth() {
+    const layoutWidth = resultLayoutHost?.getBoundingClientRect().width ?? 0;
+    return Math.max(MIN_ASSEMBLY_PANEL_WIDTH, layoutWidth - MIN_CONTENT_WIDTH - 12);
+  }
+
+  function clampAssemblyPanelWidth(width: number) {
+    return Math.round(Math.min(maxAssemblyPanelWidth(), Math.max(MIN_ASSEMBLY_PANEL_WIDTH, width)));
+  }
+
+  function startAssemblyResize(event: PointerEvent) {
+    if (event.button !== 0) return;
+    panelResizeGesture = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: assemblyPanelWidth,
+    };
+    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function resizeAssemblyPanel(event: PointerEvent) {
+    if (!panelResizeGesture || event.pointerId !== panelResizeGesture.pointerId) return;
+    assemblyPanelWidth = clampAssemblyPanelWidth(panelResizeGesture.startWidth - (event.clientX - panelResizeGesture.startX));
+  }
+
+  function stopAssemblyResize(event: PointerEvent) {
+    if (!panelResizeGesture || event.pointerId !== panelResizeGesture.pointerId) return;
+    const handle = event.currentTarget as HTMLButtonElement;
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+    panelResizeGesture = null;
+    flushPendingViewportSizes();
+  }
+
+  function resizeAssemblyPanelWithKeyboard(event: KeyboardEvent) {
+    if (event.key === "ArrowLeft") {
+      assemblyPanelWidth = clampAssemblyPanelWidth(assemblyPanelWidth + 24);
+    } else if (event.key === "ArrowRight") {
+      assemblyPanelWidth = clampAssemblyPanelWidth(assemblyPanelWidth - 24);
+    } else if (event.key === "Home") {
+      assemblyPanelWidth = MIN_ASSEMBLY_PANEL_WIDTH;
+    } else if (event.key === "End") {
+      assemblyPanelWidth = maxAssemblyPanelWidth();
+    } else {
+      return;
+    }
+    event.preventDefault();
+  }
+
+  function maxSchematicPanelHeight() {
+    const layoutHeight = visualPanelsHost?.getBoundingClientRect().height ?? 0;
+    return Math.max(MIN_VISUAL_PANEL_HEIGHT, layoutHeight - MIN_VISUAL_PANEL_HEIGHT - 12);
+  }
+
+  function clampSchematicPanelHeight(height: number) {
+    return Math.round(Math.min(maxSchematicPanelHeight(), Math.max(MIN_VISUAL_PANEL_HEIGHT, height)));
+  }
+
+  function startVisualPanelResize(event: PointerEvent) {
+    if (event.button !== 0 || !visualPanelsHost) return;
+    const firstPanel = visualPanelsHost.firstElementChild;
+    if (!firstPanel) return;
+    visualPanelResizeGesture = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: firstPanel.getBoundingClientRect().height,
+    };
+    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function resizeVisualPanels(event: PointerEvent) {
+    if (!visualPanelResizeGesture || event.pointerId !== visualPanelResizeGesture.pointerId) return;
+    schematicPanelHeight = clampSchematicPanelHeight(visualPanelResizeGesture.startHeight + (event.clientY - visualPanelResizeGesture.startY));
+  }
+
+  function stopVisualPanelResize(event: PointerEvent) {
+    if (!visualPanelResizeGesture || event.pointerId !== visualPanelResizeGesture.pointerId) return;
+    const handle = event.currentTarget as HTMLButtonElement;
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+    visualPanelResizeGesture = null;
+    flushPendingViewportSizes();
+  }
+
+  function resizeVisualPanelsWithKeyboard(event: KeyboardEvent) {
+    const currentHeight = schematicPanelHeight ?? visualPanelsHost?.firstElementChild?.getBoundingClientRect().height;
+    if (currentHeight === undefined) return;
+    if (event.key === "ArrowUp") {
+      schematicPanelHeight = clampSchematicPanelHeight(currentHeight - 24);
+    } else if (event.key === "ArrowDown") {
+      schematicPanelHeight = clampSchematicPanelHeight(currentHeight + 24);
+    } else if (event.key === "Home") {
+      schematicPanelHeight = MIN_VISUAL_PANEL_HEIGHT;
+    } else if (event.key === "End") {
+      schematicPanelHeight = maxSchematicPanelHeight();
+    } else {
+      return;
+    }
+    event.preventDefault();
+  }
+
   async function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
     event.preventDefault();
     const viewport = event.currentTarget as HTMLDivElement;
@@ -151,8 +376,7 @@
     const focusX = (event.clientX - before.left) / before.width;
     const focusY = (event.clientY - before.top) / before.height;
 
-    if (target === "schematic") schematicZoom = nextZoom;
-    else breadboardZoom = nextZoom;
+    setDiagramZoom(nextZoom, target);
     await tick();
 
     const after = diagram.getBoundingClientRect();
@@ -161,11 +385,11 @@
   }
 
   async function resetDiagram(target: "schematic" | "breadboard") {
-    if (target === "schematic") schematicZoom = 1;
-    else breadboardZoom = 1;
+    const viewport = target === "schematic" ? schematicHost : breadboardHost;
+    syncViewportSize(target);
+    setDiagramZoom(1, target);
     await tick();
 
-    const viewport = target === "schematic" ? schematicHost : breadboardHost;
     if (viewport) centerCanvasNow(viewport);
   }
 
@@ -374,8 +598,16 @@
     {/if}
   </div>
 
-  <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)] gap-3">
-    <div class="grid min-h-0 grid-rows-2 gap-3">
+  <div
+    class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_0.75rem_minmax(20rem,1fr)]"
+    bind:this={resultLayoutHost}
+    style:grid-template-columns={`minmax(0, 1fr) 0.75rem ${assemblyPanelWidth}px`}
+  >
+    <div
+      class="grid min-h-0 grid-rows-[minmax(0,1fr)_0.75rem_minmax(0,1fr)]"
+      bind:this={visualPanelsHost}
+      style:grid-template-rows={schematicPanelHeight === null ? undefined : `${schematicPanelHeight}px 0.75rem minmax(0, 1fr)`}
+    >
       <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between px-1">
@@ -384,7 +616,7 @@
               <span class="badge badge-ghost badge-sm">SCH</span>
               <ZoomControls
                 zoom={schematicZoom}
-                onZoom={(zoom) => (schematicZoom = clampZoom(zoom))}
+                onZoom={(zoom) => setDiagramZoom(clampZoom(zoom), "schematic")}
                 onReset={() => resetDiagram("schematic")}
               />
             </div>
@@ -394,6 +626,7 @@
               class="diagram-viewport schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
               bind:this={schematicHost}
               use:centerCanvas
+              use:observeDiagramViewport={"schematic"}
               onclick={handleSchematicClick}
               onwheel={(event) => handleZoomWheel(event, "schematic")}
               onpointerdown={startPan}
@@ -407,13 +640,21 @@
             >
               <div
                 class="schematic-stage"
-                style:width={`${(schematicZoom + 1) * 100}%`}
-                style:height={`${(schematicZoom + 1) * 100}%`}
+                style:width={schematicViewportWidth > 0
+                  ? `calc(100% + ${Math.max(1, schematicViewportWidth - 24) * schematicZoom}px)`
+                  : `${(schematicZoom + 1) * 100}%`}
+                style:height={schematicViewportHeight > 0
+                  ? `calc(100% + ${Math.max(1, schematicViewportHeight - 24) * schematicZoom}px)`
+                  : `${(schematicZoom + 1) * 100}%`}
               >
                 <div
                   class="schematic-content"
-                  style:width={`${(schematicZoom / (schematicZoom + 1)) * 100}%`}
-                  style:height={`${(schematicZoom / (schematicZoom + 1)) * 100}%`}
+                  style:width={schematicViewportWidth > 0
+                    ? `${Math.max(1, schematicViewportWidth - 24) * schematicZoom}px`
+                    : `${(schematicZoom / (schematicZoom + 1)) * 100}%`}
+                  style:height={schematicViewportHeight > 0
+                    ? `${Math.max(1, schematicViewportHeight - 24) * schematicZoom}px`
+                    : `${(schematicZoom / (schematicZoom + 1)) * 100}%`}
                 >
                   {@html schematicSvg}
                 </div>
@@ -427,6 +668,21 @@
         </div>
       </section>
 
+      <button
+        type="button"
+        class="group relative cursor-row-resize touch-none border-0 bg-transparent p-0 outline-none focus-visible:bg-primary/20"
+        aria-label={ui.step4.resizeVisualPanels}
+        title={ui.step4.resizeVisualPanels}
+        onpointerdown={startVisualPanelResize}
+        onpointermove={resizeVisualPanels}
+        onpointerup={stopVisualPanelResize}
+        onpointercancel={stopVisualPanelResize}
+        onlostpointercapture={stopVisualPanelResize}
+        onkeydown={resizeVisualPanelsWithKeyboard}
+      >
+        <div class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-base-300 group-hover:bg-primary"></div>
+      </button>
+
       <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between gap-3 px-1">
@@ -439,7 +695,7 @@
               <span class="flex items-center gap-1.5 text-base-content/60"><span class="status status-neutral"></span>{ui.step4.pendingDashed}</span>
               <ZoomControls
                 zoom={breadboardZoom}
-                onZoom={(zoom) => (breadboardZoom = clampZoom(zoom))}
+                onZoom={(zoom) => setDiagramZoom(clampZoom(zoom), "breadboard")}
                 onReset={() => resetDiagram("breadboard")}
               />
             </div>
@@ -448,6 +704,7 @@
             class="diagram-viewport min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200"
             bind:this={breadboardHost}
             use:centerCanvas
+            use:observeDiagramViewport={"breadboard"}
             onwheel={(event) => handleZoomWheel(event, "breadboard")}
             onpointerdown={startPan}
             onpointermove={movePan}
@@ -464,6 +721,9 @@
               {upperHalfOnly}
               {frame}
               zoom={breadboardZoom}
+              fitWidth={breadboardViewportWidth}
+              fitHeight={breadboardViewportHeight}
+              panCanvas
               {selected}
               {completedWireIds}
               onSelect={choose}
@@ -472,6 +732,21 @@
         </div>
       </section>
     </div>
+
+    <button
+      type="button"
+      class="group relative cursor-col-resize touch-none border-0 bg-transparent p-0 outline-none focus-visible:bg-primary/20"
+      aria-label={ui.step4.resizeAssemblyList}
+      title={ui.step4.resizeAssemblyList}
+      onpointerdown={startAssemblyResize}
+      onpointermove={resizeAssemblyPanel}
+      onpointerup={stopAssemblyResize}
+      onpointercancel={stopAssemblyResize}
+      onlostpointercapture={stopAssemblyResize}
+      onkeydown={resizeAssemblyPanelWithKeyboard}
+    >
+      <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-base-300 group-hover:bg-primary"></div>
+    </button>
 
     <aside class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm" aria-label={ui.step4.assemblyList}>
       <div class="card-body min-h-0 gap-3 p-3">
