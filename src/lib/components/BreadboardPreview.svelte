@@ -1081,8 +1081,8 @@
                 <text
                   x={pinLabel.x}
                   y={pinLabel.y}
+                  dy="0.35em"
                   text-anchor="middle"
-                  dominant-baseline="central"
                   font-family="ui-sans-serif, system-ui, sans-serif"
                   font-size="5.8"
                   font-weight="700"
