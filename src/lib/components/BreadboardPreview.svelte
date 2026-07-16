@@ -62,6 +62,10 @@
     return Array.from({ length }, (_, index) => index);
   }
 
+  function mainRowLabel(row: number, bottom: boolean) {
+    return String.fromCharCode((bottom ? 70 : 65) + row);
+  }
+
   function railColumns(kind: BreadboardPreset, columnCount: number) {
     const margin = kind === "hole800" ? 2 : 0;
     const result: number[] = [];
@@ -770,6 +774,25 @@
           {/if}
         {/each}
       {/each}
+
+      <g
+        aria-hidden="true"
+        fill="var(--color-base-content)"
+        font-family="ui-sans-serif, system-ui, sans-serif"
+        font-size="5.5"
+        font-weight="700"
+        text-anchor="middle"
+      >
+        {#each columns as column}
+          <text x={xInset + column * pitch} y="8">{column + 1}</text>
+        {/each}
+        {#each mainRows as row}
+          <text x="5" y={18.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
+          {#if !upperHalfOnly}
+            <text x="5" y={102.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
+          {/if}
+        {/each}
+      </g>
     {:else}
       <path d="M 1 4 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
       <path d="M 1 32 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
@@ -817,6 +840,25 @@
           <text x="7" y="230.5" fill="var(--color-primary)">−</text>
           <text x="7" y="242.5" fill="var(--color-error)">+</text>
         {/if}
+      </g>
+
+      <g
+        aria-hidden="true"
+        fill="var(--color-base-content)"
+        font-family="ui-sans-serif, system-ui, sans-serif"
+        font-size="5.5"
+        font-weight="700"
+        text-anchor="middle"
+      >
+        {#each columns as column}
+          <text x={xInset + column * pitch} y="47">{column + 1}</text>
+        {/each}
+        {#each mainRows as row}
+          <text x="7" y={60 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
+          {#if !upperHalfOnly}
+            <text x="7" y={144 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
+          {/if}
+        {/each}
       </g>
     {/if}
 
