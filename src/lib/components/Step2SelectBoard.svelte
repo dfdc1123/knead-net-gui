@@ -14,7 +14,7 @@
   } = $props();
 
   type Info = {
-    preset: string;
+    preset: BreadboardPreset;
     cols: number;
     holes: number;
     has_power_rails: boolean;
@@ -223,14 +223,16 @@
         </div>
         <div inert class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           {#if info}
-            <BreadboardPreview
-              {preset}
-              cols={info.cols}
-              upperHalfOnly={info.upper_half_only}
-              panCanvas={false}
-              tieNegativeRails={topNegativeNet === bottomNegativeNet}
-              tiePositiveRails={topPositiveNet === bottomPositiveNet}
-            />
+            {#key `${info.preset}:${info.cols}:${info.upper_half_only}`}
+              <BreadboardPreview
+                preset={info.preset}
+                cols={info.cols}
+                upperHalfOnly={info.upper_half_only}
+                panCanvas={false}
+                tieNegativeRails={topNegativeNet === bottomNegativeNet}
+                tiePositiveRails={topPositiveNet === bottomPositiveNet}
+              />
+            {/key}
           {:else}
             <div class="absolute inset-0 grid place-items-center"><span class="loading loading-spinner loading-md text-primary"></span></div>
           {/if}
