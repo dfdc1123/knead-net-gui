@@ -191,8 +191,8 @@
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[23rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
-      <div class="card-body min-h-0 gap-4 overflow-auto p-4">
+    <aside class="card min-h-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 gap-4 p-4">
         <fieldset class="fieldset shrink-0" disabled={busy}>
           <legend class="fieldset-legend">{ui.step3.strength}</legend>
           <div class="join join-vertical w-full">

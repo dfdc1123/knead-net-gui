@@ -134,8 +134,8 @@
   {/if}
 
   <div class="grid min-h-0 flex-1 grid-cols-[20rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 min-w-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
-      <div class="card-body min-h-0 min-w-0 gap-3 overflow-hidden p-4">
+    <aside class="card min-h-0 min-w-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+      <div class="card-body min-h-0 min-w-0 gap-3 p-4">
         <fieldset class="fieldset min-w-0 shrink-0">
           <legend class="fieldset-legend">{ui.step1.projectFolder}</legend>
           <button
