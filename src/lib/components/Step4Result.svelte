@@ -40,6 +40,8 @@
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
+  let schematicViewportWidth = $state(0);
+  let schematicViewportHeight = $state(0);
   let breadboardViewportWidth = $state(0);
   let breadboardViewportHeight = $state(0);
   let assemblyPanelWidth = $state(360);
@@ -74,6 +76,15 @@
   };
 
   let visualPanelResizeGesture: VisualPanelResizeGesture | null = null;
+
+  type DiagramTarget = "schematic" | "breadboard";
+  type PendingViewportSize = {
+    viewport: HTMLDivElement;
+    width: number;
+    height: number;
+  };
+
+  let pendingViewportSizes: Partial<Record<DiagramTarget, PendingViewportSize>> = {};
 
   const breadboardRegionOrder: Record<BreadboardHole["region"], number> = {
     "rail-top": 0,
@@ -162,19 +173,59 @@
     return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
   }
 
-  function observeDiagramViewport(viewport: HTMLDivElement, target: "schematic" | "breadboard") {
+  function applyViewportSize(target: DiagramTarget, width: number, height: number) {
+    if (target === "schematic") {
+      schematicViewportWidth = width;
+      schematicViewportHeight = height;
+    } else {
+      breadboardViewportWidth = width;
+      breadboardViewportHeight = height;
+    }
+  }
+
+  function layoutResizeActive() {
+    return panelResizeGesture !== null || visualPanelResizeGesture !== null;
+  }
+
+  function centerFittedViewport(viewport: HTMLDivElement, target: DiagramTarget) {
+    requestAnimationFrame(async () => {
+      await tick();
+      const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
+      if (zoom === 1) centerCanvasNow(viewport);
+    });
+  }
+
+  function flushPendingViewportSizes() {
+    for (const target of ["schematic", "breadboard"] as const) {
+      const pending = pendingViewportSizes[target];
+      if (!pending) continue;
+      applyViewportSize(target, pending.width, pending.height);
+      centerFittedViewport(pending.viewport, target);
+    }
+    pendingViewportSizes = {};
+  }
+
+  function observeDiagramViewport(viewport: HTMLDivElement, target: DiagramTarget) {
     let animationFrame = 0;
     const update = () => {
-      if (target === "breadboard") {
-        breadboardViewportWidth = viewport.clientWidth;
-        breadboardViewportHeight = viewport.clientHeight;
-      }
-      cancelAnimationFrame(animationFrame);
-      animationFrame = requestAnimationFrame(async () => {
-        await tick();
+      const bounds = viewport.getBoundingClientRect();
+      const size = {
+        viewport,
+        width: Math.round(bounds.width),
+        height: Math.round(bounds.height),
+      };
+      if (layoutResizeActive()) {
+        pendingViewportSizes[target] = size;
         const zoom = target === "schematic" ? schematicZoom : breadboardZoom;
-        if (zoom === 1) centerCanvasNow(viewport);
-      });
+        if (zoom === 1) {
+          cancelAnimationFrame(animationFrame);
+          animationFrame = requestAnimationFrame(() => centerCanvasNow(viewport));
+        }
+        return;
+      }
+      applyViewportSize(target, size.width, size.height);
+      cancelAnimationFrame(animationFrame);
+      animationFrame = requestAnimationFrame(() => centerFittedViewport(viewport, target));
     };
     const resizeObserver = new ResizeObserver(update);
     resizeObserver.observe(viewport);
@@ -220,6 +271,7 @@
       handle.releasePointerCapture(event.pointerId);
     }
     panelResizeGesture = null;
+    flushPendingViewportSizes();
   }
 
   function resizeAssemblyPanelWithKeyboard(event: KeyboardEvent) {
@@ -271,6 +323,7 @@
       handle.releasePointerCapture(event.pointerId);
     }
     visualPanelResizeGesture = null;
+    flushPendingViewportSizes();
   }
 
   function resizeVisualPanelsWithKeyboard(event: KeyboardEvent) {
@@ -570,13 +623,21 @@
             >
               <div
                 class="schematic-stage"
-                style:width={`${(schematicZoom > 1 ? schematicZoom + 1 : 1) * 100}%`}
-                style:height={`${(schematicZoom > 1 ? schematicZoom + 1 : 1) * 100}%`}
+                style:width={schematicViewportWidth > 0
+                  ? `calc(100% + ${Math.max(1, schematicViewportWidth - 24) * schematicZoom}px)`
+                  : `${(schematicZoom + 1) * 100}%`}
+                style:height={schematicViewportHeight > 0
+                  ? `calc(100% + ${Math.max(1, schematicViewportHeight - 24) * schematicZoom}px)`
+                  : `${(schematicZoom + 1) * 100}%`}
               >
                 <div
                   class="schematic-content"
-                  style:width={`${(schematicZoom > 1 ? schematicZoom / (schematicZoom + 1) : schematicZoom) * 100}%`}
-                  style:height={`${(schematicZoom > 1 ? schematicZoom / (schematicZoom + 1) : schematicZoom) * 100}%`}
+                  style:width={schematicViewportWidth > 0
+                    ? `${Math.max(1, schematicViewportWidth - 24) * schematicZoom}px`
+                    : `${(schematicZoom / (schematicZoom + 1)) * 100}%`}
+                  style:height={schematicViewportHeight > 0
+                    ? `${Math.max(1, schematicViewportHeight - 24) * schematicZoom}px`
+                    : `${(schematicZoom / (schematicZoom + 1)) * 100}%`}
                 >
                   {@html schematicSvg}
                 </div>

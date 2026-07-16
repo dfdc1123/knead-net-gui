@@ -131,7 +131,7 @@
     const fitScale = Math.min(availableWidth / displayWidth, availableHeight / displayHeight);
     return zoom * fitScale;
   });
-  let hasPanPadding = $derived(panCanvas && zoom > 1);
+  let hasPanPadding = $derived(panCanvas);
 
   function holePosition(hole: BreadboardHole) {
     const x = xInset + hole.col * pitch + (hole.region.startsWith("rail") ? railOffset : 0);
