@@ -35,11 +35,13 @@
   let breadboardHost = $state<HTMLDivElement>();
   let assemblyListHost = $state<HTMLDivElement>();
   let resultLayoutHost = $state<HTMLDivElement>();
+  let visualPanelsHost = $state<HTMLDivElement>();
   let wireListOpen = $state(true);
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
   let breadboardZoom = $state(1);
   let assemblyPanelWidth = $state(360);
+  let schematicPanelHeight = $state<number | null>(null);
 
   type PanGesture = {
     pointerId: number;
@@ -53,6 +55,7 @@
 
   const MIN_ASSEMBLY_PANEL_WIDTH = 320;
   const MIN_CONTENT_WIDTH = 320;
+  const MIN_VISUAL_PANEL_HEIGHT = 160;
 
   type PanelResizeGesture = {
     pointerId: number;
@@ -61,6 +64,14 @@
   };
 
   let panelResizeGesture: PanelResizeGesture | null = null;
+
+  type VisualPanelResizeGesture = {
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+  };
+
+  let visualPanelResizeGesture: VisualPanelResizeGesture | null = null;
 
   const breadboardRegionOrder: Record<BreadboardHole["region"], number> = {
     "rail-top": 0,
@@ -192,6 +203,59 @@
       assemblyPanelWidth = MIN_ASSEMBLY_PANEL_WIDTH;
     } else if (event.key === "End") {
       assemblyPanelWidth = maxAssemblyPanelWidth();
+    } else {
+      return;
+    }
+    event.preventDefault();
+  }
+
+  function maxSchematicPanelHeight() {
+    const layoutHeight = visualPanelsHost?.getBoundingClientRect().height ?? 0;
+    return Math.max(MIN_VISUAL_PANEL_HEIGHT, layoutHeight - MIN_VISUAL_PANEL_HEIGHT - 12);
+  }
+
+  function clampSchematicPanelHeight(height: number) {
+    return Math.round(Math.min(maxSchematicPanelHeight(), Math.max(MIN_VISUAL_PANEL_HEIGHT, height)));
+  }
+
+  function startVisualPanelResize(event: PointerEvent) {
+    if (event.button !== 0 || !visualPanelsHost) return;
+    const firstPanel = visualPanelsHost.firstElementChild;
+    if (!firstPanel) return;
+    visualPanelResizeGesture = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: firstPanel.getBoundingClientRect().height,
+    };
+    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function resizeVisualPanels(event: PointerEvent) {
+    if (!visualPanelResizeGesture || event.pointerId !== visualPanelResizeGesture.pointerId) return;
+    schematicPanelHeight = clampSchematicPanelHeight(visualPanelResizeGesture.startHeight + (event.clientY - visualPanelResizeGesture.startY));
+  }
+
+  function stopVisualPanelResize(event: PointerEvent) {
+    if (!visualPanelResizeGesture || event.pointerId !== visualPanelResizeGesture.pointerId) return;
+    const handle = event.currentTarget as HTMLButtonElement;
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+    visualPanelResizeGesture = null;
+  }
+
+  function resizeVisualPanelsWithKeyboard(event: KeyboardEvent) {
+    const currentHeight = schematicPanelHeight ?? visualPanelsHost?.firstElementChild?.getBoundingClientRect().height;
+    if (currentHeight === undefined) return;
+    if (event.key === "ArrowUp") {
+      schematicPanelHeight = clampSchematicPanelHeight(currentHeight - 24);
+    } else if (event.key === "ArrowDown") {
+      schematicPanelHeight = clampSchematicPanelHeight(currentHeight + 24);
+    } else if (event.key === "Home") {
+      schematicPanelHeight = MIN_VISUAL_PANEL_HEIGHT;
+    } else if (event.key === "End") {
+      schematicPanelHeight = maxSchematicPanelHeight();
     } else {
       return;
     }
@@ -441,7 +505,11 @@
     bind:this={resultLayoutHost}
     style:grid-template-columns={`minmax(0, 1fr) 0.75rem ${assemblyPanelWidth}px`}
   >
-    <div class="grid min-h-0 grid-rows-2 gap-3">
+    <div
+      class="grid min-h-0 grid-rows-[minmax(0,1fr)_0.75rem_minmax(0,1fr)]"
+      bind:this={visualPanelsHost}
+      style:grid-template-rows={schematicPanelHeight === null ? undefined : `${schematicPanelHeight}px 0.75rem minmax(0, 1fr)`}
+    >
       <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between px-1">
@@ -492,6 +560,21 @@
           {/if}
         </div>
       </section>
+
+      <button
+        type="button"
+        class="group relative cursor-row-resize touch-none border-0 bg-transparent p-0 outline-none focus-visible:bg-primary/20"
+        aria-label={ui.step4.resizeVisualPanels}
+        title={ui.step4.resizeVisualPanels}
+        onpointerdown={startVisualPanelResize}
+        onpointermove={resizeVisualPanels}
+        onpointerup={stopVisualPanelResize}
+        onpointercancel={stopVisualPanelResize}
+        onlostpointercapture={stopVisualPanelResize}
+        onkeydown={resizeVisualPanelsWithKeyboard}
+      >
+        <div class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-base-300 group-hover:bg-primary"></div>
+      </button>
 
       <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body min-h-0 gap-2 p-3">
