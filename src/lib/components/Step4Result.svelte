@@ -570,13 +570,13 @@
             >
               <div
                 class="schematic-stage"
-                style:width={`${Math.max(1, schematicZoom) * 100}%`}
-                style:height={`${Math.max(1, schematicZoom) * 100}%`}
+                style:width={`${(schematicZoom > 1 ? schematicZoom + 1 : 1) * 100}%`}
+                style:height={`${(schematicZoom > 1 ? schematicZoom + 1 : 1) * 100}%`}
               >
                 <div
                   class="schematic-content"
-                  style:width={`${Math.min(1, schematicZoom) * 100}%`}
-                  style:height={`${Math.min(1, schematicZoom) * 100}%`}
+                  style:width={`${(schematicZoom > 1 ? schematicZoom / (schematicZoom + 1) : schematicZoom) * 100}%`}
+                  style:height={`${(schematicZoom > 1 ? schematicZoom / (schematicZoom + 1) : schematicZoom) * 100}%`}
                 >
                   {@html schematicSvg}
                 </div>
@@ -645,7 +645,7 @@
               zoom={breadboardZoom}
               fitWidth={breadboardViewportWidth}
               fitHeight={breadboardViewportHeight}
-              panCanvas={false}
+              panCanvas
               {selected}
               {completedWireIds}
               onSelect={choose}

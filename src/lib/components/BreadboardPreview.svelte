@@ -131,6 +131,7 @@
     const fitScale = Math.min(availableWidth / displayWidth, availableHeight / displayHeight);
     return zoom * fitScale;
   });
+  let hasPanPadding = $derived(panCanvas && zoom > 1);
 
   function holePosition(hole: BreadboardHole) {
     const x = xInset + hole.col * pitch + (hole.region.startsWith("rail") ? railOffset : 0);
@@ -731,8 +732,8 @@
 
 <div
   class="grid place-items-center bg-base-200 p-3 text-base-content"
-  style:width={panCanvas ? `calc(100% + ${displayWidth * renderedZoom + 24}px)` : `max(100%, ${displayWidth * renderedZoom + 24}px)`}
-  style:height={panCanvas ? `calc(100% + ${displayHeight * renderedZoom + 24}px)` : `max(100%, ${displayHeight * renderedZoom + 24}px)`}
+  style:width={hasPanPadding ? `calc(100% + ${displayWidth * renderedZoom + 24}px)` : `max(100%, ${displayWidth * renderedZoom + 24}px)`}
+  style:height={hasPanPadding ? `calc(100% + ${displayHeight * renderedZoom + 24}px)` : `max(100%, ${displayHeight * renderedZoom + 24}px)`}
   data-theme="corporate"
   role="presentation"
   onclick={() => onSelect(null)}
