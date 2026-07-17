@@ -33,7 +33,6 @@
   ];
 
   let preset = $state<BreadboardPreset>("hole400");
-  let cols = $state(30);
   let upperHalfOnly = $state(false);
   let info = $state<Info | null>(null);
   let netNames = $state<string[]>([]);
@@ -46,7 +45,6 @@
   let error = $state("");
   let hasPowerRails = $derived(preset !== "hole170");
   let submitGeneration = 0;
-  let columnTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(() => {
     void loadPowerNetOptions();
@@ -77,31 +75,15 @@
 
   function pick(p: BreadboardPreset) {
     if (busy) return;
-    const defaultCols = PRESETS.find((x) => x.id === p)!.defaultCols;
     preset = p;
-    cols = defaultCols;
-    submitNow(p, defaultCols);
+    submitNow(p);
   }
 
-  function submitNow(p = preset, c = cols) {
-    if (columnTimer) {
-      clearTimeout(columnTimer);
-      columnTimer = null;
-    }
-    if (powerOptionsReady && Number.isFinite(c)) void submit(p, c);
+  function submitNow(p = preset) {
+    if (powerOptionsReady) void submit(p);
   }
 
-  function updateColumns(value: number) {
-    cols = value;
-    if (columnTimer) clearTimeout(columnTimer);
-    if (!Number.isFinite(value)) return;
-    columnTimer = setTimeout(() => {
-      columnTimer = null;
-      if (powerOptionsReady) void submit(preset, cols);
-    }, 250);
-  }
-
-  async function submit(p: BreadboardPreset, c: number) {
+  async function submit(p: BreadboardPreset) {
     const generation = ++submitGeneration;
     const useUpperHalfOnly = upperHalfOnly;
     const usePowerRails = p !== "hole170";
@@ -111,7 +93,6 @@
     try {
       const nextInfo = await invoke<Info>("set_breadboard", {
         preset: p,
-        cols: c,
         upperHalfOnly: useUpperHalfOnly,
         powerNets: {
           top_positive_net: usePowerRails && topPositiveNet ? topPositiveNet : null,
@@ -123,7 +104,7 @@
       });
       if (generation !== submitGeneration) return;
       info = nextInfo;
-      onBoardChange({ preset: p, cols: info.cols, upperHalfOnly: info.upper_half_only });
+      onBoardChange({ preset: p, boardCols: info.cols, upperHalfOnly: info.upper_half_only });
       onStatusChange(true);
     } catch (e) {
       if (generation !== submitGeneration) return;
@@ -164,21 +145,7 @@
           </div>
         </fieldset>
 
-        <fieldset class="fieldset">
-          <legend class="fieldset-legend">{ui.step2.columnCount}</legend>
-          <label class="input w-full">
-            <input
-              type="number"
-              min="3"
-              max="120"
-              value={cols}
-              disabled={busy}
-              oninput={(event) => updateColumns(event.currentTarget.valueAsNumber)}
-              aria-label={ui.step2.availableColumns}
-            />
-            <span class="label">3–120</span>
-          </label>
-        </fieldset>
+        <p class="text-xs leading-relaxed text-base-content/60">{ui.step2.autoBoardHint}</p>
 
         <fieldset class="fieldset" disabled={busy}>
           <label class="fieldset-label cursor-pointer justify-start gap-3">
@@ -296,7 +263,8 @@
             {#key `${info.preset}:${info.cols}:${info.upper_half_only}`}
               <BreadboardPreview
                 preset={info.preset}
-                cols={info.cols}
+                boardCols={info.cols}
+                boardCount={1}
                 upperHalfOnly={info.upper_half_only}
                 panCanvas={false}
                 tieNegativeRails={topNegativeNet === bottomNegativeNet}

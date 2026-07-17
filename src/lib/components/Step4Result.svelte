@@ -17,13 +17,11 @@
 
   let {
     preset,
-    cols,
     upperHalfOnly = false,
     frame,
     schematicSvg = "",
   }: {
     preset: BreadboardPreset;
-    cols: number;
     upperHalfOnly?: boolean;
     frame: LayoutFrame;
     schematicSvg?: string;
@@ -689,7 +687,8 @@
           <div class="flex shrink-0 items-center justify-between gap-3 px-1">
             <div class="flex items-center gap-2">
               <h2 class="card-title text-base">{ui.step4.breadboard}</h2>
-              <span class="badge badge-ghost badge-sm">{ui.step4.columns(cols)}</span>
+              <span class="badge badge-primary badge-sm">{ui.step4.boards(frame.board_count)}</span>
+              <span class="badge badge-ghost badge-sm">{ui.step4.columns(frame.total_cols)}</span>
             </div>
             <div class="flex items-center gap-3 text-xs">
               <span class="flex items-center gap-1.5"><span class="status status-success"></span>{ui.step4.completedSolid}</span>
@@ -718,7 +717,8 @@
           >
             <BreadboardPreview
               {preset}
-              {cols}
+              boardCols={frame.board_cols}
+              boardCount={frame.board_count}
               {upperHalfOnly}
               {frame}
               zoom={breadboardZoom}

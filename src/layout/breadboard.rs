@@ -314,6 +314,74 @@ impl Preset {
         }
     }
 
+    /// Repeat a physical preset along one global x axis while restarting each board's
+    /// power-rail hole pattern locally. The repeated strips remain one logical conductive
+    /// island per row; this models capacity without introducing inter-board connectivity.
+    pub fn make_repeated(self, board_count: usize) -> Breadboard {
+        assert!(board_count > 0, "board_count must be positive");
+        let board_cols = self.default_cols();
+        let cols = board_cols
+            .checked_mul(board_count)
+            .expect("repeated breadboard width overflow");
+        match self {
+            Self::Hole170 => Breadboard::preset_170(cols),
+            Self::Hole400 => Breadboard::with_power_rails(
+                cols,
+                12,
+                [5, 6],
+                repeat_power_rails(
+                    standard_power_rails(board_cols as i32),
+                    board_cols,
+                    board_count,
+                ),
+            )
+            .with_default_power_rail_ties(),
+            Self::Hole800 => Breadboard::with_power_rails(
+                cols,
+                12,
+                [5, 6],
+                repeat_power_rails(
+                    wide_power_rails_800(board_cols as i32),
+                    board_cols,
+                    board_count,
+                ),
+            )
+            .with_default_power_rail_ties(),
+        }
+    }
+
+    /// Upper-half-only counterpart of [`Self::make_repeated`].
+    pub fn make_repeated_upper_half(self, board_count: usize) -> Breadboard {
+        assert!(board_count > 0, "board_count must be positive");
+        let board_cols = self.default_cols();
+        let cols = board_cols
+            .checked_mul(board_count)
+            .expect("repeated breadboard width overflow");
+        match self {
+            Self::Hole170 => Breadboard::with_blocked_rows(cols, 12, 5..12),
+            Self::Hole400 => Breadboard::with_power_rails(
+                cols,
+                12,
+                5..12,
+                top_power_rails_only(repeat_power_rails(
+                    standard_power_rails(board_cols as i32),
+                    board_cols,
+                    board_count,
+                )),
+            ),
+            Self::Hole800 => Breadboard::with_power_rails(
+                cols,
+                12,
+                5..12,
+                top_power_rails_only(repeat_power_rails(
+                    wide_power_rails_800(board_cols as i32),
+                    board_cols,
+                    board_count,
+                )),
+            ),
+        }
+    }
+
     /// 默认 `cols` 值 (这个预设“典型”的宽度)。
     pub fn default_cols(self) -> usize {
         match self {
@@ -331,6 +399,28 @@ impl Preset {
             Self::Hole800 => "800",
         }
     }
+}
+
+fn repeat_power_rails(mut rails: PowerRails, board_cols: usize, board_count: usize) -> PowerRails {
+    let offset_groups = |groups: &[RangeInclusive<i32>]| {
+        (0..board_count)
+            .flat_map(|board_index| {
+                let offset = (board_index * board_cols) as i32;
+                groups
+                    .iter()
+                    .map(move |group| (*group.start() + offset)..=(*group.end() + offset))
+            })
+            .collect()
+    };
+    for rail in rails
+        .top
+        .rows
+        .iter_mut()
+        .chain(rails.bottom.rows.iter_mut())
+    {
+        rail.groups = offset_groups(&rail.groups);
+    }
+    rails
 }
 
 #[derive(Debug, Clone)]
@@ -1716,6 +1806,37 @@ mod tests {
         assert_eq!(Preset::Hole170.default_cols(), 17);
         assert_eq!(Preset::Hole400.default_cols(), 30);
         assert_eq!(Preset::Hole800.default_cols(), 63);
+    }
+
+    #[test]
+    fn repeated_800_preset_restarts_physical_rail_margins_on_each_board() {
+        let board = Preset::Hole800.make_repeated(2);
+        let rail = &board.power_rails().unwrap().top.rows[0];
+
+        assert!(rail.contains(60));
+        assert!(!rail.contains(61));
+        assert!(!rail.contains(62));
+        assert!(!rail.contains(63));
+        assert!(!rail.contains(64));
+        assert!(rail.contains(65));
+        assert!(rail.contains(123));
+        assert!(!rail.contains(124));
+        assert!(!rail.contains(125));
+        assert!(board.at(62, 0).is_some());
+        assert!(board.at(63, 0).is_some());
+    }
+
+    #[test]
+    fn repeated_upper_half_presets_keep_only_each_top_half() {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+            let board = preset.make_repeated_upper_half(3);
+            assert_eq!(board.cols(), preset.default_cols() * 3);
+            assert!(board.at(0, 4).is_some());
+            assert!(board.at((board.cols() - 1) as i32, 4).is_some());
+            assert!(board.at(0, 7).is_none());
+            assert!(board.at((board.cols() - 1) as i32, 7).is_none());
+            assert!(board.rail_ties().is_empty());
+        }
     }
 
     #[test]

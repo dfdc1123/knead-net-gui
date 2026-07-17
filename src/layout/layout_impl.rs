@@ -304,10 +304,20 @@ impl<'c> super::Layout<'c> {
                 Some(Ok((cost_s, cfg_s.seed, state_s, metrics_s)))
             })
             .collect();
-        let results: Vec<(f64, u64, SAState, AnnealMetrics)> = seed_results
-            .into_iter()
-            .collect::<Result<_, _>>()
-            .map_err(|error| vec![error])?;
+        let mut results = Vec::new();
+        let mut initialization_errors = Vec::new();
+        for result in seed_results {
+            match result {
+                Ok(result) => results.push(result),
+                Err(error @ LayoutError::NoLegalInitialPlacement { .. }) => {
+                    initialization_errors.push(error);
+                }
+                Err(error) => return Err(vec![error]),
+            }
+        }
+        if results.is_empty() {
+            return Err(initialization_errors);
+        }
         let per_seed_costs: Vec<f64> = results.iter().map(|(cost, _, _, _)| *cost).collect();
         let per_seed_states: Vec<SAState> = results
             .iter()

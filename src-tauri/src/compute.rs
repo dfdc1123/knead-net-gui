@@ -6,7 +6,8 @@ use std::time::Instant;
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
     Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Circuit, HoleId, InitializerFamily,
-    Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, ProgressOptions, Region, SAConfig,
+    Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, Preset, ProgressOptions, Region,
+    SAConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -71,6 +72,9 @@ struct ComputeEvent {
 
 #[derive(Clone, Serialize)]
 struct LayoutFrame {
+    board_cols: usize,
+    board_count: usize,
+    total_cols: usize,
     parts: Vec<LayoutPart>,
     wires: Vec<LayoutWire>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,11 +153,19 @@ struct BreadboardHole {
     row: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BoardAllocation {
+    preset: Preset,
+    board_cols: usize,
+    board_count: usize,
+}
+
 struct RunningGuard<'a>(&'a AppState);
 
 struct ProgressContext<'a> {
     circuit: &'a Circuit,
     board: &'a Breadboard,
+    allocation: BoardAllocation,
     schematic_metadata: &'a ComponentMetadataMap,
     locale: UiLocale,
     started: &'a Instant,
@@ -243,7 +255,8 @@ pub async fn start_compute(
             run_id,
             pcb_path,
             schematic_metadata,
-            board: board_config.board,
+            preset: board_config.preset,
+            upper_half_only: board_config.upper_half_only,
             top_positive_net: board_config.top_positive_net,
             top_negative_net: board_config.top_negative_net,
             bottom_positive_net: board_config.bottom_positive_net,
@@ -280,7 +293,8 @@ struct ComputeJob {
     run_id: u64,
     pcb_path: String,
     schematic_metadata: ComponentMetadataMap,
-    board: Breadboard,
+    preset: String,
+    upper_half_only: bool,
     top_positive_net: Option<String>,
     top_negative_net: Option<String>,
     bottom_positive_net: Option<String>,
@@ -295,7 +309,8 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
         run_id,
         pcb_path,
         schematic_metadata,
-        board,
+        preset,
+        upper_half_only,
         top_positive_net,
         top_negative_net,
         bottom_positive_net,
@@ -346,16 +361,19 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
             }
         }
     }
-    let board = knead_net::prepare_for_layout_with_individual_power_nets(
+    let preset = crate::preset_from_str(&preset)
+        .map_err(|_| locale.text("未知面包板预设", "Unknown breadboard preset"))?;
+    let board_cols = preset.default_cols();
+    let prepared_single_board = knead_net::prepare_for_layout_with_individual_power_nets(
         &mut circuit,
-        board,
+        crate::make_breadboards(preset, 1, upper_half_only)?,
         top_positive_net.as_deref(),
         top_negative_net.as_deref(),
         bottom_positive_net.as_deref(),
         bottom_negative_net.as_deref(),
     )
     .board;
-    let mut layout = Layout::new(&circuit);
+    let power_rail_bindings = prepared_single_board.power_rail_bindings().copied();
 
     let config = request.profile.config();
     let options = ProgressOptions {
@@ -374,46 +392,59 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
         }
     });
 
-    sender
-        .send(ComputeEvent {
-            run_id,
-            phase: "spectral",
-            progress: 0.0,
-            message: match locale {
-                UiLocale::ZhCn => format!(
-                    "{}模式 · {} seeds × {} 次迭代",
-                    request.profile.label(locale),
-                    config.n_seeds,
-                    config.max_iters
-                ),
-                UiLocale::En => format!(
-                    "{} profile · {} seeds × {} iterations",
-                    request.profile.label(locale),
-                    config.n_seeds,
-                    config.max_iters
-                ),
-            },
-            frame: None,
-        })
-        .map_err(|_| {
-            locale
-                .text(
-                    "进度转发线程已退出",
-                    "Progress forwarding thread has exited",
-                )
-                .to_string()
-        })?;
-
     let callback_sender = sender.clone();
-    let progress_context = ProgressContext {
-        circuit: &circuit,
-        board: &board,
-        schematic_metadata: &schematic_metadata,
-        locale,
-        started: &started,
-    };
-    layout
-        .place_sa_with_progress_and_cancellation(
+    let mut selected = None;
+    for board_count in 1..=crate::MAX_BOARD_COUNT {
+        sender
+            .send(ComputeEvent {
+                run_id,
+                phase: "spectral",
+                progress: 0.0,
+                message: match locale {
+                    UiLocale::ZhCn => format!(
+                        "正在尝试 {board_count} 块面包板 · {}模式 · {} seeds × {} 次迭代",
+                        request.profile.label(locale),
+                        config.n_seeds,
+                        config.max_iters
+                    ),
+                    UiLocale::En => format!(
+                        "Trying {board_count} breadboard{} · {} profile · {} seeds × {} iterations",
+                        if board_count == 1 { "" } else { "s" },
+                        request.profile.label(locale),
+                        config.n_seeds,
+                        config.max_iters
+                    ),
+                },
+                frame: None,
+            })
+            .map_err(|_| {
+                locale
+                    .text(
+                        "进度转发线程已退出",
+                        "Progress forwarding thread has exited",
+                    )
+                    .to_string()
+            })?;
+
+        let raw_board = crate::make_breadboards(preset, board_count, upper_half_only)?;
+        let board = match power_rail_bindings {
+            Some(bindings) => raw_board.with_power_rail_bindings(bindings),
+            None => raw_board,
+        };
+        let mut layout = Layout::new(&circuit);
+        let progress_context = ProgressContext {
+            circuit: &circuit,
+            board: &board,
+            allocation: BoardAllocation {
+                preset,
+                board_cols,
+                board_count,
+            },
+            schematic_metadata: &schematic_metadata,
+            locale,
+            started: &started,
+        };
+        match layout.place_sa_with_progress_and_cancellation(
             &board,
             &config,
             options,
@@ -427,10 +458,47 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                 );
                 let _ = callback_sender.send(event);
             },
-        )
-        .map_err(|errors| {
-            format_layout_errors(locale.text("布局失败", "Layout failed"), &errors)
-        })?;
+        ) {
+            Ok(()) => {
+                selected = Some((board, layout, board_count));
+                break;
+            }
+            Err(errors)
+                if is_initial_capacity_error(&errors) && board_count < crate::MAX_BOARD_COUNT =>
+            {
+                continue;
+            }
+            Err(errors) if is_initial_capacity_error(&errors) => {
+                return Err(locale
+                    .text(
+                        "使用 4 块相同面包板仍无法完成初始布局",
+                        "Initial placement still does not fit on four identical breadboards",
+                    )
+                    .to_string());
+            }
+            Err(errors) => {
+                return Err(format_layout_errors(
+                    locale.text("布局失败", "Layout failed"),
+                    &errors,
+                ));
+            }
+        }
+    }
+    let (board, mut layout, board_count) =
+        selected.expect("the final capacity failure returns before leaving the retry loop");
+
+    let progress_context = ProgressContext {
+        circuit: &circuit,
+        board: &board,
+        allocation: BoardAllocation {
+            preset,
+            board_cols,
+            board_count,
+        },
+        schematic_metadata: &schematic_metadata,
+        locale,
+        started: &started,
+    };
 
     let cancelled = cancellation.is_cancelled();
     sender
@@ -461,6 +529,7 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                 &circuit,
                 &board,
                 &schematic_metadata,
+                progress_context.allocation,
                 None,
                 None,
             )),
@@ -502,6 +571,62 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
     Ok(())
 }
 
+fn is_initial_capacity_error(errors: &[knead_net::LayoutError]) -> bool {
+    !errors.is_empty()
+        && errors.iter().all(|error| {
+            matches!(
+                error,
+                knead_net::LayoutError::NoLegalInitialPlacement { .. }
+            )
+        })
+}
+
+fn board_count_for_max_x(
+    max_x: Option<i32>,
+    board_cols: usize,
+    attempted_board_count: usize,
+) -> usize {
+    let required = max_x.map_or(1, |x| {
+        (x.max(0) as usize / board_cols.max(1)).saturating_add(1)
+    });
+    required.clamp(1, attempted_board_count.max(1))
+}
+
+fn visible_board_count(
+    snapshot: &LayoutSnapshot,
+    circuit: &Circuit,
+    board: &Breadboard,
+    board_cols: usize,
+    attempted_board_count: usize,
+) -> usize {
+    let placement_max = snapshot
+        .placements
+        .iter()
+        .enumerate()
+        .filter_map(|(index, placement)| {
+            let placement = placement.as_ref()?;
+            let component = &circuit.components()[index];
+            let footprint = &circuit.footprints()[component.footprint()?.raw()];
+            placement
+                .apply(component, footprint, board, circuit.pins())
+                .ok()?
+                .bbox
+                .map(|bbox| bbox.max_x)
+        })
+        .max();
+    let wire_max = snapshot
+        .wires
+        .iter()
+        .flat_map(|wire| [wire.from, wire.to])
+        .map(|hole| board.hole(hole).position.x)
+        .max();
+    board_count_for_max_x(
+        placement_max.into_iter().chain(wire_max).max(),
+        board_cols,
+        attempted_board_count,
+    )
+}
+
 fn progress_event(
     run_id: u64,
     progress: LayoutProgress,
@@ -511,6 +636,7 @@ fn progress_event(
     let ProgressContext {
         circuit,
         board,
+        allocation,
         schematic_metadata,
         locale,
         started,
@@ -541,6 +667,7 @@ fn progress_event(
                 circuit,
                 board,
                 schematic_metadata,
+                *allocation,
                 Some(0),
                 Some(cost),
             )),
@@ -565,6 +692,7 @@ fn progress_event(
                 circuit,
                 board,
                 schematic_metadata,
+                *allocation,
                 Some(iteration),
                 Some(best_cost),
             )),
@@ -605,43 +733,58 @@ fn progress_event(
                 circuit,
                 board,
                 schematic_metadata,
+                *allocation,
                 None,
                 Some(cost),
             )),
         },
-        LayoutProgress::RoutingComplete { snapshot } => ComputeEvent {
-            run_id,
-            phase: "done",
-            progress: 100.0,
-            message: match locale {
-                UiLocale::ZhCn => format!(
-                    "{} · 用时 {:.2}s",
-                    if cancelled {
-                        "中断后的布局与布线完成"
-                    } else {
-                        "布局与布线完成"
-                    },
-                    started.elapsed().as_secs_f64()
-                ),
-                UiLocale::En => format!(
-                    "{} · {:.2}s",
-                    if cancelled {
-                        "Layout and routing complete after interruption"
-                    } else {
-                        "Layout and routing complete"
-                    },
-                    started.elapsed().as_secs_f64()
-                ),
-            },
-            frame: Some(snapshot_frame(
+        LayoutProgress::RoutingComplete { snapshot } => {
+            let visible_board_count = visible_board_count(
                 &snapshot,
                 circuit,
                 board,
-                schematic_metadata,
-                None,
-                None,
-            )),
-        },
+                allocation.board_cols,
+                allocation.board_count,
+            );
+            let visible_allocation = BoardAllocation {
+                board_count: visible_board_count,
+                ..*allocation
+            };
+            ComputeEvent {
+                run_id,
+                phase: "done",
+                progress: 100.0,
+                message: match locale {
+                    UiLocale::ZhCn => format!(
+                        "{} · 用时 {:.2}s",
+                        if cancelled {
+                            "中断后的布局与布线完成"
+                        } else {
+                            "布局与布线完成"
+                        },
+                        started.elapsed().as_secs_f64()
+                    ),
+                    UiLocale::En => format!(
+                        "{} · {:.2}s",
+                        if cancelled {
+                            "Layout and routing complete after interruption"
+                        } else {
+                            "Layout and routing complete"
+                        },
+                        started.elapsed().as_secs_f64()
+                    ),
+                },
+                frame: Some(snapshot_frame(
+                    &snapshot,
+                    circuit,
+                    board,
+                    schematic_metadata,
+                    visible_allocation,
+                    None,
+                    None,
+                )),
+            }
+        }
     }
 }
 
@@ -659,9 +802,15 @@ fn snapshot_frame(
     circuit: &Circuit,
     board: &Breadboard,
     schematic_metadata: &ComponentMetadataMap,
+    allocation: BoardAllocation,
     iteration: Option<usize>,
     cost: Option<f64>,
 ) -> LayoutFrame {
+    let BoardAllocation {
+        preset,
+        board_cols,
+        board_count,
+    } = allocation;
     let mut pin_holes = HashMap::new();
     let mut parts = Vec::new();
 
@@ -758,6 +907,7 @@ fn snapshot_frame(
             })
             .collect()
     };
+    let visible_tie_col = last_visible_power_rail_col(preset, board_cols, board_count);
     wires.extend(board.rail_ties().iter().map(|tie| {
         let polarity = board
             .power_rail_of(tie.from)
@@ -777,10 +927,16 @@ fn snapshot_frame(
             knead_net::Polarity::Negative => "negative",
             knead_net::Polarity::Positive => "positive",
         };
+        let mut from = display_hole(board, tie.from);
+        let mut to = display_hole(board, tie.to);
+        if let Some(col) = visible_tie_col {
+            from.col = col;
+            to.col = col;
+        }
         LayoutWire {
             id: format!("rail-tie:{}", tie.key),
-            from: display_hole(board, tie.from),
-            to: display_hole(board, tie.to),
+            from,
+            to,
             color: match polarity {
                 knead_net::Polarity::Negative => "#2f6fbd",
                 knead_net::Polarity::Positive => "#c83434",
@@ -794,11 +950,33 @@ fn snapshot_frame(
     }));
 
     LayoutFrame {
+        board_cols,
+        board_count,
+        total_cols: board_cols * board_count,
         parts,
         wires,
         iteration,
         cost,
     }
+}
+
+fn last_visible_power_rail_col(
+    preset: Preset,
+    board_cols: usize,
+    board_count: usize,
+) -> Option<i32> {
+    if preset == Preset::Hole170 || board_count == 0 {
+        return None;
+    }
+    let margin = if preset == Preset::Hole800 { 2 } else { 0 };
+    let mut last = None;
+    let mut start = margin;
+    while start < board_cols.saturating_sub(margin) {
+        let end = (start + 4).min(board_cols - margin - 1);
+        last = Some(end);
+        start += 6;
+    }
+    last.map(|local| ((board_count - 1) * board_cols + local) as i32)
 }
 
 fn classify_package(component_kind: &str, footprint_name: &str, pin_count: usize) -> &'static str {
@@ -1022,6 +1200,35 @@ mod tests {
     }
 
     #[test]
+    fn only_initial_capacity_errors_request_another_board() {
+        use knead_net::LayoutError;
+
+        let text =
+            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let circuit = parse_pcb(&text).unwrap();
+        let first = circuit.components()[0].id();
+        let second = circuit.components()[1].id();
+
+        assert!(is_initial_capacity_error(&[
+            LayoutError::NoLegalInitialPlacement { component: first },
+            LayoutError::NoLegalInitialPlacement { component: second },
+        ]));
+        assert!(!is_initial_capacity_error(&[LayoutError::NoFootprint {
+            component: first,
+        }]));
+        assert!(!is_initial_capacity_error(&[]));
+    }
+
+    #[test]
+    fn trailing_empty_boards_are_trimmed_from_the_visible_result() {
+        assert_eq!(board_count_for_max_x(None, 30, 2), 1);
+        assert_eq!(board_count_for_max_x(Some(29), 30, 2), 1);
+        assert_eq!(board_count_for_max_x(Some(30), 30, 2), 2);
+        assert_eq!(board_count_for_max_x(Some(62), 30, 4), 3);
+        assert_eq!(board_count_for_max_x(Some(999), 30, 4), 4);
+    }
+
+    #[test]
     fn snapshot_frame_exposes_preset_rail_ties() {
         let circuit = Circuit::empty();
         let board = Breadboard::standard();
@@ -1034,6 +1241,11 @@ mod tests {
             &circuit,
             &board,
             &metadata,
+            BoardAllocation {
+                preset: Preset::Hole400,
+                board_cols: 30,
+                board_count: 1,
+            },
             None,
             None,
         );
@@ -1050,6 +1262,41 @@ mod tests {
         assert!(rail_ties
             .iter()
             .any(|wire| wire.id == "rail-tie:preset:positive:top-bottom"));
+    }
+
+    #[test]
+    fn trimmed_800_frame_moves_visual_rail_ties_to_the_last_visible_board() {
+        let circuit = Circuit::empty();
+        let board = Preset::Hole800.make_repeated(2);
+        let metadata = ComponentMetadataMap::new();
+        let frame = snapshot_frame(
+            &LayoutSnapshot {
+                placements: Vec::new(),
+                wires: Vec::new(),
+            },
+            &circuit,
+            &board,
+            &metadata,
+            BoardAllocation {
+                preset: Preset::Hole800,
+                board_cols: 63,
+                board_count: 1,
+            },
+            None,
+            None,
+        );
+
+        assert_eq!(frame.board_count, 1);
+        assert_eq!(frame.total_cols, 63);
+        let rail_ties: Vec<_> = frame
+            .wires
+            .iter()
+            .filter(|wire| wire.kind == "rail-tie")
+            .collect();
+        assert_eq!(rail_ties.len(), 2);
+        assert!(rail_ties
+            .iter()
+            .all(|wire| wire.from.col == 60 && wire.to.col == 60));
     }
 
     #[test]
@@ -1072,6 +1319,11 @@ mod tests {
             &ProgressContext {
                 circuit: &circuit,
                 board: &board,
+                allocation: BoardAllocation {
+                    preset: Preset::Hole400,
+                    board_cols: 30,
+                    board_count: 1,
+                },
                 schematic_metadata: &metadata,
                 locale: UiLocale::ZhCn,
                 started: &started,

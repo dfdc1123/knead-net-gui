@@ -14,12 +14,12 @@
 
   let {
     preset = "hole400",
-    cols = 30,
+    boardCols = 30,
     upperHalfOnly = false,
     onComplete = () => {},
   }: {
     preset?: BreadboardPreset;
-    cols?: number;
+    boardCols?: number;
     upperHalfOnly?: boolean;
     onComplete?: (frame: LayoutFrame) => void;
   } = $props();
@@ -55,6 +55,8 @@
   let safeProgress = $derived(Math.max(0, Math.min(100, Number(progress) || 0)));
   let activeIndex = $derived(phases.findIndex((item) => item.id === phase));
   let selectedProfile = $derived(profiles.find((item) => item.id === profileId) ?? profiles[0]);
+  let previewBoardCols = $derived(frame?.board_cols ?? boardCols);
+  let previewBoardCount = $derived(frame?.board_count ?? 1);
 
   function stepClass(index: number) {
     if (phase === "done" || index <= activeIndex) return "step step-primary";
@@ -238,7 +240,15 @@
 
         <div class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           <div inert class="h-full overflow-hidden">
-            <BreadboardPreview {preset} {cols} {frame} {upperHalfOnly} panCanvas={false} solidWires={phase === "done"} />
+            <BreadboardPreview
+              {preset}
+              boardCols={previewBoardCols}
+              boardCount={previewBoardCount}
+              {frame}
+              {upperHalfOnly}
+              panCanvas={false}
+              solidWires={phase === "done"}
+            />
           </div>
           {#if !frame}
             <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-base-200/75">

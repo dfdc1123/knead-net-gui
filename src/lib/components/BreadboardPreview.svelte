@@ -9,11 +9,18 @@
     LayoutWire,
   } from "$lib/layout";
   import { parseKiCadTextMarkup } from "$lib/layout";
+  import {
+    globalColumnX,
+    physicalColumnNumber,
+    physicalBoardWidth,
+    railColumnsForBoard,
+  } from "$lib/breadboardGeometry.js";
   import { ui } from "$lib/i18n";
 
   let {
     preset,
-    cols,
+    boardCols,
+    boardCount = 1,
     upperHalfOnly = false,
     frame,
     zoom = 1,
@@ -28,7 +35,8 @@
     onSelect = () => {},
   }: {
     preset: BreadboardPreset;
-    cols: number;
+    boardCols: number;
+    boardCount?: number;
     upperHalfOnly?: boolean;
     frame?: LayoutFrame | null;
     zoom?: number;
@@ -44,6 +52,7 @@
   } = $props();
 
   const pitch = 12;
+  const boardGap = 16;
   const mainRows = [0, 1, 2, 3, 4];
 
   type Point = { x: number; y: number };
@@ -66,17 +75,6 @@
     return String.fromCharCode((bottom ? 70 : 65) + row);
   }
 
-  function railColumns(kind: BreadboardPreset, columnCount: number) {
-    const margin = kind === "hole800" ? 2 : 0;
-    const result: number[] = [];
-    for (let start = margin; start < columnCount - margin; start += 6) {
-      for (let offset = 0; offset < 5 && start + offset < columnCount - margin; offset += 1) {
-        result.push(start + offset);
-      }
-    }
-    return result;
-  }
-
   function presetRailTies(
     kind: BreadboardPreset,
     columnCount: number,
@@ -84,7 +82,7 @@
     includePositive: boolean,
   ): LayoutWire[] {
     if (kind === "hole170") return [];
-    const availableColumns = railColumns(kind, columnCount);
+    const availableColumns = railColumnsForBoard(kind, columnCount, 0);
     const col = availableColumns[availableColumns.length - 1];
     if (col === undefined) return [];
     const ties: LayoutWire[] = [
@@ -110,22 +108,19 @@
     return ties.filter((wire) => wire.id.includes(":negative:") ? includeNegative : includePositive);
   }
 
-  let safeCols = $derived(Math.max(1, Math.trunc(Number(cols) || 1)));
+  let safeBoardCols = $derived(Math.max(1, Math.trunc(Number(boardCols) || 1)));
+  let safeBoardCount = $derived(Math.max(1, Math.trunc(Number(boardCount) || 1)));
   let isMini = $derived(preset === "hole170");
   let xInset = $derived(isMini ? 12.2 : 18.2);
-  let columns = $derived(range(safeCols));
-  let powerColumns = $derived(railColumns(preset, safeCols));
+  let boards = $derived(range(safeBoardCount));
+  let columns = $derived(range(safeBoardCols));
+  let powerColumns = $derived(railColumnsForBoard(preset, safeBoardCols, 0));
 
   // 400 孔电源轨的 5 组孔占 0..28 节拍，主区占 0..29 节拍；
   // 横移半个孔距后两者中心重合。这只是绘图坐标，算法仍使用整数列。
   let railOffset = $derived(preset === "hole400" ? pitch * 0.5 : 0);
-  let contentWidth = $derived(
-    Math.max(
-      (safeCols - 1) * pitch,
-      powerColumns.length > 0 ? powerColumns[powerColumns.length - 1] * pitch + railOffset : 0,
-    ),
-  );
-  let boardWidth = $derived(xInset * 2 + contentWidth);
+  let singleBoardWidth = $derived(physicalBoardWidth(safeBoardCols, pitch, xInset));
+  let boardWidth = $derived(singleBoardWidth * safeBoardCount + boardGap * (safeBoardCount - 1));
   let boardHeight = $derived(isMini ? (upperHalfOnly ? 84.2 : 168.2) : (upperHalfOnly ? 132 : 252));
   let displayWidth = $derived(Math.max(isMini ? 420 : 440, boardWidth));
   let displayHeight = $derived((displayWidth / boardWidth) * boardHeight);
@@ -139,7 +134,8 @@
   let hasPanPadding = $derived(panCanvas);
 
   function holePosition(hole: BreadboardHole) {
-    const x = xInset + hole.col * pitch + (hole.region.startsWith("rail") ? railOffset : 0);
+    const x = globalColumnX(hole.col, safeBoardCols, pitch, xInset, boardGap)
+      + (hole.region.startsWith("rail") ? railOffset : 0);
     if (isMini) {
       return {
         x,
@@ -254,10 +250,10 @@
   let visibleWires = $derived.by(() => {
     const wires = frame?.wires ?? [];
     return frame
-      ? wires
-      : upperHalfOnly
         ? wires
-        : [...wires, ...presetRailTies(preset, safeCols, tieNegativeRails, tiePositiveRails)];
+        : upperHalfOnly
+          ? wires
+          : [...wires, ...presetRailTies(preset, safeBoardCols, tieNegativeRails, tiePositiveRails)];
   });
   let plannedWires = $derived(planWires(visibleWires));
 
@@ -752,115 +748,105 @@
     aria-label={ui.boardPreview.preview(preset === "hole170" ? ui.boardPreview.hole170 : preset === "hole400" ? ui.boardPreview.hole400 : ui.boardPreview.hole800)}
     class="block max-w-none"
   >
-    <rect x="0.8" y="0.8" width={boardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
+    {#each boards as boardIndex}
+      <g transform="translate({boardIndex * (singleBoardWidth + boardGap)} 0)" data-board-index={boardIndex}>
+        <rect x="0.8" y="0.8" width={singleBoardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
 
-    {#if isMini}
-      {#if !upperHalfOnly}
-        <rect x={xInset - 5} y="78.05" width={boardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
-        <path d="M {xInset - 5} 78.6 H {boardWidth - xInset + 5}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
-      {/if}
-
-      {#each columns as column}
-        {#each mainRows as row}
-          <g transform="translate({xInset + column * pitch} {18.1 + row * pitch})">
-            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
-            <circle r="1.6" fill="var(--color-base-content)" />
-          </g>
+        {#if isMini}
           {#if !upperHalfOnly}
-            <g transform="translate({xInset + column * pitch} {102.1 + row * pitch})">
-              <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
-              <circle r="1.6" fill="var(--color-base-content)" />
-            </g>
+            <rect x={xInset - 5} y="78.05" width={singleBoardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
+            <path d="M {xInset - 5} 78.6 H {singleBoardWidth - xInset + 5}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
-        {/each}
-      {/each}
 
-      <g
-        aria-hidden="true"
-        fill="var(--color-base-content)"
-        font-family="ui-sans-serif, system-ui, sans-serif"
-        font-size="5.5"
-        font-weight="700"
-        text-anchor="middle"
-      >
-        {#each columns as column}
-          <text x={xInset + column * pitch} y="8">{column + 1}</text>
-        {/each}
-        {#each mainRows as row}
-          <text x="5" y={18.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
-          {#if !upperHalfOnly}
-            <text x="5" y={102.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
-          {/if}
-        {/each}
-      </g>
-    {:else}
-      <path d="M 1 4 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
-      <path d="M 1 32 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
-      {#if !upperHalfOnly}
-        <path d="M 1 220 H {boardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
-        <path d="M 1 248 H {boardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
-        <path d="M 1 35 H {boardWidth - 1} M 1 217 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
-      {:else}
-        <path d="M 1 35 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
-      {/if}
+          {#each columns as column}
+            {#each mainRows as row}
+              <g transform="translate({xInset + column * pitch} {18.1 + row * pitch})">
+                <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+                <circle r="1.6" fill="var(--color-base-content)" />
+              </g>
+              {#if !upperHalfOnly}
+                <g transform="translate({xInset + column * pitch} {102.1 + row * pitch})">
+                  <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+                  <circle r="1.6" fill="var(--color-base-content)" />
+                </g>
+              {/if}
+            {/each}
+          {/each}
 
-      {#if !upperHalfOnly}
-        <rect x="1" y="118.7" width={boardWidth - 2} height="12" fill="var(--color-base-300)" />
-        <path d="M 1 119.2 H {boardWidth - 1} M 1 130.2 H {boardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
-      {/if}
-
-      {#each columns as column}
-        {#each mainRows as row}
-          <g transform="translate({xInset + column * pitch} {60 + row * pitch})">
-            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
-            <circle r="1.6" fill="var(--color-base-content)" />
+          <g aria-hidden="true" fill="var(--color-base-content)" font-family="ui-sans-serif, system-ui, sans-serif" font-size="5.5" font-weight="700" text-anchor="middle">
+            {#each columns as column}
+              <text x={xInset + column * pitch} y="8">{physicalColumnNumber(boardIndex * safeBoardCols + column, safeBoardCols)}</text>
+            {/each}
+            {#each mainRows as row}
+              <text x="5" y={18.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
+              {#if !upperHalfOnly}
+                <text x="5" y={102.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
+              {/if}
+            {/each}
           </g>
+        {:else}
+          <path d="M 1 4 H {singleBoardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
+          <path d="M 1 32 H {singleBoardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
           {#if !upperHalfOnly}
-            <g transform="translate({xInset + column * pitch} {144 + row * pitch})">
-              <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
-              <circle r="1.6" fill="var(--color-base-content)" />
-            </g>
+            <path d="M 1 220 H {singleBoardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
+            <path d="M 1 248 H {singleBoardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
+            <path d="M 1 35 H {singleBoardWidth - 1} M 1 217 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+          {:else}
+            <path d="M 1 35 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
-        {/each}
-      {/each}
 
-      {#each powerColumns as column}
-        {#each upperHalfOnly ? [12, 24] : [12, 24, 228, 240] as y}
-          <g transform="translate({xInset + railOffset + column * pitch} {y})">
-            <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
-            <circle r="1.6" fill="var(--color-base-content)" />
+          {#if !upperHalfOnly}
+            <rect x="1" y="118.7" width={singleBoardWidth - 2} height="12" fill="var(--color-base-300)" />
+            <path d="M 1 119.2 H {singleBoardWidth - 1} M 1 130.2 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
+          {/if}
+
+          {#each columns as column}
+            {#each mainRows as row}
+              <g transform="translate({xInset + column * pitch} {60 + row * pitch})">
+                <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+                <circle r="1.6" fill="var(--color-base-content)" />
+              </g>
+              {#if !upperHalfOnly}
+                <g transform="translate({xInset + column * pitch} {144 + row * pitch})">
+                  <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+                  <circle r="1.6" fill="var(--color-base-content)" />
+                </g>
+              {/if}
+            {/each}
+          {/each}
+
+          {#each powerColumns as column}
+            {#each upperHalfOnly ? [12, 24] : [12, 24, 228, 240] as y}
+              <g transform="translate({xInset + railOffset + column * pitch} {y})">
+                <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
+                <circle r="1.6" fill="var(--color-base-content)" />
+              </g>
+            {/each}
+          {/each}
+
+          <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="7" font-weight="700" text-anchor="middle">
+            <text x="7" y="14.5" fill="var(--color-primary)">−</text>
+            <text x="7" y="26.5" fill="var(--color-error)">+</text>
+            {#if !upperHalfOnly}
+              <text x="7" y="230.5" fill="var(--color-primary)">−</text>
+              <text x="7" y="242.5" fill="var(--color-error)">+</text>
+            {/if}
           </g>
-        {/each}
-      {/each}
 
-      <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="7" font-weight="700" text-anchor="middle">
-        <text x="7" y="14.5" fill="var(--color-primary)">−</text>
-        <text x="7" y="26.5" fill="var(--color-error)">+</text>
-        {#if !upperHalfOnly}
-          <text x="7" y="230.5" fill="var(--color-primary)">−</text>
-          <text x="7" y="242.5" fill="var(--color-error)">+</text>
+          <g aria-hidden="true" fill="var(--color-base-content)" font-family="ui-sans-serif, system-ui, sans-serif" font-size="5.5" font-weight="700" text-anchor="middle">
+            {#each columns as column}
+              <text x={xInset + column * pitch} y="47">{physicalColumnNumber(boardIndex * safeBoardCols + column, safeBoardCols)}</text>
+            {/each}
+            {#each mainRows as row}
+              <text x="7" y={60 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
+              {#if !upperHalfOnly}
+                <text x="7" y={144 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
+              {/if}
+            {/each}
+          </g>
         {/if}
       </g>
-
-      <g
-        aria-hidden="true"
-        fill="var(--color-base-content)"
-        font-family="ui-sans-serif, system-ui, sans-serif"
-        font-size="5.5"
-        font-weight="700"
-        text-anchor="middle"
-      >
-        {#each columns as column}
-          <text x={xInset + column * pitch} y="47">{column + 1}</text>
-        {/each}
-        {#each mainRows as row}
-          <text x="7" y={60 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
-          {#if !upperHalfOnly}
-            <text x="7" y={144 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
-          {/if}
-        {/each}
-      </g>
-    {/if}
+    {/each}
 
     {#if frame || plannedWires.length > 0}
       <g aria-label={ui.boardPreview.wires}>

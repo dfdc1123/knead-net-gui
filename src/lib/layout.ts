@@ -2,7 +2,7 @@ export type BreadboardPreset = "hole170" | "hole400" | "hole800";
 
 export type BreadboardSelection = {
   preset: BreadboardPreset;
-  cols: number;
+  boardCols: number;
   upperHalfOnly: boolean;
 };
 
@@ -70,6 +70,9 @@ export type CircuitSelection =
   | { type: "wire"; id: string; label: string; netId?: string };
 
 export type LayoutFrame = {
+  board_cols: number;
+  board_count: number;
+  total_cols: number;
   parts: LayoutPart[];
   wires?: LayoutWire[];
   iteration?: number;
