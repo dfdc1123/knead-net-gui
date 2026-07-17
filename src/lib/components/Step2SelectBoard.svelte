@@ -158,10 +158,8 @@
           </div>
         </fieldset>
 
-        <p class="text-xs leading-relaxed text-base-content/60">{ui.step2.autoBoardHint}</p>
-
         <fieldset class="fieldset" disabled={busy}>
-          <label class="fieldset-label cursor-pointer justify-start gap-3">
+          <label class="fieldset-label cursor-pointer items-start justify-start gap-3">
             <input
               class="toggle toggle-primary toggle-sm"
               type="checkbox"
@@ -177,7 +175,7 @@
             />
             <span>{ui.step2.useUpperHalf}</span>
           </label>
-          <label class="fieldset-label cursor-pointer justify-start gap-3">
+          <label class="fieldset-label cursor-pointer items-start justify-start gap-3">
             <input
               class="toggle toggle-primary toggle-sm"
               type="checkbox"
@@ -195,6 +193,8 @@
           </label>
           <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.halfBoardHint}</p>
         </fieldset>
+
+        <p class="text-xs leading-relaxed text-base-content/60">{ui.step2.autoBoardHint}</p>
 
         {#if hasPowerRails}
           <fieldset class="fieldset" disabled={busy || !powerOptionsReady}>
