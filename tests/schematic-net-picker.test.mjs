@@ -13,6 +13,8 @@ test("Step 2 receives the rendered schematic and uses a modal net picker", () =>
   assert.match(pageSource, /<Step2SelectBoard[^>]*\{schematicSvg\}/s);
   assert.match(step2Source, /<SchematicNetPicker/);
   assert.doesNotMatch(step2Source, /<select[\s\S]*top-negative-power-net/);
+  assert.doesNotMatch(step2Source, /\|\| ui\.step2\.chooseNetwork/);
+  assert.equal(step2Source.match(/\|\| ui\.step2\.unbound/g)?.length, 4);
 });
 
 test("schematic picker uses the recommended dialog modal and selects only network hits", () => {

@@ -272,7 +272,7 @@
                     onclick={() => openNetPicker("top-negative")}
                     aria-label={ui.step2.bindingButtonLabel(ui.step2.topPowerRails, ui.step2.negativeRail, topNegativeNet)}
                   >
-                    <span class="min-w-0 truncate font-mono">{topNegativeNet || ui.step2.chooseNetwork}</span>
+                    <span class="min-w-0 truncate font-mono">{topNegativeNet || ui.step2.unbound}</span>
                     <span aria-hidden="true">›</span>
                   </button>
                 </label>
@@ -285,7 +285,7 @@
                     onclick={() => openNetPicker("top-positive")}
                     aria-label={ui.step2.bindingButtonLabel(ui.step2.topPowerRails, ui.step2.positiveRail, topPositiveNet)}
                   >
-                    <span class="min-w-0 truncate font-mono">{topPositiveNet || ui.step2.chooseNetwork}</span>
+                    <span class="min-w-0 truncate font-mono">{topPositiveNet || ui.step2.unbound}</span>
                     <span aria-hidden="true">›</span>
                   </button>
                 </label>
@@ -304,7 +304,7 @@
                     onclick={() => openNetPicker("bottom-negative")}
                     aria-label={ui.step2.bindingButtonLabel(ui.step2.bottomPowerRails, ui.step2.negativeRail, bottomNegativeNet)}
                   >
-                    <span class="min-w-0 truncate font-mono">{bottomNegativeNet || ui.step2.chooseNetwork}</span>
+                    <span class="min-w-0 truncate font-mono">{bottomNegativeNet || ui.step2.unbound}</span>
                     <span aria-hidden="true">›</span>
                   </button>
                 </label>
@@ -317,7 +317,7 @@
                     onclick={() => openNetPicker("bottom-positive")}
                     aria-label={ui.step2.bindingButtonLabel(ui.step2.bottomPowerRails, ui.step2.positiveRail, bottomPositiveNet)}
                   >
-                    <span class="min-w-0 truncate font-mono">{bottomPositiveNet || ui.step2.chooseNetwork}</span>
+                    <span class="min-w-0 truncate font-mono">{bottomPositiveNet || ui.step2.unbound}</span>
                     <span aria-hidden="true">›</span>
                   </button>
                 </label>
