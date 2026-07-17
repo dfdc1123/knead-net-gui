@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { nextBoardHalfSelection } from "$lib/boardHalfSelection.js";
   import { locale, ui } from "$lib/i18n";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
@@ -87,6 +88,15 @@
     if (powerOptionsReady) void submit(p);
   }
 
+  function toggleBoardHalf(half: "upper" | "lower", enabled: boolean) {
+    ({ useUpperHalf, useLowerHalf } = nextBoardHalfSelection(
+      { useUpperHalf, useLowerHalf },
+      half,
+      enabled,
+    ));
+    submitNow();
+  }
+
   async function submit(p: BreadboardPreset) {
     const generation = ++submitGeneration;
     const usePowerRails = p !== "hole170";
@@ -164,14 +174,7 @@
               class="toggle toggle-primary toggle-sm"
               type="checkbox"
               checked={useUpperHalf}
-              onchange={(event) => {
-                if (!event.currentTarget.checked && !useLowerHalf) {
-                  event.currentTarget.checked = true;
-                  return;
-                }
-                useUpperHalf = event.currentTarget.checked;
-                submitNow();
-              }}
+              onchange={(event) => toggleBoardHalf("upper", event.currentTarget.checked)}
             />
             <span>{ui.step2.useUpperHalf}</span>
           </label>
@@ -180,14 +183,7 @@
               class="toggle toggle-primary toggle-sm"
               type="checkbox"
               checked={useLowerHalf}
-              onchange={(event) => {
-                if (!event.currentTarget.checked && !useUpperHalf) {
-                  event.currentTarget.checked = true;
-                  return;
-                }
-                useLowerHalf = event.currentTarget.checked;
-                submitNow();
-              }}
+              onchange={(event) => toggleBoardHalf("lower", event.currentTarget.checked)}
             />
             <span>{ui.step2.useLowerHalf}</span>
           </label>
