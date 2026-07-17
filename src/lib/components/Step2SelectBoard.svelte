@@ -18,7 +18,8 @@
     cols: number;
     holes: number;
     has_power_rails: boolean;
-    upper_half_only: boolean;
+    use_upper_half: boolean;
+    use_lower_half: boolean;
   };
   type PowerNetOptions = {
     net_names: string[];
@@ -29,11 +30,14 @@
   const PRESETS: { id: BreadboardPreset; name: string; defaultCols: number }[] = [
     { id: "hole170", name: ui.step2.holes(170), defaultCols: 17 },
     { id: "hole400", name: ui.step2.holes(400), defaultCols: 30 },
-    { id: "hole830", name: ui.step2.holes(800), defaultCols: 63 },
+    { id: "hole830", name: ui.step2.holes(830), defaultCols: 63 },
   ];
 
   let preset = $state<BreadboardPreset>("hole400");
-  let upperHalfOnly = $state(false);
+  let useUpperHalf = $state(true);
+  let useLowerHalf = $state(true);
+  let previewWidth = $state(0);
+  let previewHeight = $state(0);
   let info = $state<Info | null>(null);
   let netNames = $state<string[]>([]);
   let topPositiveNet = $state("");
@@ -85,7 +89,6 @@
 
   async function submit(p: BreadboardPreset) {
     const generation = ++submitGeneration;
-    const useUpperHalfOnly = upperHalfOnly;
     const usePowerRails = p !== "hole170";
     busy = true;
     error = "";
@@ -93,18 +96,19 @@
     try {
       const nextInfo = await invoke<Info>("set_breadboard", {
         preset: p,
-        upperHalfOnly: useUpperHalfOnly,
+        useUpperHalf,
+        useLowerHalf,
         powerNets: {
           top_positive_net: usePowerRails && topPositiveNet ? topPositiveNet : null,
           top_negative_net: usePowerRails && topNegativeNet ? topNegativeNet : null,
-          bottom_positive_net: usePowerRails && !useUpperHalfOnly && bottomPositiveNet ? bottomPositiveNet : null,
-          bottom_negative_net: usePowerRails && !useUpperHalfOnly && bottomNegativeNet ? bottomNegativeNet : null,
+          bottom_positive_net: usePowerRails && useLowerHalf && bottomPositiveNet ? bottomPositiveNet : null,
+          bottom_negative_net: usePowerRails && useLowerHalf && bottomNegativeNet ? bottomNegativeNet : null,
         },
         locale,
       });
       if (generation !== submitGeneration) return;
       info = nextInfo;
-      onBoardChange({ preset: p, boardCols: info.cols, upperHalfOnly: info.upper_half_only });
+      onBoardChange({ preset: p, boardCols: info.cols, useUpperHalf: info.use_upper_half, useLowerHalf: info.use_lower_half });
       onStatusChange(true);
     } catch (e) {
       if (generation !== submitGeneration) return;
@@ -114,6 +118,15 @@
     } finally {
       if (generation === submitGeneration) busy = false;
     }
+  }
+
+  function observePreview(node: HTMLElement) {
+    const observer = new ResizeObserver(([entry]) => {
+      previewWidth = entry.contentRect.width;
+      previewHeight = entry.contentRect.height;
+    });
+    observer.observe(node);
+    return { destroy: () => observer.disconnect() };
   }
 </script>
 
@@ -152,15 +165,35 @@
             <input
               class="toggle toggle-primary toggle-sm"
               type="checkbox"
-              checked={upperHalfOnly}
+              checked={useUpperHalf}
               onchange={(event) => {
-                upperHalfOnly = event.currentTarget.checked;
+                if (!event.currentTarget.checked && !useLowerHalf) {
+                  event.currentTarget.checked = true;
+                  return;
+                }
+                useUpperHalf = event.currentTarget.checked;
                 submitNow();
               }}
             />
-            <span>{ui.step2.upperHalfOnly}</span>
+            <span>{ui.step2.useUpperHalf}</span>
           </label>
-          <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.upperHalfOnlyHint}</p>
+          <label class="fieldset-label cursor-pointer justify-start gap-3">
+            <input
+              class="toggle toggle-primary toggle-sm"
+              type="checkbox"
+              checked={useLowerHalf}
+              onchange={(event) => {
+                if (!event.currentTarget.checked && !useUpperHalf) {
+                  event.currentTarget.checked = true;
+                  return;
+                }
+                useLowerHalf = event.currentTarget.checked;
+                submitNow();
+              }}
+            />
+            <span>{ui.step2.useLowerHalf}</span>
+          </label>
+          <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.halfBoardHint}</p>
         </fieldset>
 
         {#if hasPowerRails}
@@ -200,7 +233,7 @@
               </label>
             </div>
 
-            {#if !upperHalfOnly}
+            {#if useLowerHalf}
               <p class="label mt-2 font-semibold">{ui.step2.bottomPowerRails}</p>
               <div class="grid grid-cols-2 gap-2">
                 <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-negative-power-net">
@@ -256,16 +289,18 @@
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
           <h2 class="card-title text-sm">{ui.common.preview}</h2>
-          {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × {info.upper_half_only ? 5 : 10}</span>{/if}
+          {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × {(info.use_upper_half ? 5 : 0) + (info.use_lower_half ? 5 : 0)}</span>{/if}
         </div>
-        <div inert class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
+        <div inert use:observePreview class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           {#if info}
-            {#key `${info.preset}:${info.cols}:${info.upper_half_only}`}
+            {#key `${info.preset}:${info.cols}:${info.use_upper_half}:${info.use_lower_half}`}
               <BreadboardPreview
                 preset={info.preset}
                 boardCols={info.cols}
                 boardCount={1}
-                upperHalfOnly={info.upper_half_only}
+                upperHalfOnly={!info.use_lower_half}
+                fitWidth={previewWidth}
+                fitHeight={previewHeight}
                 panCanvas={false}
                 tieNegativeRails={topNegativeNet === bottomNegativeNet}
                 tiePositiveRails={topPositiveNet === bottomPositiveNet}

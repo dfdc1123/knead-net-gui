@@ -394,6 +394,42 @@ impl Preset {
         }
     }
 
+    /// Lower-half-only counterpart of [`Self::make_repeated`].
+    pub fn make_repeated_lower_half(self, board_count: usize) -> Breadboard {
+        assert!(board_count > 0, "board_count must be positive");
+        let board_cols = self.default_cols();
+        let gap_cols = self.inter_board_gap_cols();
+        let cols = repeated_total_cols(board_cols, gap_cols, board_count);
+        let blocked_cols = repeated_gap_columns(board_cols, gap_cols, board_count);
+        match self {
+            Self::Hole170 => Breadboard::with_blocked_rows_and_cols(cols, 12, 0..7, blocked_cols),
+            Self::Hole400 => Breadboard::with_blocked_rows_cols_and_power_rails(
+                cols,
+                12,
+                0..7,
+                blocked_cols,
+                Some(bottom_power_rails_only(repeat_power_rails(
+                    standard_power_rails(board_cols as i32),
+                    board_cols,
+                    gap_cols,
+                    board_count,
+                ))),
+            ),
+            Self::Hole830 => Breadboard::with_blocked_rows_cols_and_power_rails(
+                cols,
+                12,
+                0..7,
+                blocked_cols,
+                Some(bottom_power_rails_only(repeat_power_rails(
+                    wide_power_rails_830(board_cols as i32),
+                    board_cols,
+                    gap_cols,
+                    board_count,
+                ))),
+            ),
+        }
+    }
+
     /// 默认 `cols` 值 (这个预设“典型”的宽度)。
     pub fn default_cols(self) -> usize {
         match self {
@@ -1238,6 +1274,14 @@ fn count_rail_rows(blocked: &BTreeSet<usize>, top: usize, rows: usize) -> usize 
 /// 保留上方两条电源轨的定义，同时移除下方两条轨的所有孔位。
 fn top_power_rails_only(mut rails: PowerRails) -> PowerRails {
     for rail in &mut rails.bottom.rows {
+        rail.groups.clear();
+    }
+    rails
+}
+
+/// 保留下方两条电源轨的定义，同时移除上方两条轨的所有孔位。
+fn bottom_power_rails_only(mut rails: PowerRails) -> PowerRails {
+    for rail in &mut rails.top.rows {
         rail.groups.clear();
     }
     rails

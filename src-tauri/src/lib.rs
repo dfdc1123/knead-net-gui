@@ -53,7 +53,8 @@ pub(crate) struct AppState {
 pub(crate) struct BreadboardConfig {
     pub(crate) preset: String,
     pub(crate) board: knead_net::layout::Breadboard,
-    pub(crate) upper_half_only: bool,
+    pub(crate) use_upper_half: bool,
+    pub(crate) use_lower_half: bool,
     pub(crate) top_positive_net: Option<String>,
     pub(crate) top_negative_net: Option<String>,
     pub(crate) bottom_positive_net: Option<String>,
@@ -181,7 +182,8 @@ struct BreadboardInfo {
     cols: usize,
     holes: usize,
     has_power_rails: bool,
-    upper_half_only: bool,
+    use_upper_half: bool,
+    use_lower_half: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -239,43 +241,40 @@ fn preset_from_str(s: &str) -> Result<knead_net::layout::Preset, String> {
 pub(crate) fn make_breadboards(
     preset: knead_net::layout::Preset,
     board_count: usize,
-    upper_half_only: bool,
+    use_upper_half: bool,
+    use_lower_half: bool,
 ) -> Result<knead_net::layout::Breadboard, String> {
     if !(1..=MAX_BOARD_COUNT).contains(&board_count) {
         return Err(format!("面包板数量必须在 1 到 {MAX_BOARD_COUNT} 之间"));
     }
-    Ok(if upper_half_only {
+    if !use_upper_half && !use_lower_half {
+        return Err("至少要启用面包板的一半".to_string());
+    }
+    Ok(if use_upper_half && use_lower_half {
+        preset.make_repeated(board_count)
+    } else if use_upper_half {
         preset.make_repeated_upper_half(board_count)
     } else {
-        preset.make_repeated(board_count)
+        preset.make_repeated_lower_half(board_count)
     })
 }
 
-fn active_hole_count(board: &knead_net::layout::Breadboard, upper_half_only: bool) -> usize {
-    if !upper_half_only {
-        return board.len();
-    }
-    board
-        .holes()
-        .iter()
-        .filter(|hole| {
-            (hole.region == knead_net::layout::Region::MainRail && hole.position.y < 5)
-                || (hole.region == knead_net::layout::Region::PowerRail && hole.position.y < 0)
-        })
-        .count()
+fn active_hole_count(board: &knead_net::layout::Breadboard) -> usize {
+    board.len()
 }
 
 #[tauri::command]
 fn set_breadboard(
     state: tauri::State<AppState>,
     preset: String,
-    upper_half_only: bool,
+    use_upper_half: bool,
+    use_lower_half: bool,
     power_nets: PowerNetSelection,
     locale: UiLocale,
 ) -> Result<BreadboardInfo, String> {
     let p = preset_from_str(&preset)
         .map_err(|_| format!("{}: {preset}", locale.text("未知预设", "Unknown preset")))?;
-    let board = make_breadboards(p, 1, upper_half_only).map_err(|error| {
+    let board = make_breadboards(p, 1, use_upper_half, use_lower_half).map_err(|error| {
         format!(
             "{}: {error}",
             locale.text("无法创建面包板", "Failed to create breadboard")
@@ -284,9 +283,10 @@ fn set_breadboard(
     let info = BreadboardInfo {
         preset: preset.clone(),
         cols: board.cols(),
-        holes: active_hole_count(&board, upper_half_only),
+        holes: active_hole_count(&board),
         has_power_rails: board.power_rails().is_some(),
-        upper_half_only,
+        use_upper_half,
+        use_lower_half,
     };
     let has_power_rails = board.power_rails().is_some();
     let PowerNetSelection {
@@ -298,14 +298,15 @@ fn set_breadboard(
     *state.breadboard_cfg.lock().map_err(|e| e.to_string())? = Some(BreadboardConfig {
         preset,
         board,
-        upper_half_only,
+        use_upper_half,
+        use_lower_half,
         top_positive_net: has_power_rails.then_some(top_positive_net).flatten(),
         top_negative_net: has_power_rails.then_some(top_negative_net).flatten(),
-        bottom_positive_net: (!upper_half_only)
+        bottom_positive_net: use_lower_half
             .then_some(bottom_positive_net)
             .flatten()
             .filter(|_| has_power_rails),
-        bottom_negative_net: (!upper_half_only)
+        bottom_negative_net: use_lower_half
             .then_some(bottom_negative_net)
             .flatten()
             .filter(|_| has_power_rails),
@@ -347,7 +348,7 @@ fn get_power_net_options(
     })?;
     let preset = preset_from_str(&preset)
         .map_err(|_| locale.text("未知面包板预设", "Unknown breadboard preset"))?;
-    let board = make_breadboards(preset, 1, false)?;
+    let board = make_breadboards(preset, 1, true, true)?;
     Ok(power_net_options_for(&circuit, &board))
 }
 
@@ -357,9 +358,10 @@ fn get_breadboard_info(state: tauri::State<AppState>) -> Option<BreadboardInfo> 
         g.as_ref().map(|config| BreadboardInfo {
             preset: config.preset.clone(),
             cols: config.board.cols(),
-            holes: active_hole_count(&config.board, config.upper_half_only),
+            holes: active_hole_count(&config.board),
             has_power_rails: config.board.power_rails().is_some(),
-            upper_half_only: config.upper_half_only,
+            use_upper_half: config.use_upper_half,
+            use_lower_half: config.use_lower_half,
         })
     })
 }
@@ -394,15 +396,21 @@ mod tests {
     #[test]
     fn valid_breadboard_dimensions_are_still_accepted() {
         assert_eq!(
-            make_breadboards(Preset::Hole170, 1, false).unwrap().len(),
+            make_breadboards(Preset::Hole170, 1, true, true)
+                .unwrap()
+                .len(),
             170
         );
         assert_eq!(
-            make_breadboards(Preset::Hole400, 1, false).unwrap().len(),
+            make_breadboards(Preset::Hole400, 1, true, true)
+                .unwrap()
+                .len(),
             400
         );
         assert_eq!(
-            make_breadboards(Preset::Hole830, 1, false).unwrap().cols(),
+            make_breadboards(Preset::Hole830, 1, true, true)
+                .unwrap()
+                .cols(),
             63
         );
     }
@@ -411,7 +419,7 @@ mod tests {
     fn automatic_board_counts_scale_each_preset_through_four_boards() {
         for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
             for board_count in 1..=MAX_BOARD_COUNT {
-                let board = make_breadboards(preset, board_count, false).unwrap();
+                let board = make_breadboards(preset, board_count, true, true).unwrap();
                 assert_eq!(
                     board.cols(),
                     preset.default_cols() * board_count
@@ -420,20 +428,22 @@ mod tests {
             }
         }
         assert_eq!(
-            make_breadboards(Preset::Hole830, 4, false).unwrap().cols(),
+            make_breadboards(Preset::Hole830, 4, true, true)
+                .unwrap()
+                .cols(),
             261
         );
     }
 
     #[test]
     fn automatic_board_count_rejects_zero_and_more_than_four() {
-        assert!(make_breadboards(Preset::Hole400, 0, false).is_err());
-        assert!(make_breadboards(Preset::Hole400, MAX_BOARD_COUNT + 1, false).is_err());
+        assert!(make_breadboards(Preset::Hole400, 0, true, true).is_err());
+        assert!(make_breadboards(Preset::Hole400, MAX_BOARD_COUNT + 1, true, true).is_err());
     }
 
     #[test]
     fn repeated_830_boards_restart_power_rail_margins_around_the_inter_board_gap() {
-        let board = make_breadboards(Preset::Hole830, 2, false).unwrap();
+        let board = make_breadboards(Preset::Hole830, 2, true, true).unwrap();
 
         for col in [60, 68, 126] {
             assert!(board.at(col, -4).is_some(), "rail hole missing at {col}");
@@ -453,7 +463,7 @@ mod tests {
 
     #[test]
     fn repeated_400_boards_restart_the_local_power_rail_cadence() {
-        let board = make_breadboards(Preset::Hole400, 2, false).unwrap();
+        let board = make_breadboards(Preset::Hole400, 2, true, true).unwrap();
 
         assert!(board.at(28, -4).is_some());
         assert!(board.at(29, -4).is_none());
@@ -469,7 +479,7 @@ mod tests {
     #[test]
     fn upper_half_multi_boards_have_no_lower_main_holes_or_rail_ties() {
         for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
-            let board = make_breadboards(preset, MAX_BOARD_COUNT, true).unwrap();
+            let board = make_breadboards(preset, MAX_BOARD_COUNT, true, false).unwrap();
             assert!(board.at(0, 4).is_some());
             assert!(board.at((board.cols() - 1) as i32, 4).is_some());
             assert!(board.at(0, 7).is_none());
@@ -477,6 +487,23 @@ mod tests {
             assert!(board.at(0, 14).is_none());
             assert!(board.rail_ties().is_empty());
         }
+    }
+
+    #[test]
+    fn lower_half_multi_boards_have_no_upper_main_holes_or_power_rails() {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
+            let board = make_breadboards(preset, MAX_BOARD_COUNT, false, true).unwrap();
+            assert!(board.at(0, 7).is_some());
+            assert!(board.at((board.cols() - 1) as i32, 11).is_some());
+            assert!(board.at(0, 4).is_none());
+            assert!(board.at((board.cols() - 1) as i32, 4).is_none());
+            assert!(board.at(0, -4).is_none());
+        }
+    }
+
+    #[test]
+    fn selecting_no_board_half_is_rejected() {
+        assert!(make_breadboards(Preset::Hole400, 1, false, false).is_err());
     }
 
     #[test]

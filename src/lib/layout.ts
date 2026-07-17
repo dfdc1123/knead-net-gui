@@ -3,7 +3,8 @@ export type BreadboardPreset = "hole170" | "hole400" | "hole830";
 export type BreadboardSelection = {
   preset: BreadboardPreset;
   boardCols: number;
-  upperHalfOnly: boolean;
+  useUpperHalf: boolean;
+  useLowerHalf: boolean;
 };
 
 export type BreadboardRegion =

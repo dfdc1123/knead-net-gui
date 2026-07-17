@@ -266,7 +266,9 @@ pub async fn start_compute(
             pcb_path,
             schematic_metadata,
             preset: board_config.preset,
-            upper_half_only: board_config.upper_half_only,
+            upper_half_only: board_config.use_upper_half && !board_config.use_lower_half,
+            use_upper_half: board_config.use_upper_half,
+            use_lower_half: board_config.use_lower_half,
             top_positive_net: board_config.top_positive_net,
             top_negative_net: board_config.top_negative_net,
             bottom_positive_net: board_config.bottom_positive_net,
@@ -305,6 +307,8 @@ struct ComputeJob {
     schematic_metadata: ComponentMetadataMap,
     preset: String,
     upper_half_only: bool,
+    use_upper_half: bool,
+    use_lower_half: bool,
     top_positive_net: Option<String>,
     top_negative_net: Option<String>,
     bottom_positive_net: Option<String>,
@@ -321,6 +325,8 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
         schematic_metadata,
         preset,
         upper_half_only,
+        use_upper_half,
+        use_lower_half,
         top_positive_net,
         top_negative_net,
         bottom_positive_net,
@@ -376,7 +382,7 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
     let board_cols = preset.default_cols();
     let prepared_single_board = knead_net::prepare_for_layout_with_individual_power_nets(
         &mut circuit,
-        crate::make_breadboards(preset, 1, upper_half_only)?,
+        crate::make_breadboards(preset, 1, use_upper_half, use_lower_half)?,
         top_positive_net.as_deref(),
         top_negative_net.as_deref(),
         bottom_positive_net.as_deref(),
@@ -436,7 +442,8 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                     .to_string()
             })?;
 
-        let raw_board = crate::make_breadboards(preset, board_count, upper_half_only)?;
+        let raw_board =
+            crate::make_breadboards(preset, board_count, use_upper_half, use_lower_half)?;
         let board = match power_rail_bindings {
             Some(bindings) => raw_board.with_power_rail_bindings(bindings),
             None => raw_board,
