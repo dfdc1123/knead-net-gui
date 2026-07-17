@@ -118,6 +118,12 @@ const dictionaries = {
       strength: "计算强度",
       phases: "计算阶段",
       waiting: "等待开始",
+      observingSeed: (seed: number | null) => `正在观察 seed ${seed ?? "…"}`,
+      currentBest: "当前最佳",
+      bestSeed: (seed: number | null) => `seed ${seed ?? "…"}`,
+      remainingSeeds: (count: number) => `其余 ${count} 个 seed 仍在搜索`,
+      betterLayout: (previous: number, next: number) =>
+        `发现更优布局 · ${previous.toFixed(1)} → ${next.toFixed(1)}`,
     },
     step4: {
       title: "装配视图",
@@ -298,6 +304,12 @@ const dictionaries = {
       strength: "Compute profile",
       phases: "Compute phases",
       waiting: "Waiting to start",
+      observingSeed: (seed: number | null) => `Observing seed ${seed ?? "…"}`,
+      currentBest: "Current best",
+      bestSeed: (seed: number | null) => `seed ${seed ?? "…"}`,
+      remainingSeeds: (count: number) => `${count} seeds still searching`,
+      betterLayout: (previous: number, next: number) =>
+        `Better layout found · ${previous.toFixed(1)} → ${next.toFixed(1)}`,
     },
     step4: {
       title: "Assembly View",

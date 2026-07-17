@@ -1100,7 +1100,8 @@ fn place_sa_initialization_avoids_existing_wire_endpoints() {
             LayoutProgress::InitialPlacement { snapshot, .. }
             | LayoutProgress::Annealing { snapshot, .. }
             | LayoutProgress::PlacementComplete { snapshot, .. } => Some(snapshot),
-            LayoutProgress::SeedsProgress { .. } | LayoutProgress::RoutingComplete { .. } => None,
+            LayoutProgress::SeedComplete { snapshot, .. } => Some(snapshot),
+            LayoutProgress::RoutingComplete { .. } => None,
         };
         if let Some(snapshot) = snapshot {
             assert_eq!(snapshot.wires.len(), 1, "SA progress 不能丢掉已有 wires");
@@ -1158,10 +1159,13 @@ fn place_sa_progress_does_not_change_result() {
 
     assert_eq!(plain.placements(), observed.placements());
     let events = events.into_inner().unwrap();
-    let initial_cost = match events.first() {
-        Some(crate::layout::LayoutProgress::InitialPlacement { cost, .. }) => *cost,
-        other => panic!("first event should be the initial state, got {other:?}"),
-    };
+    let initial_cost = events
+        .iter()
+        .find_map(|event| match event {
+            crate::layout::LayoutProgress::InitialPlacement { cost, .. } => Some(*cost),
+            _ => None,
+        })
+        .expect("observed seed should report its initial state");
     let iteration_zero_cost = events
         .iter()
         .find_map(|event| match event {
@@ -1188,11 +1192,23 @@ fn place_sa_progress_does_not_change_result() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        crate::layout::LayoutProgress::SeedsProgress {
+        crate::layout::LayoutProgress::SeedComplete {
+            seed: 1234..=1236,
+            cost,
             completed: 3,
-            total: 3
-        }
+            total: 3,
+            observed: _,
+            snapshot,
+        } if cost.is_finite() && snapshot.placements.iter().all(Option::is_some)
     )));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, crate::layout::LayoutProgress::SeedComplete { .. }))
+            .count(),
+        3,
+        "every completed seed should expose its final candidate"
+    );
     assert!(matches!(
         events.last(),
         Some(crate::layout::LayoutProgress::PlacementComplete { .. })

@@ -80,8 +80,15 @@ pub enum LayoutProgress {
         metrics: AnnealMetrics,
         snapshot: LayoutSnapshot,
     },
-    /// 全部并行 seed 的真实完成进度；与固定观察 seed 的动画进度分离。
-    SeedsProgress { completed: usize, total: usize },
+    /// 一个并行 seed 已完成；快照是该 seed 的最终候选，可用于维护当前全局最佳预览。
+    SeedComplete {
+        seed: u64,
+        cost: f64,
+        completed: usize,
+        total: usize,
+        observed: bool,
+        snapshot: LayoutSnapshot,
+    },
     /// 所有 seed 完成后选出的全局最优布局。
     PlacementComplete {
         seed: u64,

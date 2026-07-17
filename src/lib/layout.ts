@@ -131,5 +131,13 @@ export type ComputeProgressEvent = {
   phase: Exclude<ComputePhase, "idle">;
   progress: number;
   message: string;
+  seed?: number;
+  seed_result?: {
+    seed: number;
+    cost: number;
+    completed: number;
+    total: number;
+    observed: boolean;
+  };
   frame?: LayoutFrame | null;
 };

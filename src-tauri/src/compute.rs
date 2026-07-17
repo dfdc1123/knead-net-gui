@@ -76,7 +76,20 @@ struct ComputeEvent {
     progress: f64,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed_result: Option<SeedResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     frame: Option<LayoutFrame>,
+}
+
+#[derive(Clone, Serialize)]
+struct SeedResult {
+    seed: u64,
+    cost: f64,
+    completed: usize,
+    total: usize,
+    observed: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -283,6 +296,8 @@ pub async fn start_compute(
                     phase: "error",
                     progress: 0.0,
                     message: error.clone(),
+                    seed: None,
+                    seed_result: None,
                     frame: None,
                 },
             );
@@ -428,6 +443,8 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                         config.max_iters
                     ),
                 },
+                seed: None,
+                seed_result: None,
                 frame: None,
             })
             .map_err(|_| {
@@ -507,6 +524,8 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                                 )
                                 .into()
                         },
+                        seed: Some(best_seed),
+                        seed_result: None,
                         frame: Some(snapshot_frame(
                             &LayoutSnapshot {
                                 placements: layout.placements().to_vec(),
@@ -1108,6 +1127,8 @@ fn progress_event(
                     initializer_label(initializer, locale)
                 ),
             },
+            seed: Some(seed),
+            seed_result: None,
             frame: Some(snapshot_frame(
                 &snapshot,
                 circuit,
@@ -1133,6 +1154,8 @@ fn progress_event(
                 UiLocale::ZhCn => format!("SA 优化中 · 固定观察 seed {seed}"),
                 UiLocale::En => format!("SA optimization · observing seed {seed}"),
             },
+            seed: Some(seed),
+            seed_result: None,
             frame: Some(snapshot_frame(
                 &snapshot,
                 circuit,
@@ -1143,7 +1166,14 @@ fn progress_event(
                 Some(best_cost),
             )),
         },
-        LayoutProgress::SeedsProgress { completed, total } => ComputeEvent {
+        LayoutProgress::SeedComplete {
+            seed,
+            cost,
+            completed,
+            total,
+            observed,
+            snapshot,
+        } => ComputeEvent {
             run_id,
             phase: "annealing",
             progress: 10.0 + 75.0 * completed as f64 / total.max(1) as f64,
@@ -1151,7 +1181,23 @@ fn progress_event(
                 UiLocale::ZhCn => format!("SA 优化中 · 已完成 {completed}/{total} seeds"),
                 UiLocale::En => format!("SA optimization · {completed}/{total} seeds complete"),
             },
-            frame: None,
+            seed: Some(seed),
+            seed_result: Some(SeedResult {
+                seed,
+                cost,
+                completed,
+                total,
+                observed,
+            }),
+            frame: Some(snapshot_frame(
+                &snapshot,
+                circuit,
+                board,
+                schematic_metadata,
+                *allocation,
+                None,
+                Some(cost),
+            )),
         },
         LayoutProgress::PlacementComplete {
             seed,
@@ -1174,6 +1220,8 @@ fn progress_event(
                     UiLocale::En => format!("All seeds complete · best seed {seed}"),
                 }
             },
+            seed: Some(seed),
+            seed_result: None,
             frame: Some(snapshot_frame(
                 &snapshot,
                 circuit,
@@ -1218,6 +1266,8 @@ fn progress_event(
                                 "No free power-rail holes are available between adjacent breadboards",
                             )
                             .to_string(),
+                        seed: None,
+                        seed_result: None,
                         frame: None,
                     };
                 }
@@ -1246,6 +1296,8 @@ fn progress_event(
                         started.elapsed().as_secs_f64()
                     ),
                 },
+                seed: None,
+                seed_result: None,
                 frame: Some(frame),
             }
         }
@@ -2158,5 +2210,49 @@ mod tests {
         assert!(event.message.contains("cost 123.5"));
         assert!(event.message.contains("力导向"));
         assert_eq!(event.frame.expect("initializer frame").cost, Some(123.5));
+    }
+
+    #[test]
+    fn completed_seed_progress_exposes_its_candidate_frame() {
+        let circuit = Circuit::empty();
+        let board = Breadboard::standard();
+        let metadata = ComponentMetadataMap::new();
+        let started = Instant::now();
+        let event = progress_event(
+            8,
+            LayoutProgress::SeedComplete {
+                seed: 43,
+                cost: 98.25,
+                completed: 2,
+                total: 8,
+                observed: true,
+                snapshot: LayoutSnapshot {
+                    placements: Vec::new(),
+                    wires: Vec::new(),
+                },
+            },
+            &ProgressContext {
+                circuit: &circuit,
+                board: &board,
+                allocation: BoardAllocation {
+                    preset: Preset::Hole400,
+                    board_cols: 30,
+                    board_count: 1,
+                },
+                schematic_metadata: &metadata,
+                locale: UiLocale::ZhCn,
+                started: &started,
+            },
+            false,
+        );
+
+        let result = event.seed_result.expect("seed result metadata");
+        assert_eq!(event.seed, Some(43));
+        assert_eq!((result.seed, result.completed, result.total), (43, 2, 8));
+        assert!(result.observed);
+        assert_eq!(
+            event.frame.expect("completed candidate frame").cost,
+            Some(98.25)
+        );
     }
 }

@@ -208,11 +208,10 @@ impl<'c> super::Layout<'c> {
             }
         }
         use rayon::prelude::*;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let base_placements = self.placements.clone();
         let base_wires = self.wires.clone();
         let completed_seeds = AtomicUsize::new(0);
-        let initial_progress_reported = AtomicBool::new(false);
         let display_seed = progress
             .map_or(0, |(_, options)| options.display_seed)
             .min(n_seeds - 1);
@@ -252,7 +251,6 @@ impl<'c> super::Layout<'c> {
                                 cost,
                                 snapshot,
                             });
-                            initial_progress_reported.store(true, Ordering::Release);
                         }
                         sa::SimulationProgress::Annealing {
                             iteration,
@@ -313,12 +311,14 @@ impl<'c> super::Layout<'c> {
                     &config.weights,
                 );
                 let completed = completed_seeds.fetch_add(1, Ordering::AcqRel) + 1;
-                if let Some((callback, _)) = progress
-                    && initial_progress_reported.load(Ordering::Acquire)
-                {
-                    callback(LayoutProgress::SeedsProgress {
+                if let Some((callback, _)) = progress {
+                    callback(LayoutProgress::SeedComplete {
+                        seed: cfg_s.seed,
+                        cost: cost_s,
                         completed,
                         total: n_seeds,
+                        observed: s as usize == display_seed,
+                        snapshot: snapshot_from_state(&base_placements, &base_wires, &state_s),
                     });
                 }
                 Some(Ok((cost_s, cfg_s.seed, state_s, metrics_s)))

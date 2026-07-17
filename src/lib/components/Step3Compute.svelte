@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import { locale, ui } from "$lib/i18n";
+  import { isBetterSeedCost } from "$lib/seedPreview.js";
   import type {
     BreadboardPreset,
     ComputePhase,
@@ -52,6 +53,15 @@
   let activeRunId: string | number | null = null;
   let queue: ComputeProgressEvent[] = [];
   let playbackTimer: ReturnType<typeof setInterval> | undefined;
+  let improvementTimer: ReturnType<typeof setTimeout> | undefined;
+  let previewMode = $state<"observing" | "best">("observing");
+  let observedSeed = $state<number | null>(null);
+  let completedSeeds = $state(0);
+  let totalSeeds = $state(0);
+  let bestSeed = $state<number | null>(null);
+  let bestCost = $state<number | null>(null);
+  let bestFrame = $state<LayoutFrame | null>(null);
+  let improvementMessage = $state("");
 
   let busy = $derived(phase !== "idle" && phase !== "done" && phase !== "error");
   let safeProgress = $derived(Math.max(0, Math.min(100, Number(progress) || 0)));
@@ -59,17 +69,91 @@
   let selectedProfile = $derived(profiles.find((item) => item.id === profileId) ?? profiles[0]);
   let previewBoardCols = $derived(frame?.board_cols ?? boardCols);
   let previewBoardCount = $derived(frame?.board_count ?? 1);
+  let remainingSeeds = $derived(Math.max(0, totalSeeds - completedSeeds));
+  let showingBestSearch = $derived(
+    phase === "annealing" && previewMode === "best" && remainingSeeds > 0 && progress < 88,
+  );
 
   function stepClass(index: number) {
     if (phase === "done" || index <= activeIndex) return "step step-primary";
     return "step";
   }
 
+  function isObservedPreviewFrame(event: ComputeProgressEvent) {
+    return (
+      !event.seed_result &&
+      Boolean(event.frame) &&
+      event.progress <= 10 &&
+      (event.phase === "spectral" || event.phase === "annealing")
+    );
+  }
+
+  function resetSeedPreview() {
+    previewMode = "observing";
+    observedSeed = null;
+    completedSeeds = 0;
+    totalSeeds = 0;
+    bestSeed = null;
+    bestCost = null;
+    bestFrame = null;
+    improvementMessage = "";
+    if (improvementTimer) clearTimeout(improvementTimer);
+  }
+
+  function showImprovement(previous: number, next: number) {
+    improvementMessage = ui.step3.betterLayout(previous, next);
+    if (improvementTimer) clearTimeout(improvementTimer);
+    improvementTimer = setTimeout(() => {
+      improvementMessage = "";
+    }, 1800);
+  }
+
+  function applySeedResult(event: ComputeProgressEvent) {
+    const result = event.seed_result;
+    if (!result) return;
+
+    if (event.progress >= progress) message = event.message;
+    progress = Math.max(progress, event.progress);
+    completedSeeds = Math.max(completedSeeds, result.completed);
+    totalSeeds = Math.max(totalSeeds, result.total);
+
+    const previousBest = bestCost;
+    if (event.frame && isBetterSeedCost(bestCost, result.cost)) {
+      bestSeed = result.seed;
+      bestCost = result.cost;
+      bestFrame = event.frame;
+      if (previewMode === "best") {
+        frame = event.frame;
+        if (previousBest !== null) showImprovement(previousBest, result.cost);
+      }
+    }
+
+    if (result.observed) {
+      // The fixed observed seed is done. Discard its delayed animation and show the
+      // best completed candidate while the remaining workers continue searching.
+      queue = queue.filter((queued) => !queued.frame || queued.progress >= 88);
+      previewMode = "best";
+      if (bestFrame) frame = bestFrame;
+    }
+  }
+
   function applyEvent(event: ComputeProgressEvent) {
     if (activeRunId === null) activeRunId = event.run_id;
     if (event.run_id !== activeRunId) return;
 
+    if (event.phase === "spectral" && event.progress === 0 && !event.frame) {
+      // A larger-board retry starts a fresh set of seeds; costs from different
+      // board geometries must never compete for the same best preview.
+      queue = [];
+      frame = null;
+      resetSeedPreview();
+    }
+    if (previewMode === "best" && isObservedPreviewFrame(event)) return;
     phase = event.phase;
+    if (event.seed_result) {
+      applySeedResult(event);
+      return;
+    }
     const animationFrame = event.phase === "annealing" && Boolean(event.frame) && event.progress <= 10;
     const aggregateEvent = event.phase === "annealing" && !event.frame && event.progress < 88;
     if (animationFrame) {
@@ -81,7 +165,18 @@
       progress = event.progress;
       message = event.message;
     }
-    if (event.frame) frame = event.frame;
+    if ((event.phase === "spectral" || animationFrame) && event.seed !== undefined) {
+      observedSeed = event.seed;
+    }
+    if (event.frame && (!isObservedPreviewFrame(event) || previewMode === "observing")) {
+      frame = event.frame;
+    }
+    if (event.phase === "annealing" && event.progress >= 88) {
+      previewMode = "best";
+      if (event.seed !== undefined) bestSeed = event.seed;
+      if (event.frame?.cost !== undefined) bestCost = event.frame.cost;
+      if (event.frame) bestFrame = event.frame;
+    }
     if (event.phase === "error") error = event.message;
     if (event.phase === "routing" || event.phase === "done" || event.phase === "error") {
       interrupting = false;
@@ -92,6 +187,13 @@
   function enqueue(event: ComputeProgressEvent) {
     if (!busy || (activeRunId !== null && event.run_id !== activeRunId)) return;
     if (interrupting && event.phase === "annealing" && event.progress < 88) return;
+    if (previewMode === "best" && isObservedPreviewFrame(event)) return;
+    if (event.seed_result) {
+      // Candidate completions drive the real aggregate progress and best preview;
+      // they must not wait behind the decorative 80 ms animation queue.
+      applyEvent(event);
+      return;
+    }
     if (!event.frame) {
       // seeds 聚合进度不参与 80ms 动画排队，否则多个完成事件会产生额外延迟。
       applyEvent(event);
@@ -131,6 +233,7 @@
       disposed = true;
       unlisten?.();
       if (playbackTimer) clearInterval(playbackTimer);
+      if (improvementTimer) clearTimeout(improvementTimer);
     };
   });
 
@@ -142,6 +245,7 @@
     frame = null;
     error = "";
     interrupting = false;
+    resetSeedPreview();
     progress = 0;
     phase = "spectral";
     message = ui.step3.starting(selectedProfile.name);
@@ -233,9 +337,18 @@
     <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex items-center justify-between gap-2">
-          <h2 class="card-title text-sm">{ui.common.preview}</h2>
+          <div class="flex min-w-0 items-center gap-2">
+            <h2 class="card-title text-sm">
+              {phase === "annealing" && previewMode === "best" ? ui.step3.currentBest : ui.common.preview}
+            </h2>
+            {#if phase === "annealing"}
+              <span class="badge badge-outline badge-sm">
+                {previewMode === "best" ? ui.step3.bestSeed(bestSeed) : ui.step3.observingSeed(observedSeed)}
+              </span>
+            {/if}
+          </div>
           <div class="flex gap-2">
-            {#if frame?.iteration !== undefined}<span class="badge badge-ghost badge-sm">#{frame.iteration}</span>{/if}
+            {#if previewMode === "observing" && frame?.iteration !== undefined}<span class="badge badge-ghost badge-sm">#{frame.iteration}</span>{/if}
             {#if frame?.cost !== undefined}<span class="badge badge-secondary badge-sm">{frame.cost.toFixed(2)}</span>{/if}
           </div>
         </div>
@@ -257,6 +370,17 @@
           {#if !frame}
             <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-base-200/75">
               {#if busy}<span class="loading loading-spinner loading-lg text-primary"></span>{:else}<span class="text-sm text-base-content/50">{ui.step3.waiting}</span>{/if}
+            </div>
+          {/if}
+          {#if improvementMessage}
+            <div class="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2">
+              <span class="badge badge-success whitespace-nowrap shadow-sm">{improvementMessage}</span>
+            </div>
+          {/if}
+          {#if showingBestSearch}
+            <div class="pointer-events-none absolute bottom-3 right-3 z-20 flex items-center gap-2 rounded-box border border-base-300 bg-base-100/90 px-3 py-2 text-xs font-medium shadow-sm backdrop-blur-sm">
+              <span class="loading loading-dots loading-sm text-primary" aria-hidden="true"></span>
+              <span>{ui.step3.remainingSeeds(remainingSeeds)}</span>
             </div>
           {/if}
         </div>
