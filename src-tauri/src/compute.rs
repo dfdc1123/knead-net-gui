@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -6,8 +6,8 @@ use std::time::Instant;
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
     Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Circuit, HoleId, InitializerFamily,
-    Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, Preset, ProgressOptions, Region,
-    SAConfig,
+    Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, Polarity, PowerRailSide, Preset,
+    ProgressOptions, Region, SAConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -147,7 +147,7 @@ struct LayoutWire {
     net_name: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 struct BreadboardHole {
     region: &'static str,
     col: i32,
@@ -754,6 +754,31 @@ fn progress_event(
                 board_count: visible_board_count,
                 ..*allocation
             };
+            let frame = match snapshot_frame_with_power_links(
+                &snapshot,
+                circuit,
+                board,
+                schematic_metadata,
+                visible_allocation,
+                None,
+                None,
+            ) {
+                Ok(frame) => frame,
+                Err(_) => {
+                    return ComputeEvent {
+                        run_id,
+                        phase: "error",
+                        progress: 100.0,
+                        message: locale
+                            .text(
+                                "无法为相邻面包板找到空闲的电源轨连接孔",
+                                "No free power-rail holes are available between adjacent breadboards",
+                            )
+                            .to_string(),
+                        frame: None,
+                    };
+                }
+            };
             ComputeEvent {
                 run_id,
                 phase: "done",
@@ -778,15 +803,7 @@ fn progress_event(
                         started.elapsed().as_secs_f64()
                     ),
                 },
-                frame: Some(snapshot_frame(
-                    &snapshot,
-                    circuit,
-                    board,
-                    schematic_metadata,
-                    visible_allocation,
-                    None,
-                    None,
-                )),
+                frame: Some(frame),
             }
         }
     }
@@ -964,6 +981,139 @@ fn snapshot_frame(
         iteration,
         cost,
     }
+}
+
+#[derive(Debug)]
+struct PowerLinkError;
+
+fn snapshot_frame_with_power_links(
+    snapshot: &LayoutSnapshot,
+    circuit: &Circuit,
+    board: &Breadboard,
+    schematic_metadata: &ComponentMetadataMap,
+    allocation: BoardAllocation,
+    iteration: Option<usize>,
+    cost: Option<f64>,
+) -> Result<LayoutFrame, PowerLinkError> {
+    let mut frame = snapshot_frame(
+        snapshot,
+        circuit,
+        board,
+        schematic_metadata,
+        allocation,
+        iteration,
+        cost,
+    );
+    let mut occupied: HashSet<BreadboardHole> = frame
+        .parts
+        .iter()
+        .flat_map(|part| part.pins.iter().map(|pin| pin.hole))
+        .chain(frame.wires.iter().flat_map(|wire| [wire.from, wire.to]))
+        .collect();
+    frame.wires.extend(inter_board_power_links(
+        circuit,
+        board,
+        allocation,
+        &mut occupied,
+    )?);
+    Ok(frame)
+}
+
+fn inter_board_power_links(
+    circuit: &Circuit,
+    board: &Breadboard,
+    allocation: BoardAllocation,
+    occupied: &mut HashSet<BreadboardHole>,
+) -> Result<Vec<LayoutWire>, PowerLinkError> {
+    if allocation.board_count <= 1 || allocation.preset == Preset::Hole170 {
+        return Ok(Vec::new());
+    }
+    let Some(bindings) = board.power_rail_bindings() else {
+        return Ok(Vec::new());
+    };
+    let Some(power_rails) = board.power_rails() else {
+        return Ok(Vec::new());
+    };
+
+    let stride = allocation.board_cols + allocation.preset.inter_board_gap_cols();
+    let mut links = Vec::new();
+    for (side, polarity, net) in bindings.iter() {
+        let strip = match side {
+            PowerRailSide::Top => &power_rails.top,
+            PowerRailSide::Bottom => &power_rails.bottom,
+        };
+        let Some(rail) = strip.rows.iter().find(|rail| rail.polarity == polarity) else {
+            continue;
+        };
+        if rail.columns().next().is_none() || net.raw() >= circuit.nets().len() {
+            continue;
+        }
+        let net_name = circuit.nets()[net.raw()].name().to_string();
+        let side_name = match side {
+            PowerRailSide::Top => "top",
+            PowerRailSide::Bottom => "bottom",
+        };
+        let polarity_name = match polarity {
+            Polarity::Negative => "negative",
+            Polarity::Positive => "positive",
+        };
+
+        for left_board in 0..allocation.board_count - 1 {
+            let right_board = left_board + 1;
+            let from = find_free_power_hole(
+                board,
+                rail.y,
+                left_board * stride,
+                allocation.board_cols,
+                true,
+                occupied,
+            )
+            .ok_or(PowerLinkError)?;
+            let to = find_free_power_hole(
+                board,
+                rail.y,
+                right_board * stride,
+                allocation.board_cols,
+                false,
+                occupied,
+            )
+            .ok_or(PowerLinkError)?;
+            occupied.insert(from);
+            occupied.insert(to);
+            links.push(LayoutWire {
+                id: format!("rail-link:{side_name}:{polarity_name}:{left_board}-{right_board}"),
+                from,
+                to,
+                color: match polarity {
+                    Polarity::Negative => "#2f6fbd",
+                    Polarity::Positive => "#c83434",
+                },
+                kind: "rail-link",
+                net_id: net_name.clone(),
+                net_name: net_name.clone(),
+            });
+        }
+    }
+    Ok(links)
+}
+
+fn find_free_power_hole(
+    board: &Breadboard,
+    rail_y: i32,
+    board_start: usize,
+    board_cols: usize,
+    from_right: bool,
+    occupied: &HashSet<BreadboardHole>,
+) -> Option<BreadboardHole> {
+    let mut columns: Vec<_> = (board_start..board_start + board_cols).collect();
+    if from_right {
+        columns.reverse();
+    }
+    columns.into_iter().find_map(|column| {
+        let hole = board.at(column as i32, rail_y)?;
+        let display = display_hole(board, hole);
+        (!occupied.contains(&display)).then_some(display)
+    })
 }
 
 fn last_visible_power_rail_col(
@@ -1356,6 +1506,122 @@ mod tests {
         );
         assert_eq!(mini_frame.gap_cols, 2);
         assert_eq!(mini_frame.total_cols, 36);
+    }
+
+    #[test]
+    fn final_frame_materializes_bound_power_rails_between_adjacent_boards() {
+        use knead_net::{PowerRailBinding, PowerRailBindings};
+
+        let text =
+            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let circuit = parse_pcb(&text).unwrap();
+        let net = circuit.nets()[0].id();
+        let board = Preset::Hole400
+            .make_repeated(3)
+            .with_power_rail_bindings(PowerRailBindings {
+                top: PowerRailBinding {
+                    positive: Some(net),
+                    negative: None,
+                },
+                bottom: PowerRailBinding {
+                    positive: None,
+                    negative: None,
+                },
+            });
+        let snapshot = LayoutSnapshot {
+            placements: vec![None; circuit.components().len()],
+            wires: Vec::new(),
+        };
+        let frame = snapshot_frame_with_power_links(
+            &snapshot,
+            &circuit,
+            &board,
+            &ComponentMetadataMap::new(),
+            BoardAllocation {
+                preset: Preset::Hole400,
+                board_cols: 30,
+                board_count: 3,
+            },
+            None,
+            None,
+        )
+        .expect("power links");
+
+        let links: Vec<_> = frame
+            .wires
+            .iter()
+            .filter(|wire| wire.kind == "rail-link")
+            .collect();
+        assert_eq!(links.len(), 2);
+        assert_eq!((links[0].from.col, links[0].to.col), (28, 33));
+        assert_eq!((links[1].from.col, links[1].to.col), (61, 66));
+        assert!(links.iter().all(|wire| {
+            wire.from.region == "rail-top"
+                && wire.to.region == "rail-top"
+                && wire.from.row == 1
+                && wire.to.row == 1
+        }));
+    }
+
+    #[test]
+    fn power_link_postprocess_avoids_occupied_holes_and_respects_upper_half() {
+        use knead_net::{PowerRailBinding, PowerRailBindings};
+
+        let board = Preset::Hole400.make_repeated(2);
+        let mut occupied = HashSet::from([
+            display_hole(&board, board.at(28, -3).unwrap()),
+            display_hole(&board, board.at(33, -3).unwrap()),
+        ]);
+        let left = find_free_power_hole(&board, -3, 0, 30, true, &occupied).unwrap();
+        let right = find_free_power_hole(&board, -3, 33, 30, false, &occupied).unwrap();
+        assert_eq!((left.col, right.col), (27, 34));
+        occupied.insert(left);
+        occupied.insert(right);
+
+        let wide_board = Preset::Hole800.make_repeated(2);
+        let wide_left =
+            find_free_power_hole(&wide_board, -3, 0, 63, true, &HashSet::new()).unwrap();
+        let wide_right =
+            find_free_power_hole(&wide_board, -3, 66, 63, false, &HashSet::new()).unwrap();
+        assert_eq!((wide_left.col, wide_right.col), (60, 68));
+
+        let text =
+            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let circuit = parse_pcb(&text).unwrap();
+        let net = circuit.nets()[0].id();
+        let binding = PowerRailBinding {
+            positive: Some(net),
+            negative: Some(net),
+        };
+        let upper_board = Preset::Hole400
+            .make_repeated_upper_half(2)
+            .with_power_rail_bindings(PowerRailBindings::mirrored(binding));
+        let upper_frame = snapshot_frame_with_power_links(
+            &LayoutSnapshot {
+                placements: vec![None; circuit.components().len()],
+                wires: Vec::new(),
+            },
+            &circuit,
+            &upper_board,
+            &ComponentMetadataMap::new(),
+            BoardAllocation {
+                preset: Preset::Hole400,
+                board_cols: 30,
+                board_count: 2,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        let links: Vec<_> = upper_frame
+            .wires
+            .iter()
+            .filter(|wire| wire.kind == "rail-link")
+            .collect();
+        assert_eq!(links.len(), 2);
+        assert!(links
+            .iter()
+            .all(|wire| wire.from.region == "rail-top" && wire.to.region == "rail-top"));
     }
 
     #[test]

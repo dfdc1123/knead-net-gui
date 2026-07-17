@@ -885,7 +885,7 @@
               d={path}
               fill="none"
               stroke={wire.kind === "air" ? "var(--color-neutral)" : wire.color ?? "var(--color-primary)"}
-              stroke-width={(selected?.type === "wire" && selected.id === wire.id) || (selected?.type === "net" && selected.id === wire.net_id) ? 5 : completed ? 3 : wire.kind === "rail-tie" ? 2.8 : wire.kind === "routed" ? 2.2 : 1.2}
+              stroke-width={(selected?.type === "wire" && selected.id === wire.id) || (selected?.type === "net" && selected.id === wire.net_id) ? 5 : completed ? 3 : wire.kind === "rail-tie" ? 2.8 : wire.kind === "routed" || wire.kind === "rail-link" ? 2.2 : 1.2}
               stroke-dasharray={solidWires ? undefined : wire.kind === "air" || !completed ? "5 4" : undefined}
               stroke-linecap="round"
               opacity={selected ? ((selected.type === "wire" && selected.id === wire.id) || (selected.type === "net" && selected.id === wire.net_id) ? 1 : 0.14) : solidWires ? 0.95 : completed ? 0.95 : 0.38}
