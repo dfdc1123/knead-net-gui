@@ -25,6 +25,8 @@
     boardCount = 1,
     gapCols,
     upperHalfOnly = false,
+    useUpperHalf,
+    useLowerHalf,
     frame,
     zoom = 1,
     fitWidth = 0,
@@ -42,6 +44,8 @@
     boardCount?: number;
     gapCols?: number;
     upperHalfOnly?: boolean;
+    useUpperHalf?: boolean;
+    useLowerHalf?: boolean;
     frame?: LayoutFrame | null;
     zoom?: number;
     fitWidth?: number;
@@ -119,6 +123,8 @@
   );
   let boardGap = $derived(visualBoardGap(safeGapCols));
   let isMini = $derived(preset === "hole170");
+  let showUpperHalf = $derived(useUpperHalf ?? true);
+  let showLowerHalf = $derived(useLowerHalf ?? !upperHalfOnly);
   let xInset = $derived(isMini ? 12.2 : 18.2);
   let boards = $derived(range(safeBoardCount));
   let columns = $derived(range(safeBoardCols));
@@ -129,7 +135,14 @@
   let railOffset = $derived(preset === "hole400" ? pitch * 0.5 : 0);
   let singleBoardWidth = $derived(physicalBoardWidth(safeBoardCols, pitch, xInset));
   let boardWidth = $derived(singleBoardWidth * safeBoardCount + boardGap * (safeBoardCount - 1));
-  let boardHeight = $derived(isMini ? (upperHalfOnly ? 84.2 : 168.2) : (upperHalfOnly ? 132 : 252));
+  let boardHeight = $derived(
+    isMini
+      ? (showUpperHalf && showLowerHalf ? 168.2 : 84.2)
+      : (showUpperHalf && showLowerHalf ? 252 : 132),
+  );
+  let boardYOffset = $derived(
+    !showUpperHalf && showLowerHalf ? (isMini ? 84 : 120) : 0,
+  );
   let displayWidth = $derived(Math.max(isMini ? 420 : 440, boardWidth));
   let displayHeight = $derived((displayWidth / boardWidth) * boardHeight);
   let renderedZoom = $derived.by(() => {
@@ -259,7 +272,7 @@
     const wires = frame?.wires ?? [];
     return frame
         ? wires
-        : upperHalfOnly
+        : !(showUpperHalf && showLowerHalf)
           ? wires
           : [
               ...wires,
@@ -765,12 +778,13 @@
     aria-label={ui.boardPreview.preview(preset === "hole170" ? ui.boardPreview.hole170 : preset === "hole400" ? ui.boardPreview.hole400 : ui.boardPreview.hole830)}
     class="block max-w-none"
   >
+    <g transform="translate(0 {-boardYOffset})">
     {#each boards as boardIndex}
       <g transform="translate({boardIndex * (singleBoardWidth + boardGap)} 0)" data-board-index={boardIndex}>
         <rect x="0.8" y="0.8" width={singleBoardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
 
         {#if isMini}
-          {#if !upperHalfOnly}
+          {#if showLowerHalf}
             <rect x={xInset - 5} y="78.05" width={singleBoardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
             <path d="M {xInset - 5} 78.6 H {singleBoardWidth - xInset + 5}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
@@ -781,7 +795,7 @@
                 <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
                 <circle r="1.6" fill="var(--color-base-content)" />
               </g>
-              {#if !upperHalfOnly}
+              {#if showLowerHalf}
                 <g transform="translate({xInset + column * pitch} {102.1 + row * pitch})">
                   <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
                   <circle r="1.6" fill="var(--color-base-content)" />
@@ -796,7 +810,7 @@
             {/each}
             {#each mainRows as row}
               <text x="5" y={18.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
-              {#if !upperHalfOnly}
+              {#if showLowerHalf}
                 <text x="5" y={102.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
               {/if}
             {/each}
@@ -804,7 +818,7 @@
         {:else}
           <path d="M 1 4 H {singleBoardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
           <path d="M 1 32 H {singleBoardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
-          {#if !upperHalfOnly}
+          {#if showLowerHalf}
             <path d="M 1 220 H {singleBoardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
             <path d="M 1 248 H {singleBoardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
             <path d="M 1 35 H {singleBoardWidth - 1} M 1 217 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
@@ -812,7 +826,7 @@
             <path d="M 1 35 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
 
-          {#if !upperHalfOnly}
+          {#if showLowerHalf}
             <rect x="1" y="118.7" width={singleBoardWidth - 2} height="12" fill="var(--color-base-300)" />
             <path d="M 1 119.2 H {singleBoardWidth - 1} M 1 130.2 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
@@ -823,7 +837,7 @@
                 <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
                 <circle r="1.6" fill="var(--color-base-content)" />
               </g>
-              {#if !upperHalfOnly}
+              {#if showLowerHalf}
                 <g transform="translate({xInset + column * pitch} {144 + row * pitch})">
                   <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
                   <circle r="1.6" fill="var(--color-base-content)" />
@@ -833,7 +847,7 @@
           {/each}
 
           {#each powerColumns as column}
-            {#each upperHalfOnly ? [12, 24] : [12, 24, 228, 240] as y}
+            {#each showLowerHalf ? (showUpperHalf ? [12, 24, 228, 240] : [228, 240]) : [12, 24] as y}
               <g transform="translate({xInset + railOffset + column * pitch} {y})">
                 <circle r="3.6" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1" />
                 <circle r="1.6" fill="var(--color-base-content)" />
@@ -844,7 +858,7 @@
           <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="7" font-weight="700" text-anchor="middle">
             <text x="7" y="14.5" fill="var(--color-primary)">−</text>
             <text x="7" y="26.5" fill="var(--color-error)">+</text>
-            {#if !upperHalfOnly}
+            {#if showLowerHalf}
               <text x="7" y="230.5" fill="var(--color-primary)">−</text>
               <text x="7" y="242.5" fill="var(--color-error)">+</text>
             {/if}
@@ -856,7 +870,7 @@
             {/each}
             {#each mainRows as row}
               <text x="7" y={60 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
-              {#if !upperHalfOnly}
+              {#if showLowerHalf}
                 <text x="7" y={144 + row * pitch} dominant-baseline="central">{mainRowLabel(row, true)}</text>
               {/if}
             {/each}
@@ -1098,5 +1112,6 @@
       {/if}
       {/if}
     {/if}
+    </g>
   </svg>
 </div>

@@ -298,7 +298,8 @@
                 preset={info.preset}
                 boardCols={info.cols}
                 boardCount={1}
-                upperHalfOnly={!info.use_lower_half}
+                useUpperHalf={info.use_upper_half}
+                useLowerHalf={info.use_lower_half}
                 fitWidth={previewWidth}
                 fitHeight={previewHeight}
                 panCanvas={false}
