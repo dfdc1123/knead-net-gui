@@ -1110,10 +1110,9 @@ fn temperature_at_attempt(config: &SAConfig, attempt: usize) -> f64 {
 }
 
 fn stagnation_limit(config: &SAConfig) -> usize {
-    // Deep-quench and full-quality budgets run to completion. Only medium
-    // non-quenching spectral searches may trim a small, demonstrably stagnant tail.
-    if config.use_spectral && config.t_end >= 0.01 && (20_000..40_000).contains(&config.max_iters) {
-        config.max_iters / 2
+    // Spectral-family searches may trim a demonstrably stagnant tail.
+    if config.use_spectral {
+        config.max_iters / 20
     } else {
         0
     }
@@ -2586,7 +2585,7 @@ mod tests {
                 use_spectral: true,
                 ..SAConfig::default()
             }),
-            10_000
+            1_000
         );
         assert_eq!(outcome.metrics.attempted, 18_000);
         assert_eq!(outcome.metrics.no_candidate, 18_000);
@@ -2597,7 +2596,7 @@ mod tests {
                 use_spectral: true,
                 ..SAConfig::default()
             }),
-            0
+            1_000
         );
         assert_eq!(
             stagnation_limit(&SAConfig {
@@ -2605,7 +2604,7 @@ mod tests {
                 use_spectral: true,
                 ..SAConfig::default()
             }),
-            0
+            2_000
         );
     }
 
