@@ -678,8 +678,8 @@
       );
   }
 
-  async function fitBreadboardSelection() {
-    const { host, elements } = selectionElements("breadboard");
+  async function fitDiagramSelection(target: DiagramTarget) {
+    const { host, elements } = selectionElements(target);
     if (!host || elements.length === 0) return;
 
     const bounds = combinedElementBounds(elements);
@@ -691,9 +691,10 @@
     if (targetWidth <= availableWidth && targetHeight <= availableHeight) return;
 
     const fitRatio = Math.min(availableWidth / targetWidth, availableHeight / targetHeight);
-    const nextZoom = clampZoom(breadboardZoom * fitRatio * 0.96);
-    if (nextZoom >= breadboardZoom) return;
-    setDiagramZoom(nextZoom, "breadboard");
+    const currentZoom = target === "schematic" ? schematicZoom : breadboardZoom;
+    const nextZoom = clampZoom(currentZoom * fitRatio * 0.96);
+    if (nextZoom >= currentZoom) return;
+    setDiagramZoom(nextZoom, target);
     await tick();
   }
 
@@ -740,7 +741,8 @@
     const request = ++selectionRevealRequest;
     void tick().then(async () => {
       if (request !== selectionRevealRequest) return;
-      if (source === "schematic") await fitBreadboardSelection();
+      if (source === "schematic") await fitDiagramSelection("breadboard");
+      if (source === "breadboard") await fitDiagramSelection("schematic");
       if (request !== selectionRevealRequest) return;
       revealSelectionInDiagram("schematic");
       revealSelectionInDiagram("breadboard");

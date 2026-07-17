@@ -27,3 +27,9 @@ test("schematic canvases keep the KiCad palette on a light theme", () => {
 test("assembly rows preserve the list radius when highlighted", () => {
   assert.equal(step4Source.match(/first:rounded-t-box last:rounded-b-box/g)?.length, 2);
 });
+
+test("linked selections shrink either diagram when their bounds exceed the viewport", () => {
+  assert.match(step4Source, /async function fitDiagramSelection\(target: DiagramTarget\)/);
+  assert.match(step4Source, /if \(source === "schematic"\) await fitDiagramSelection\("breadboard"\)/);
+  assert.match(step4Source, /if \(source === "breadboard"\) await fitDiagramSelection\("schematic"\)/);
+});
