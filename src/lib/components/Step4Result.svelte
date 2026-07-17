@@ -33,8 +33,10 @@
   let schematicHost = $state<HTMLDivElement>();
   let breadboardHost = $state<HTMLDivElement>();
   let assemblyListHost = $state<HTMLDivElement>();
+  let assemblyBodyHost = $state<HTMLDivElement>();
   let resultLayoutHost = $state<HTMLDivElement>();
   let visualPanelsHost = $state<HTMLDivElement>();
+  let partListOpen = $state(true);
   let wireListOpen = $state(true);
   let activeFrame = $state<LayoutFrame | null>(null);
   let schematicZoom = $state(1);
@@ -45,6 +47,8 @@
   let breadboardViewportHeight = $state(0);
   let assemblyPanelWidth = $state(360);
   let schematicPanelHeight = $state<number | null>(null);
+  let selectedDetailsHeight = $state(300);
+  let selectedDetailsMaxHeight = $state(Number.POSITIVE_INFINITY);
   type SelectionSource = "schematic" | "breadboard" | "assembly";
   let selectionSource = $state<SelectionSource | null>(null);
   let selectionRevealRequest = 0;
@@ -62,6 +66,8 @@
   const MIN_ASSEMBLY_PANEL_WIDTH = 320;
   const MIN_CONTENT_WIDTH = 320;
   const MIN_VISUAL_PANEL_HEIGHT = 160;
+  const MIN_SELECTED_DETAILS_HEIGHT = 140;
+  const MIN_ASSEMBLY_LIST_HEIGHT = 160;
 
   type PanelResizeGesture = {
     pointerId: number;
@@ -78,6 +84,14 @@
   };
 
   let visualPanelResizeGesture: VisualPanelResizeGesture | null = null;
+
+  type SelectedDetailsResizeGesture = {
+    pointerId: number;
+    startY: number;
+    startHeight: number;
+  };
+
+  let selectedDetailsResizeGesture: SelectedDetailsResizeGesture | null = null;
 
   type DiagramTarget = "schematic" | "breadboard";
   type PendingViewportSize = {
@@ -371,6 +385,75 @@
     event.preventDefault();
   }
 
+  function maxSelectedDetailsHeight(body = assemblyBodyHost) {
+    const bodyHeight = body?.getBoundingClientRect().height ?? 0;
+    const progressHeight = body?.firstElementChild?.getBoundingClientRect().height ?? 0;
+    return Math.max(
+      MIN_SELECTED_DETAILS_HEIGHT,
+      bodyHeight - progressHeight - MIN_ASSEMBLY_LIST_HEIGHT - 48,
+    );
+  }
+
+  function clampSelectedDetailsHeight(height: number) {
+    return Math.round(Math.min(maxSelectedDetailsHeight(), Math.max(MIN_SELECTED_DETAILS_HEIGHT, height)));
+  }
+
+  function startSelectedDetailsResize(event: PointerEvent) {
+    if (event.button !== 0) return;
+    selectedDetailsResizeGesture = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight: Math.min(selectedDetailsHeight, selectedDetailsMaxHeight),
+    };
+    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function resizeSelectedDetails(event: PointerEvent) {
+    if (!selectedDetailsResizeGesture || event.pointerId !== selectedDetailsResizeGesture.pointerId) return;
+    selectedDetailsHeight = clampSelectedDetailsHeight(
+      selectedDetailsResizeGesture.startHeight + event.clientY - selectedDetailsResizeGesture.startY,
+    );
+  }
+
+  function stopSelectedDetailsResize(event: PointerEvent) {
+    if (!selectedDetailsResizeGesture || event.pointerId !== selectedDetailsResizeGesture.pointerId) return;
+    const handle = event.currentTarget as HTMLButtonElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    selectedDetailsResizeGesture = null;
+  }
+
+  function resizeSelectedDetailsWithKeyboard(event: KeyboardEvent) {
+    const currentHeight = Math.min(selectedDetailsHeight, selectedDetailsMaxHeight);
+    if (event.key === "ArrowUp") {
+      selectedDetailsHeight = clampSelectedDetailsHeight(currentHeight - 24);
+    } else if (event.key === "ArrowDown") {
+      selectedDetailsHeight = clampSelectedDetailsHeight(currentHeight + 24);
+    } else if (event.key === "Home") {
+      selectedDetailsHeight = MIN_SELECTED_DETAILS_HEIGHT;
+    } else if (event.key === "End") {
+      selectedDetailsHeight = maxSelectedDetailsHeight();
+    } else {
+      return;
+    }
+    event.preventDefault();
+  }
+
+  function observeAssemblyBody(body: HTMLDivElement) {
+    const resizeObserver = new ResizeObserver(() => {
+      const bodyHeight = body.getBoundingClientRect().height;
+      const progressHeight = body.firstElementChild?.getBoundingClientRect().height ?? 0;
+      if (bodyHeight <= 0 || progressHeight <= 0) return;
+      selectedDetailsMaxHeight = maxSelectedDetailsHeight(body);
+    });
+    resizeObserver.observe(body);
+    return {
+      destroy() {
+        resizeObserver.disconnect();
+      },
+    };
+  }
+
   async function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
     event.preventDefault();
     const viewport = event.currentTarget as HTMLDivElement;
@@ -447,10 +530,32 @@
     });
   }
 
+  function nextPendingItem<T>(
+    items: T[],
+    currentId: string,
+    completedIds: Set<string>,
+    itemId: (item: T) => string,
+  ) {
+    const currentIndex = items.findIndex((item) => itemId(item) === currentId);
+    if (currentIndex < 0) return undefined;
+    for (let offset = 1; offset <= items.length; offset += 1) {
+      const candidate = items[(currentIndex + offset) % items.length];
+      if (!completedIds.has(itemId(candidate))) return candidate;
+    }
+    return undefined;
+  }
+
   function setPartCompleted(id: string, completed: boolean) {
-    completedPartIds = completed
+    const nextCompletedIds = completed
       ? [...new Set([...completedPartIds, id])]
       : completedPartIds.filter((partId) => partId !== id);
+    completedPartIds = nextCompletedIds;
+
+    const completedPart = parts.find((part) => part.id === id);
+    if (!completed || !completedPart || selected?.type !== "component" || selected.id !== completedPart.reference) return;
+    const nextPart = nextPendingItem(parts, id, new Set(nextCompletedIds), (part) => part.id);
+    if (nextPart) choosePart(nextPart);
+    else choose(null);
   }
 
   function markAllParts(completed: boolean) {
@@ -458,9 +563,15 @@
   }
 
   function setWireCompleted(id: string, completed: boolean) {
-    completedWireIds = completed
+    const nextCompletedIds = completed
       ? [...new Set([...completedWireIds, id])]
       : completedWireIds.filter((wireId) => wireId !== id);
+    completedWireIds = nextCompletedIds;
+
+    if (!completed || selected?.type !== "wire" || selected.id !== id) return;
+    const nextWire = nextPendingItem(wires, id, new Set(nextCompletedIds), (wire) => wire.id);
+    if (nextWire) chooseWire(nextWire);
+    else choose(null);
   }
 
   function markAllWires(completed: boolean) {
@@ -602,10 +713,16 @@
     });
   }
 
-  async function revealWireInAssemblyList(wireId: string) {
+  async function revealSelectionInAssemblyList(selection: CircuitSelection) {
     await tick();
-    const row = [...(assemblyListHost?.querySelectorAll<HTMLElement>("[data-wire-id]") ?? [])]
-      .find((candidate) => candidate.dataset.wireId === wireId);
+    if (!assemblyListHost) return;
+    const selector = selection.type === "component"
+      ? `[data-component-id="${CSS.escape(selection.id)}"]`
+      : selection.type === "wire"
+        ? `[data-wire-id="${CSS.escape(selection.id)}"]`
+        : null;
+    if (!selector) return;
+    const row = assemblyListHost.querySelector<HTMLElement>(selector);
     row?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
@@ -629,10 +746,11 @@
   });
 
   $effect(() => {
-    const wireId = selected?.type === "wire" ? selected.id : null;
-    if (!wireId || !assemblyListHost) return;
-    wireListOpen = true;
-    void revealWireInAssemblyList(wireId);
+    const assemblySelection = selected?.type === "component" || selected?.type === "wire" ? selected : null;
+    if (!assemblySelection || !assemblyListHost) return;
+    if (assemblySelection.type === "component") partListOpen = true;
+    else wireListOpen = true;
+    void revealSelectionInAssemblyList(assemblySelection);
   });
 
   $effect(() => {
@@ -852,7 +970,7 @@
     </button>
 
     <aside class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm" aria-label={ui.step4.assemblyList}>
-      <div class="card-body min-h-0 gap-3 p-3">
+      <div class="card-body min-h-0 gap-0 p-3" bind:this={assemblyBodyHost} use:observeAssemblyBody>
         <div class="shrink-0 px-1">
           <div class="flex items-center justify-between gap-2">
             <h2 class="card-title text-base">{ui.step4.assemblyList}</h2>
@@ -868,8 +986,12 @@
         </div>
 
         {#if selectedPart}
-          <section class="shrink-0 overflow-hidden rounded-box border border-warning/50 bg-warning/5" aria-label={ui.step4.selectedDetails}>
-            <div class="flex items-start justify-between gap-2 border-b border-warning/30 px-3 py-2">
+          <section
+            class="mt-3 flex shrink-0 flex-col overflow-hidden rounded-box border border-warning/50 bg-warning/5"
+            style:height={`${Math.min(selectedDetailsHeight, selectedDetailsMaxHeight)}px`}
+            aria-label={ui.step4.selectedDetails}
+          >
+            <div class="flex shrink-0 items-start justify-between gap-2 border-b border-warning/30 px-3 py-2">
               <div class="min-w-0">
                 <div class="flex items-center gap-2">
                   <span class="badge badge-warning badge-sm font-mono">{selectedPart.reference}</span>
@@ -888,65 +1010,82 @@
               </div>
               <span class="badge badge-outline badge-sm shrink-0">{ui.step4.pinCount(selectedPart.pins.length)}</span>
             </div>
-            <div class="max-h-56 overflow-auto px-2 py-1">
-              <table class="table table-xs">
-                <thead>
-                  <tr>
-                    <th>{ui.step4.number}</th>
-                    <th>{ui.step4.nameTypeShape}</th>
-                    <th>{ui.step4.net}</th>
-                    <th>{ui.step4.hole}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each orderedPins(selectedPart) as pin}
+            <div class="min-h-0 flex-1 overflow-y-auto">
+              <div class="px-2 py-1">
+                <table class="table table-xs">
+                  <thead>
                     <tr>
-                      <td class="font-mono font-semibold">{pin.number || ui.common.placeholder}</td>
-                      <td>
-                        <div class="flex flex-wrap items-center gap-1">
-                          <span>
-                            {#each parseKiCadTextMarkup(pin.name || ui.common.placeholder) as segment}
-                              <span class:overline={segment.overbar}>{segment.text}</span>
-                            {/each}
-                          </span>
-                          {#if pin.pin_type}<span class="badge badge-ghost badge-xs">{pin.pin_type}</span>{/if}
-                          {#if pin.pin_shape}<span class="badge badge-ghost badge-xs">{pin.pin_shape}</span>{/if}
-                        </div>
-                        {#if pin.unit !== undefined}<span class="text-[0.65rem] text-base-content/50">{ui.step4.unit} {pin.unit}</span>{/if}
-                      </td>
-                      <td class="max-w-32 truncate font-mono text-[0.68rem]" title={netLabel(pin)}>{netLabel(pin)}</td>
-                      <td class="whitespace-nowrap font-mono text-[0.68rem]">{holeLabel(pin.hole)}</td>
+                      <th>{ui.step4.number}</th>
+                      <th>{ui.step4.nameTypeShape}</th>
+                      <th>{ui.step4.net}</th>
+                      <th>{ui.step4.hole}</th>
                     </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
-            {#if selectedPart.properties?.length}
-              <details class="border-t border-warning/30 px-3 py-2 text-xs">
-                <summary class="cursor-pointer font-medium">{ui.step4.properties} ({selectedPart.properties.length})</summary>
-                <dl class="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-1">
-                  {#each selectedPart.properties as property}
-                    <dt class="font-mono text-base-content/60">{property.name}</dt>
-                    <dd class="min-w-0 truncate" title={property.value}>
-                      {#each parseKiCadTextMarkup(property.value) as segment}
-                        <span class:overline={segment.overbar}>{segment.text}</span>
-                      {/each}
-                      {#if property.hidden}<span class="badge badge-ghost badge-xs ml-1">{ui.step4.hiddenProperty}</span>{/if}
-                    </dd>
-                  {/each}
-                </dl>
-              </details>
-            {/if}
-            <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-warning/30 px-3 py-2 text-[0.68rem] text-base-content/55">
-              <span class="truncate" title={selectedPart.footprint}>{ui.step4.footprint}: {selectedPart.footprint}</span>
-              {#if selectedPart.datasheet}<span class="truncate" title={selectedPart.datasheet}>{ui.step4.datasheet}: {selectedPart.datasheet}</span>{/if}
+                  </thead>
+                  <tbody>
+                    {#each orderedPins(selectedPart) as pin}
+                      <tr>
+                        <td class="font-mono font-semibold">{pin.number || ui.common.placeholder}</td>
+                        <td>
+                          <div class="flex flex-wrap items-center gap-1">
+                            <span>
+                              {#each parseKiCadTextMarkup(pin.name || ui.common.placeholder) as segment}
+                                <span class:overline={segment.overbar}>{segment.text}</span>
+                              {/each}
+                            </span>
+                            {#if pin.pin_type}<span class="badge badge-ghost badge-xs">{pin.pin_type}</span>{/if}
+                            {#if pin.pin_shape}<span class="badge badge-ghost badge-xs">{pin.pin_shape}</span>{/if}
+                          </div>
+                          {#if pin.unit !== undefined}<span class="text-[0.65rem] text-base-content/50">{ui.step4.unit} {pin.unit}</span>{/if}
+                        </td>
+                        <td class="max-w-32 truncate font-mono text-[0.68rem]" title={netLabel(pin)}>{netLabel(pin)}</td>
+                        <td class="whitespace-nowrap font-mono text-[0.68rem]">{holeLabel(pin.hole)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+              {#if selectedPart.properties?.length}
+                <details class="border-t border-warning/30 px-3 py-2 text-xs">
+                  <summary class="cursor-pointer font-medium">{ui.step4.properties} ({selectedPart.properties.length})</summary>
+                  <dl class="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-1">
+                    {#each selectedPart.properties as property}
+                      <dt class="font-mono text-base-content/60">{property.name}</dt>
+                      <dd class="min-w-0 truncate" title={property.value}>
+                        {#each parseKiCadTextMarkup(property.value) as segment}
+                          <span class:overline={segment.overbar}>{segment.text}</span>
+                        {/each}
+                        {#if property.hidden}<span class="badge badge-ghost badge-xs ml-1">{ui.step4.hiddenProperty}</span>{/if}
+                      </dd>
+                    {/each}
+                  </dl>
+                </details>
+              {/if}
+              <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-warning/30 px-3 py-2 text-[0.68rem] text-base-content/55">
+                <span class="truncate" title={selectedPart.footprint}>{ui.step4.footprint}: {selectedPart.footprint}</span>
+                {#if selectedPart.datasheet}<span class="truncate" title={selectedPart.datasheet}>{ui.step4.datasheet}: {selectedPart.datasheet}</span>{/if}
+              </div>
             </div>
           </section>
+
+          <button
+            type="button"
+            class="group relative h-3 shrink-0 cursor-row-resize touch-none border-0 bg-transparent p-0 outline-none focus-visible:bg-primary/20"
+            aria-label={ui.step4.resizeSelectedDetails}
+            title={ui.step4.resizeSelectedDetails}
+            onpointerdown={startSelectedDetailsResize}
+            onpointermove={resizeSelectedDetails}
+            onpointerup={stopSelectedDetailsResize}
+            onpointercancel={stopSelectedDetailsResize}
+            onlostpointercapture={stopSelectedDetailsResize}
+            onkeydown={resizeSelectedDetailsWithKeyboard}
+          >
+            <div class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-base-300 group-hover:bg-primary"></div>
+          </button>
         {/if}
 
-        <div class="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" bind:this={assemblyListHost}>
+        <div class="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" bind:this={assemblyListHost}>
           <div class="collapse-arrow collapse border border-base-300 bg-base-100">
-            <input type="checkbox" checked aria-label={ui.step4.toggleComponents} />
+            <input type="checkbox" bind:checked={partListOpen} aria-label={ui.step4.toggleComponents} />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               {ui.step4.components}
               <span class="badge {completedPartCount === frame.parts.length && frame.parts.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
@@ -962,7 +1101,10 @@
                 <ul class="overflow-hidden rounded-box border border-base-300 bg-base-100">
                   {#each assemblyParts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
-                    <li class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}">
+                    <li
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}"
+                      data-component-id={part.reference}
+                    >
                       <button
                         class="assembly-row-hit absolute inset-0 cursor-pointer"
                         onclick={() => choosePart(part)}
