@@ -30,6 +30,7 @@
     zoom = 1,
     fitWidth = 0,
     fitHeight = 0,
+    fitReference = null,
     panCanvas = true,
     solidWires = false,
     selected = null,
@@ -48,6 +49,12 @@
     zoom?: number;
     fitWidth?: number;
     fitHeight?: number;
+    fitReference?: {
+      preset: BreadboardPreset;
+      boardCols: number;
+      boardCount?: number;
+      gapCols?: number;
+    } | null;
     panCanvas?: boolean;
     solidWires?: boolean;
     selected?: CircuitSelection | null;
@@ -143,11 +150,47 @@
   );
   let displayWidth = $derived(Math.max(isMini ? 420 : 440, boardWidth));
   let displayHeight = $derived((displayWidth / boardWidth) * boardHeight);
+  let referencePreset = $derived(fitReference?.preset ?? preset);
+  let referenceBoardCols = $derived(
+    Math.max(1, Math.trunc(Number(fitReference?.boardCols ?? safeBoardCols) || 1)),
+  );
+  let referenceBoardCount = $derived(
+    Math.max(1, Math.trunc(Number(fitReference?.boardCount ?? safeBoardCount) || 1)),
+  );
+  let referenceGapCols = $derived(
+    Math.max(
+      0,
+      Math.trunc(
+        Number(fitReference?.gapCols ?? interBoardGapColumns(referencePreset)) || 0,
+      ),
+    ),
+  );
+  let referenceIsMini = $derived(referencePreset === "hole170");
+  let referenceXInset = $derived(referenceIsMini ? 12.2 : 18.2);
+  let referenceSingleBoardWidth = $derived(
+    physicalBoardWidth(referenceBoardCols, pitch, referenceXInset),
+  );
+  let referenceBoardWidth = $derived(
+    referenceSingleBoardWidth * referenceBoardCount
+      + visualBoardGap(referenceGapCols) * (referenceBoardCount - 1),
+  );
+  let referenceBoardHeight = $derived(
+    referenceIsMini
+      ? (showUpperHalf && showLowerHalf ? 168.2 : 84.2)
+      : (showUpperHalf && showLowerHalf ? 252 : 132),
+  );
+  let renderWidth = $derived(fitReference ? boardWidth : displayWidth);
+  let renderHeight = $derived(fitReference ? boardHeight : displayHeight);
+  let fitTargetWidth = $derived(fitReference ? referenceBoardWidth : displayWidth);
+  let fitTargetHeight = $derived(fitReference ? referenceBoardHeight : displayHeight);
   let renderedZoom = $derived.by(() => {
     if (fitWidth <= 0 || fitHeight <= 0) return zoom;
     const availableWidth = Math.max(1, fitWidth - 24);
     const availableHeight = Math.max(1, fitHeight - 24);
-    const fitScale = Math.min(availableWidth / displayWidth, availableHeight / displayHeight);
+    const fitScale = Math.min(
+      availableWidth / fitTargetWidth,
+      availableHeight / fitTargetHeight,
+    );
     return zoom * fitScale;
   });
   let hasPanPadding = $derived(panCanvas);
@@ -820,15 +863,15 @@
 
 <div
   class="grid place-items-center bg-base-200 p-3 text-base-content"
-  style:width={hasPanPadding ? `calc(100% + ${displayWidth * renderedZoom + 24}px)` : `max(100%, ${displayWidth * renderedZoom + 24}px)`}
-  style:height={hasPanPadding ? `calc(100% + ${displayHeight * renderedZoom + 24}px)` : `max(100%, ${displayHeight * renderedZoom + 24}px)`}
+  style:width={hasPanPadding ? `calc(100% + ${renderWidth * renderedZoom + 24}px)` : `max(100%, ${renderWidth * renderedZoom + 24}px)`}
+  style:height={hasPanPadding ? `calc(100% + ${renderHeight * renderedZoom + 24}px)` : `max(100%, ${renderHeight * renderedZoom + 24}px)`}
   data-theme="corporate"
   role="presentation"
   onclick={() => onSelect(null)}
 >
   <svg
-    width={displayWidth * renderedZoom}
-    height={displayHeight * renderedZoom}
+    width={renderWidth * renderedZoom}
+    height={renderHeight * renderedZoom}
     viewBox="0 0 {boardWidth} {boardHeight}"
     style:overflow={!showUpperHalf && showLowerHalf ? "hidden" : "visible"}
     role="img"

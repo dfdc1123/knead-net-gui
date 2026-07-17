@@ -33,6 +33,7 @@
     { id: "hole400", name: ui.step2.holes(400), defaultCols: 30 },
     { id: "hole830", name: ui.step2.holes(830), defaultCols: 63 },
   ];
+  const STEP2_FIT_REFERENCE = { preset: "hole830", boardCols: 63 } as const;
 
   let preset = $state<BreadboardPreset>("hole400");
   let useUpperHalf = $state(true);
@@ -302,6 +303,7 @@
                 useLowerHalf={info.use_lower_half}
                 fitWidth={previewWidth}
                 fitHeight={previewHeight}
+                fitReference={STEP2_FIT_REFERENCE}
                 panCanvas={false}
                 tieNegativeRails={topNegativeNet === bottomNegativeNet}
                 tiePositiveRails={topPositiveNet === bottomPositiveNet}
