@@ -4,9 +4,11 @@ import test from "node:test";
 import {
   boardIndexForColumn,
   globalColumnX,
+  interBoardGapColumns,
   localColumnForColumn,
   physicalColumnNumber,
   railColumnsForBoard,
+  visualBoardGap,
 } from "../src/lib/breadboardGeometry.js";
 
 const source = readFileSync(
@@ -38,9 +40,23 @@ test("global columns map to consecutive physical breadboards", () => {
   assert.equal(physicalColumnNumber(33, 30, 3), 1);
   assert.equal(physicalColumnNumber(66, 30, 3), 1);
 
-  const lastOnFirst = globalColumnX(29, 30, 3, 12, 18.2, 36);
-  const firstOnSecond = globalColumnX(33, 30, 3, 12, 18.2, 36);
-  assert.ok(Math.abs(firstOnSecond - lastOnFirst - (36 + 18.2 * 2)) < 1e-9);
+  const boardGap = visualBoardGap(3);
+  const lastOnFirst = globalColumnX(29, 30, 3, 12, 18.2, boardGap);
+  const firstOnSecond = globalColumnX(33, 30, 3, 12, 18.2, boardGap);
+  assert.ok(Math.abs(firstOnSecond - lastOnFirst - (boardGap + 18.2 * 2)) < 1e-9);
+});
+
+test("breadboard presets expose their physical inter-board spacing", () => {
+  assert.equal(interBoardGapColumns("hole170"), 2);
+  assert.equal(interBoardGapColumns("hole400"), 3);
+  assert.equal(interBoardGapColumns("hole800"), 3);
+
+  assert.equal(boardIndexForColumn(16, 17, 2), 0);
+  assert.equal(boardIndexForColumn(19, 17, 2), 1);
+  assert.equal(localColumnForColumn(19, 17, 2), 0);
+  assert.equal(physicalColumnNumber(19, 17, 2), 1);
+  assert.equal(visualBoardGap(2), 8);
+  assert.equal(visualBoardGap(3), 12);
 });
 
 test("400-hole power rails restart symmetrically on every board", () => {

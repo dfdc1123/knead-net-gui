@@ -389,7 +389,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use knead_net::layout::{Preset, INTER_BOARD_GAP_COLS};
+    use knead_net::layout::Preset;
 
     #[test]
     fn valid_breadboard_dimensions_are_still_accepted() {
@@ -415,7 +415,7 @@ mod tests {
                 assert_eq!(
                     board.cols(),
                     preset.default_cols() * board_count
-                        + INTER_BOARD_GAP_COLS * board_count.saturating_sub(1)
+                        + preset.inter_board_gap_cols() * board_count.saturating_sub(1)
                 );
             }
         }

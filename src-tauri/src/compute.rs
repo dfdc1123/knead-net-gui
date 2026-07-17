@@ -7,7 +7,7 @@ use knead_net::input::pcb::parse_pcb;
 use knead_net::{
     Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Circuit, HoleId, InitializerFamily,
     Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, Preset, ProgressOptions, Region,
-    SAConfig, INTER_BOARD_GAP_COLS,
+    SAConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -598,6 +598,7 @@ fn visible_board_count(
     circuit: &Circuit,
     board: &Breadboard,
     board_cols: usize,
+    gap_cols: usize,
     attempted_board_count: usize,
 ) -> usize {
     let placement_max = snapshot
@@ -624,7 +625,7 @@ fn visible_board_count(
     board_count_for_max_x(
         placement_max.into_iter().chain(wire_max).max(),
         board_cols,
-        INTER_BOARD_GAP_COLS,
+        gap_cols,
         attempted_board_count,
     )
 }
@@ -746,6 +747,7 @@ fn progress_event(
                 circuit,
                 board,
                 allocation.board_cols,
+                allocation.preset.inter_board_gap_cols(),
                 allocation.board_count,
             );
             let visible_allocation = BoardAllocation {
@@ -813,6 +815,7 @@ fn snapshot_frame(
         board_cols,
         board_count,
     } = allocation;
+    let gap_cols = preset.inter_board_gap_cols();
     let mut pin_holes = HashMap::new();
     let mut parts = Vec::new();
 
@@ -954,8 +957,8 @@ fn snapshot_frame(
     LayoutFrame {
         board_cols,
         board_count,
-        gap_cols: INTER_BOARD_GAP_COLS,
-        total_cols: board_cols * board_count + INTER_BOARD_GAP_COLS * board_count.saturating_sub(1),
+        gap_cols,
+        total_cols: board_cols * board_count + gap_cols * board_count.saturating_sub(1),
         parts,
         wires,
         iteration,
@@ -971,6 +974,7 @@ fn last_visible_power_rail_col(
     if preset == Preset::Hole170 || board_count == 0 {
         return None;
     }
+    let gap_cols = preset.inter_board_gap_cols();
     let margin = if preset == Preset::Hole800 { 2 } else { 0 };
     let mut last = None;
     let mut start = margin;
@@ -979,7 +983,7 @@ fn last_visible_power_rail_col(
         last = Some(end);
         start += 6;
     }
-    last.map(|local| ((board_count - 1) * (board_cols + INTER_BOARD_GAP_COLS) + local) as i32)
+    last.map(|local| ((board_count - 1) * (board_cols + gap_cols) + local) as i32)
 }
 
 fn classify_package(component_kind: &str, footprint_name: &str, pin_count: usize) -> &'static str {
@@ -1325,13 +1329,33 @@ mod tests {
             None,
         );
 
-        assert_eq!(frame.gap_cols, INTER_BOARD_GAP_COLS);
+        assert_eq!(frame.gap_cols, Preset::Hole800.inter_board_gap_cols());
         assert_eq!(frame.total_cols, 129);
         assert!(frame
             .wires
             .iter()
             .filter(|wire| wire.kind == "rail-tie")
             .all(|wire| wire.from.col == 126 && wire.to.col == 126));
+
+        let mini_board = Preset::Hole170.make_repeated(2);
+        let mini_frame = snapshot_frame(
+            &LayoutSnapshot {
+                placements: Vec::new(),
+                wires: Vec::new(),
+            },
+            &circuit,
+            &mini_board,
+            &metadata,
+            BoardAllocation {
+                preset: Preset::Hole170,
+                board_cols: 17,
+                board_count: 2,
+            },
+            None,
+            None,
+        );
+        assert_eq!(mini_frame.gap_cols, 2);
+        assert_eq!(mini_frame.total_cols, 36);
     }
 
     #[test]

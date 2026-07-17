@@ -11,10 +11,11 @@
   import { parseKiCadTextMarkup } from "$lib/layout";
   import {
     globalColumnX,
-    INTER_BOARD_GAP_COLS,
+    interBoardGapColumns,
     physicalColumnNumber,
     physicalBoardWidth,
     railColumnsForBoard,
+    visualBoardGap,
   } from "$lib/breadboardGeometry.js";
   import { ui } from "$lib/i18n";
 
@@ -22,7 +23,7 @@
     preset,
     boardCols,
     boardCount = 1,
-    gapCols = INTER_BOARD_GAP_COLS,
+    gapCols,
     upperHalfOnly = false,
     frame,
     zoom = 1,
@@ -113,8 +114,10 @@
 
   let safeBoardCols = $derived(Math.max(1, Math.trunc(Number(boardCols) || 1)));
   let safeBoardCount = $derived(Math.max(1, Math.trunc(Number(boardCount) || 1)));
-  let safeGapCols = $derived(Math.max(0, Math.trunc(Number(gapCols) || 0)));
-  let boardGap = $derived(safeGapCols * pitch);
+  let safeGapCols = $derived(
+    Math.max(0, Math.trunc(Number(gapCols ?? interBoardGapColumns(preset)) || 0)),
+  );
+  let boardGap = $derived(visualBoardGap(safeGapCols));
   let isMini = $derived(preset === "hole170");
   let xInset = $derived(isMini ? 12.2 : 18.2);
   let boards = $derived(range(safeBoardCount));

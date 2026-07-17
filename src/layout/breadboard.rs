@@ -41,7 +41,8 @@ use std::ops::RangeInclusive;
 
 use crate::circuit::{NetId, Position};
 
-/// Number of unavailable logical columns between adjacent physical breadboards.
+/// Default number of unavailable logical columns between adjacent full-size breadboards.
+/// Use [`Preset::inter_board_gap_cols`] when the preset is known.
 pub const INTER_BOARD_GAP_COLS: usize = 3;
 
 /// 板上一个孔的标识, 范围 0..board.len()。
@@ -323,8 +324,9 @@ impl Preset {
     pub fn make_repeated(self, board_count: usize) -> Breadboard {
         assert!(board_count > 0, "board_count must be positive");
         let board_cols = self.default_cols();
-        let cols = repeated_total_cols(board_cols, board_count);
-        let blocked_cols = repeated_gap_columns(board_cols, board_count);
+        let gap_cols = self.inter_board_gap_cols();
+        let cols = repeated_total_cols(board_cols, gap_cols, board_count);
+        let blocked_cols = repeated_gap_columns(board_cols, gap_cols, board_count);
         match self {
             Self::Hole170 => Breadboard::with_blocked_rows_and_cols(cols, 12, [5, 6], blocked_cols),
             Self::Hole400 => Breadboard::with_blocked_rows_cols_and_power_rails(
@@ -335,6 +337,7 @@ impl Preset {
                 Some(repeat_power_rails(
                     standard_power_rails(board_cols as i32),
                     board_cols,
+                    gap_cols,
                     board_count,
                 )),
             )
@@ -347,6 +350,7 @@ impl Preset {
                 Some(repeat_power_rails(
                     wide_power_rails_800(board_cols as i32),
                     board_cols,
+                    gap_cols,
                     board_count,
                 )),
             )
@@ -358,8 +362,9 @@ impl Preset {
     pub fn make_repeated_upper_half(self, board_count: usize) -> Breadboard {
         assert!(board_count > 0, "board_count must be positive");
         let board_cols = self.default_cols();
-        let cols = repeated_total_cols(board_cols, board_count);
-        let blocked_cols = repeated_gap_columns(board_cols, board_count);
+        let gap_cols = self.inter_board_gap_cols();
+        let cols = repeated_total_cols(board_cols, gap_cols, board_count);
+        let blocked_cols = repeated_gap_columns(board_cols, gap_cols, board_count);
         match self {
             Self::Hole170 => Breadboard::with_blocked_rows_and_cols(cols, 12, 5..12, blocked_cols),
             Self::Hole400 => Breadboard::with_blocked_rows_cols_and_power_rails(
@@ -370,6 +375,7 @@ impl Preset {
                 Some(top_power_rails_only(repeat_power_rails(
                     standard_power_rails(board_cols as i32),
                     board_cols,
+                    gap_cols,
                     board_count,
                 ))),
             ),
@@ -381,6 +387,7 @@ impl Preset {
                 Some(top_power_rails_only(repeat_power_rails(
                     wide_power_rails_800(board_cols as i32),
                     board_cols,
+                    gap_cols,
                     board_count,
                 ))),
             ),
@@ -396,6 +403,14 @@ impl Preset {
         }
     }
 
+    /// Unavailable logical columns inserted between adjacent boards of this preset.
+    pub fn inter_board_gap_cols(self) -> usize {
+        match self {
+            Self::Hole170 => 2,
+            Self::Hole400 | Self::Hole800 => INTER_BOARD_GAP_COLS,
+        }
+    }
+
     /// 预设名 (“170” / “400” / “800”), 跟文件名 / 日志一起用。
     pub fn name(self) -> &'static str {
         match self {
@@ -406,32 +421,37 @@ impl Preset {
     }
 }
 
-fn repeated_total_cols(board_cols: usize, board_count: usize) -> usize {
+fn repeated_total_cols(board_cols: usize, gap_cols: usize, board_count: usize) -> usize {
     board_cols
         .checked_mul(board_count)
         .and_then(|cols| {
-            INTER_BOARD_GAP_COLS
+            gap_cols
                 .checked_mul(board_count.saturating_sub(1))
                 .and_then(|gaps| cols.checked_add(gaps))
         })
         .expect("repeated breadboard width overflow")
 }
 
-fn repeated_gap_columns(board_cols: usize, board_count: usize) -> BTreeSet<usize> {
-    let stride = board_cols + INTER_BOARD_GAP_COLS;
+fn repeated_gap_columns(board_cols: usize, gap_cols: usize, board_count: usize) -> BTreeSet<usize> {
+    let stride = board_cols + gap_cols;
     (1..board_count)
         .flat_map(|board_index| {
-            let start = board_index * stride - INTER_BOARD_GAP_COLS;
-            start..start + INTER_BOARD_GAP_COLS
+            let start = board_index * stride - gap_cols;
+            start..start + gap_cols
         })
         .collect()
 }
 
-fn repeat_power_rails(mut rails: PowerRails, board_cols: usize, board_count: usize) -> PowerRails {
+fn repeat_power_rails(
+    mut rails: PowerRails,
+    board_cols: usize,
+    gap_cols: usize,
+    board_count: usize,
+) -> PowerRails {
     let offset_groups = |groups: &[RangeInclusive<i32>]| {
         (0..board_count)
             .flat_map(|board_index| {
-                let offset = (board_index * (board_cols + INTER_BOARD_GAP_COLS)) as i32;
+                let offset = (board_index * (board_cols + gap_cols)) as i32;
                 groups
                     .iter()
                     .map(move |group| (*group.start() + offset)..=(*group.end() + offset))
@@ -1876,6 +1896,9 @@ mod tests {
         assert_eq!(Preset::Hole170.default_cols(), 17);
         assert_eq!(Preset::Hole400.default_cols(), 30);
         assert_eq!(Preset::Hole800.default_cols(), 63);
+        assert_eq!(Preset::Hole170.inter_board_gap_cols(), 2);
+        assert_eq!(Preset::Hole400.inter_board_gap_cols(), 3);
+        assert_eq!(Preset::Hole800.inter_board_gap_cols(), 3);
     }
 
     #[test]
@@ -1904,13 +1927,14 @@ mod tests {
     }
 
     #[test]
-    fn repeated_presets_leave_three_unusable_columns_between_boards() {
+    fn repeated_presets_leave_their_configured_unusable_columns_between_boards() {
         for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
             let board_cols = preset.default_cols();
+            let gap_cols = preset.inter_board_gap_cols();
             let board = preset.make_repeated(2);
 
-            assert_eq!(board.cols(), board_cols * 2 + INTER_BOARD_GAP_COLS);
-            for x in board_cols..board_cols + INTER_BOARD_GAP_COLS {
+            assert_eq!(board.cols(), board_cols * 2 + gap_cols);
+            for x in board_cols..board_cols + gap_cols {
                 for y in 0..board.main_rows() {
                     assert!(board.at(x as i32, y as i32).is_none());
                 }
@@ -1926,11 +1950,7 @@ mod tests {
                 }
             }
             assert!(board.at((board_cols - 1) as i32, 0).is_some());
-            assert!(
-                board
-                    .at((board_cols + INTER_BOARD_GAP_COLS) as i32, 0)
-                    .is_some()
-            );
+            assert!(board.at((board_cols + gap_cols) as i32, 0).is_some());
         }
     }
 
@@ -1938,18 +1958,15 @@ mod tests {
     fn repeated_upper_half_presets_keep_only_each_top_half() {
         for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
             let board = preset.make_repeated_upper_half(3);
-            assert_eq!(
-                board.cols(),
-                preset.default_cols() * 3 + INTER_BOARD_GAP_COLS * 2
-            );
+            let gap_cols = preset.inter_board_gap_cols();
+            assert_eq!(board.cols(), preset.default_cols() * 3 + gap_cols * 2);
             assert!(board.at(0, 4).is_some());
             assert!(board.at((board.cols() - 1) as i32, 4).is_some());
             assert!(board.at(0, 7).is_none());
             assert!(board.at((board.cols() - 1) as i32, 7).is_none());
             for board_index in 1..3 {
-                let gap_start =
-                    board_index * preset.default_cols() + (board_index - 1) * INTER_BOARD_GAP_COLS;
-                for x in gap_start..gap_start + INTER_BOARD_GAP_COLS {
+                let gap_start = board_index * preset.default_cols() + (board_index - 1) * gap_cols;
+                for x in gap_start..gap_start + gap_cols {
                     assert!(board.at(x as i32, 4).is_none());
                 }
             }

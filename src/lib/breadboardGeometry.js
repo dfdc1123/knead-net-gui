@@ -2,6 +2,18 @@
 
 export const INTER_BOARD_GAP_COLS = 3;
 
+/** @param {"hole170" | "hole400" | "hole800"} preset */
+export function interBoardGapColumns(preset) {
+  return preset === "hole170" ? 2 : INTER_BOARD_GAP_COLS;
+}
+
+/** Compress logical gap columns into a smaller SVG-only separation between board shells.
+ * @param {number} gapCols
+ */
+export function visualBoardGap(gapCols) {
+  return Math.max(0, gapCols) * 4;
+}
+
 /** @param {number} column @param {number} boardCols @param {number} gapCols */
 export function boardIndexForColumn(column, boardCols, gapCols = INTER_BOARD_GAP_COLS) {
   return Math.floor(column / Math.max(1, boardCols + gapCols));
