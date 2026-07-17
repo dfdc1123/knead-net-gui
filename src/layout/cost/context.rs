@@ -93,6 +93,11 @@ pub struct SAContext {
     pub fixed_point_obstacles: Vec<BBox>,
     /// effective rail id → 该 rail 的物理孔数；供拥塞 cost 复用。
     pub rail_hole_counts: Vec<usize>,
+    /// effective rail id → 该 rail 的全部物理孔坐标；供 hard routability 复用。
+    pub rail_holes: Vec<Vec<Position>>,
+    /// 含同号重复 pad 的 net 由元件内部导体连接，跳过保守的 hot-path 端口判定；
+    /// 最终仍由完整 Layout connectivity validator 严格检查。
+    pub routing_port_exempt_nets: Vec<bool>,
     fixed_problem: Option<AnnealProblem>,
 }
 
@@ -101,6 +106,19 @@ impl SAContext {
     /// bridged_bboxes 需要 board 才能算, 所以在 simulate() 里面 extra 一步填充。
     pub fn new(circuit: &Circuit, placeable: &[ComponentId]) -> Self {
         let mut comp_infos = Vec::with_capacity(placeable.len());
+        let mut routing_port_exempt_nets = vec![false; circuit.nets().len()];
+        for component in circuit.components() {
+            for (index, &pin_id) in component.pins().iter().enumerate() {
+                let pin = &circuit.pins()[pin_id.raw()];
+                let Some(net) = pin.net() else { continue };
+                if component.pins()[index + 1..].iter().any(|other| {
+                    let other = &circuit.pins()[other.raw()];
+                    other.net() == Some(net) && other.num() == pin.num()
+                }) {
+                    routing_port_exempt_nets[net.raw()] = true;
+                }
+            }
+        }
         for &comp_id in placeable {
             let component = &circuit.components[comp_id.0];
             let fid = component.footprint.expect("placeable 必有 footprint");
@@ -161,6 +179,8 @@ impl SAContext {
             fixed_bboxes: Vec::new(),
             fixed_point_obstacles: Vec::new(),
             rail_hole_counts: Vec::new(),
+            rail_holes: Vec::new(),
+            routing_port_exempt_nets,
             fixed_problem: None,
         }
     }
@@ -209,8 +229,12 @@ impl SAContext {
     ) {
         self.rail_hole_counts.clear();
         self.rail_hole_counts.resize(board.num_rails(), 0);
+        self.rail_holes.clear();
+        self.rail_holes.resize_with(board.num_rails(), Vec::new);
         for hole in board.holes() {
-            self.rail_hole_counts[board.effective_rail_id_of(hole.id) as usize] += 1;
+            let rail = board.effective_rail_id_of(hole.id) as usize;
+            self.rail_hole_counts[rail] += 1;
+            self.rail_holes[rail].push(hole.position);
         }
         for (idx, info) in self.comp_infos.iter_mut().enumerate() {
             if !state.is_bridgeable[idx] {
@@ -287,6 +311,10 @@ pub(crate) struct CostBuf {
     pub compact_map: Vec<Vec<BBox>>,
     /// pin 碰撞检测的 reusable 排序索引缓冲 (避免每次 alloc)
     pub pin_idx_sorted: Vec<usize>,
+    /// Hard-routability scratch: `(contracted group, physical rail)` pairs.
+    pub routing_group_rails: Vec<(u32, u32)>,
+    /// Hard-routability scratch: `(contracted group, available ports)`.
+    pub routing_capacities: Vec<(u32, usize)>,
 }
 
 impl CostBuf {
@@ -302,6 +330,8 @@ impl CostBuf {
             rail_map: vec![Vec::new(); num_rails],
             compact_map: vec![Vec::new(); main_rows],
             pin_idx_sorted: Vec::new(),
+            routing_group_rails: Vec::new(),
+            routing_capacities: Vec::new(),
         }
     }
 

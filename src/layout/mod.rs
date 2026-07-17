@@ -11,6 +11,7 @@
 //! - [`Layout`]: 顶层容器, 持有 Circuit 引用 + placements + wires
 
 pub mod breadboard;
+mod connectivity;
 pub mod cost;
 pub mod occupancy;
 pub mod placement;
@@ -190,6 +191,15 @@ pub enum LayoutError {
     },
     /// 元件本体占用了固定 RailTie 的端点。
     RailTieConflict { tie: RailTieId, hole: HoleId },
+    /// 路由结束后，同一个 net 仍分成多个互不导通的物理分量。
+    DisconnectedNet { net: NetId, connected_groups: usize },
+    /// placement 留给某个 net 的跳线端口不足，无法构造连通树。
+    InsufficientRoutingPorts {
+        net: NetId,
+        effective_rail: Option<u32>,
+        available: usize,
+        required: usize,
+    },
 }
 
 /// 顶层布局: 持有 Circuit 引用 + 每个 component 的 placement + 所有 wire。

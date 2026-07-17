@@ -21,8 +21,8 @@ use crate::layout::cost::cost;
 #[cfg(debug_assertions)]
 use crate::layout::cost::state_hard_legal;
 use crate::layout::cost::{
-    BridgeInitContext, BridgePolicy, CostBuf, SAContext, SAState, Weights, cost_fast,
-    cost_fast_if_legal, initialize_bridging, populate_bridgeable_info,
+    BridgeInitContext, BridgePolicy, CostBuf, SAContext, SAState, Weights, cost_fast_if_legal,
+    initialize_bridging, populate_bridgeable_info,
 };
 use crate::layout::placement::{BBox, Rotation};
 use crate::layout::progress::{AnnealMetrics, InitializerFamily};
@@ -1259,7 +1259,13 @@ pub(super) fn simulate_with_initializer(
         &mut buf,
         config.bridge_policy,
     )?;
-    let mut current_cost = cost_fast(&state, circuit, board, &[], &config.weights, &ctx, &mut buf);
+    let Some(mut current_cost) =
+        cost_fast_if_legal(&state, circuit, board, &[], &config.weights, &ctx, &mut buf)
+    else {
+        return Err(crate::layout::LayoutError::NoLegalInitialPlacement {
+            component: state.placeable[0],
+        });
+    };
     if let Some(observer) = observer {
         (observer.callback)(SimulationProgress::Initial {
             initializer,
@@ -1360,10 +1366,9 @@ pub(super) fn simulate_with_initializer(
             prof_cost_add!(t_cost_start.elapsed().as_nanos() as u64);
         }
         #[cfg(debug_assertions)]
-        debug_assert_eq!(
-            candidate_cost.is_some(),
-            state_hard_legal(&state, circuit, board, problem),
-            "cost-derived hard legality diverged after {m:?}: x={:?} y={:?} rotation={:?} bridged={:?}",
+        debug_assert!(
+            candidate_cost.is_none() || state_hard_legal(&state, circuit, board, problem),
+            "cost accepted geometry-hard-invalid state after {m:?}: x={:?} y={:?} rotation={:?} bridged={:?}",
             state.x,
             state.y,
             state.rotation,

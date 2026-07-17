@@ -84,6 +84,97 @@ fn rail_conflict_count(rail_map: &[Vec<Option<crate::circuit::NetId>>]) -> usize
         .sum()
 }
 
+fn routing_position_occupied(x: i32, y: i32, buf: &CostBuf, ctx: &SAContext) -> bool {
+    buf.holes
+        .iter()
+        .zip(&buf.is_virtual)
+        .any(|(&(pin_x, pin_y, _), &is_virtual)| !is_virtual && pin_x == x && pin_y == y)
+        || buf
+            .bboxes
+            .iter()
+            .flatten()
+            .any(|bbox| x >= bbox.min_x && x <= bbox.max_x && y >= bbox.min_y && y <= bbox.max_y)
+        || ctx
+            .fixed_point_obstacles
+            .iter()
+            .any(|bbox| x >= bbox.min_x && x <= bbox.max_x && y >= bbox.min_y && y <= bbox.max_y)
+}
+
+/// Conservative hot-path form of `Layout::validate_routing_ports`.
+/// Nets containing duplicate-number internal jumpers are deferred to the exact final validator.
+fn routing_ports_legal(buf: &mut CostBuf, ctx: &SAContext) -> bool {
+    if ctx.rail_holes.is_empty() {
+        return true;
+    }
+    for net in 0..buf.net_buckets.len() {
+        if ctx
+            .routing_port_exempt_nets
+            .get(net)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        buf.routing_group_rails.clear();
+        for &index in &buf.net_buckets[net] {
+            let physical_rail = buf.holes[index].2;
+            let contracted_group = buf.mst_rails[index];
+            buf.routing_group_rails
+                .push((contracted_group, physical_rail));
+        }
+        buf.routing_group_rails.sort_unstable();
+        buf.routing_group_rails.dedup();
+        if buf
+            .routing_group_rails
+            .windows(2)
+            .all(|pair| pair[0].0 == pair[1].0)
+        {
+            continue;
+        }
+
+        buf.routing_capacities.clear();
+        for &(group, physical_rail) in &buf.routing_group_rails {
+            let available = ctx
+                .rail_holes
+                .get(physical_rail as usize)
+                .map(|holes| {
+                    holes
+                        .iter()
+                        .filter(|position| {
+                            !routing_position_occupied(position.x, position.y, buf, ctx)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            if let Some((_, capacity)) = buf
+                .routing_capacities
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == group)
+            {
+                *capacity += available;
+            } else {
+                buf.routing_capacities.push((group, available));
+            }
+        }
+        if buf
+            .routing_capacities
+            .iter()
+            .any(|(_, capacity)| *capacity == 0)
+        {
+            return false;
+        }
+        let total_available = buf
+            .routing_capacities
+            .iter()
+            .map(|(_, capacity)| capacity)
+            .sum::<usize>();
+        if total_available < 2 * buf.routing_capacities.len().saturating_sub(1) {
+            return false;
+        }
+    }
+    true
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CompactTerms {
     area_sum: f64,
@@ -475,12 +566,14 @@ fn cost_fast_inner(
 
     let col_conflict_count = rail_conflict_count(&buf.rail_map);
     cp_rail!(_t_rail.elapsed().as_nanos() as u64);
+    let hard_routing_capacity = reject_hard_invalid && !routing_ports_legal(buf, ctx);
     if reject_hard_invalid
         && (oob_count != 0
             || invalid_onboard_body
             || hard_pin_collision
             || hard_bbox_collision
-            || col_conflict_count != 0)
+            || col_conflict_count != 0
+            || hard_routing_capacity)
     {
         return None;
     }

@@ -72,6 +72,19 @@ impl<'c> super::Layout<'c> {
         self.occupancy(board).map(|_| ())
     }
 
+    /// 验证当前 wires 是否把每个 net 的全部真实引脚和绑定电源轨连成一个物理分量。
+    /// 该检查只用于布线后的完整结果；placement 尚未布线时应调用
+    /// [`Self::validate_routing_ports`] 检查可布线性。
+    pub fn validate_routed_connectivity(&self, board: &Breadboard) -> Result<(), Vec<LayoutError>> {
+        self.validate(board)?;
+        super::connectivity::validate_routed_connectivity(self, board)
+    }
+
+    /// 验证 placement 是否为每个仍需跨导电岛连接的 net 留出了足够跳线端口。
+    pub fn validate_routing_ports(&self, board: &Breadboard) -> Result<(), Vec<LayoutError>> {
+        super::connectivity::validate_routing_ports(self, board)
+    }
+
     /// 用模拟退火布局。
     ///
     /// 流程: 收集 **有 footprint 且尚未摆放** 的 component → `sa::simulate`
@@ -141,7 +154,7 @@ impl<'c> super::Layout<'c> {
         use crate::layout::sa;
 
         // 跳 过已经摆好的 (用户手动 Bridged 或 OnBoard)。SA 只优化未摆的。
-        let placeable: Vec<ComponentId> = self
+        let mut placeable: Vec<ComponentId> = self
             .circuit
             .components
             .iter()
@@ -153,6 +166,13 @@ impl<'c> super::Layout<'c> {
                 Some(c.id)
             })
             .collect();
+        // KiCad may reorder top-level footprint blocks on a semantically neutral save.
+        // SA indexing and RNG targeting must therefore use a stable logical key, not parse order.
+        placeable.sort_by(|a, b| {
+            self.circuit.components()[a.raw()]
+                .ref_()
+                .cmp(self.circuit.components()[b.raw()].ref_())
+        });
 
         if placeable.is_empty() {
             return self.validate(board);
@@ -374,6 +394,7 @@ impl<'c> super::Layout<'c> {
             wires: self.wires.clone(),
         };
         candidate.validate(board)?;
+        candidate.validate_routing_ports(board)?;
         self.placements = candidate.placements;
         after_commit(self);
         Ok(())
@@ -391,16 +412,33 @@ impl<'c> super::Layout<'c> {
         F: Fn(LayoutProgress),
     {
         // 路由输入只包含元件占用；旧 wires 不应影响一次全新的 routing。
-        self.wires.clear();
-        let occupancy = self.occupancy(board)?;
-        self.wires = router.route(self.circuit, board, &occupancy, &self.bridged_pins());
+        // 候选 wires 在临时 Layout 上完成结构与连通性验证，成功后才原子写回。
+        let placement_only = super::Layout {
+            circuit: self.circuit,
+            placements: self.placements.clone(),
+            wires: Vec::new(),
+        };
+        let occupancy = placement_only.occupancy(board)?;
+        let candidate_wires = router.route(
+            self.circuit,
+            board,
+            &occupancy,
+            &placement_only.bridged_pins(),
+        );
+        let candidate = super::Layout {
+            circuit: self.circuit,
+            placements: self.placements.clone(),
+            wires: candidate_wires,
+        };
+        candidate.validate_routed_connectivity(board)?;
+        self.wires = candidate.wires;
         progress(LayoutProgress::RoutingComplete {
             snapshot: LayoutSnapshot {
                 placements: self.placements.clone(),
                 wires: self.wires.clone(),
             },
         });
-        self.validate(board)
+        Ok(())
     }
 
     /// 把所有有 footprint 的 component 横向摆在指定行, R0 方向, 元件之间留 1 空列。

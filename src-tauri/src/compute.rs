@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -32,6 +33,14 @@ pub struct ComputeRequest {
 }
 
 impl ComputeProfile {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Standard => "standard",
+            Self::Full => "full",
+        }
+    }
+
     fn label(self, locale: UiLocale) -> &'static str {
         match self {
             Self::Quick => locale.text("快速", "Quick"),
@@ -445,12 +454,18 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
             locale,
             started: &started,
         };
-        match layout.place_sa_with_progress_and_cancellation(
+        let placement_selection = std::sync::Mutex::new(None);
+        let placement_result = layout.place_sa_with_progress_and_cancellation(
             &board,
             &config,
             options,
             &cancellation,
             |progress| {
+                if let LayoutProgress::PlacementComplete { seed, cost, .. } = &progress {
+                    if let Ok(mut selection) = placement_selection.lock() {
+                        *selection = Some((*seed, *cost));
+                    }
+                }
                 let event = progress_event(
                     run_id,
                     progress,
@@ -459,21 +474,104 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                 );
                 let _ = callback_sender.send(event);
             },
-        ) {
+        );
+        match placement_result {
             Ok(()) => {
-                selected = Some((board, layout, board_count));
-                break;
+                let (best_seed, best_cost) = placement_selection
+                    .into_inner()
+                    .ok()
+                    .flatten()
+                    .unwrap_or((config.seed, f64::NAN));
+                let cancelled = cancellation.is_cancelled();
+                sender
+                    .send(ComputeEvent {
+                        run_id,
+                        phase: "routing",
+                        progress: 90.0,
+                        message: if cancelled {
+                            locale
+                                .text(
+                                    "SA 已中断，正在为当前最佳布局生成跳线",
+                                    "SA stopped; routing the current best layout",
+                                )
+                                .into()
+                        } else {
+                            locale
+                                .text(
+                                    "全局最佳布局已选出，正在生成跳线",
+                                    "Global best layout selected; generating wires",
+                                )
+                                .into()
+                        },
+                        frame: Some(snapshot_frame(
+                            &LayoutSnapshot {
+                                placements: layout.placements().to_vec(),
+                                wires: Vec::new(),
+                            },
+                            &circuit,
+                            &board,
+                            &schematic_metadata,
+                            progress_context.allocation,
+                            None,
+                            None,
+                        )),
+                    })
+                    .map_err(|_| {
+                        locale
+                            .text(
+                                "进度转发线程已退出",
+                                "Progress forwarding thread has exited",
+                            )
+                            .to_string()
+                    })?;
+
+                let routing_result =
+                    layout.route_with_progress(&board, &PathFinderRouter::default(), |progress| {
+                        let _ = callback_sender.send(progress_event(
+                            run_id,
+                            progress,
+                            &progress_context,
+                            cancelled,
+                        ));
+                    });
+                match routing_result {
+                    Ok(()) => {
+                        selected = Some((board, layout, board_count, best_seed, best_cost));
+                        break;
+                    }
+                    Err(errors)
+                        if is_routing_capacity_error(&errors)
+                            && board_count < crate::MAX_BOARD_COUNT =>
+                    {
+                        continue;
+                    }
+                    Err(errors) if is_routing_capacity_error(&errors) => {
+                        return Err(format_layout_errors(
+                            locale.text(
+                                "使用 4 块相同面包板仍无法完成可靠布线",
+                                "Reliable routing still fails on four identical breadboards",
+                            ),
+                            &errors,
+                        ));
+                    }
+                    Err(errors) => {
+                        return Err(format_layout_errors(
+                            locale.text("布线失败", "Routing failed"),
+                            &errors,
+                        ));
+                    }
+                }
             }
             Err(errors)
-                if is_initial_capacity_error(&errors) && board_count < crate::MAX_BOARD_COUNT =>
+                if is_board_capacity_error(&errors) && board_count < crate::MAX_BOARD_COUNT =>
             {
                 continue;
             }
-            Err(errors) if is_initial_capacity_error(&errors) => {
+            Err(errors) if is_board_capacity_error(&errors) => {
                 return Err(locale
                     .text(
-                        "使用 4 块相同面包板仍无法完成初始布局",
-                        "Initial placement still does not fit on four identical breadboards",
+                        "使用 4 块相同面包板仍无法完成可布线布局",
+                        "A routable placement still does not fit on four identical breadboards",
                     )
                     .to_string());
             }
@@ -485,80 +583,32 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
             }
         }
     }
-    let (board, mut layout, board_count) =
+    let (board, layout, board_count, best_seed, best_cost) =
         selected.expect("the final capacity failure returns before leaving the retry loop");
 
-    let progress_context = ProgressContext {
-        circuit: &circuit,
-        board: &board,
-        allocation: BoardAllocation {
-            preset,
-            board_cols,
-            board_count,
-        },
-        schematic_metadata: &schematic_metadata,
-        locale,
-        started: &started,
-    };
-
-    let cancelled = cancellation.is_cancelled();
-    sender
-        .send(ComputeEvent {
+    eprintln!(
+        "{}",
+        final_diagnostic_report(FinalDiagnosticContext {
             run_id,
-            phase: "routing",
-            progress: 90.0,
-            message: if cancelled {
-                locale
-                    .text(
-                        "SA 已中断，正在为当前最佳布局生成跳线",
-                        "SA stopped; routing the current best layout",
-                    )
-                    .into()
-            } else {
-                locale
-                    .text(
-                        "全局最佳布局已选出，正在生成跳线",
-                        "Global best layout selected; generating wires",
-                    )
-                    .into()
-            },
-            frame: Some(snapshot_frame(
-                &LayoutSnapshot {
-                    placements: layout.placements().to_vec(),
-                    wires: Vec::new(),
-                },
-                &circuit,
-                &board,
-                &schematic_metadata,
-                progress_context.allocation,
-                None,
-                None,
-            )),
+            pcb_path: &pcb_path,
+            profile: request.profile,
+            config: &config,
+            preset,
+            upper_half_only,
+            attempted_board_count: board_count,
+            best_seed,
+            best_cost,
+            top_positive_net: top_positive_net.as_deref(),
+            top_negative_net: top_negative_net.as_deref(),
+            bottom_positive_net: bottom_positive_net.as_deref(),
+            bottom_negative_net: bottom_negative_net.as_deref(),
+            circuit: &circuit,
+            board: &board,
+            layout: &layout,
+            schematic_metadata: &schematic_metadata,
         })
-        .map_err(|_| {
-            locale
-                .text(
-                    "进度转发线程已退出",
-                    "Progress forwarding thread has exited",
-                )
-                .to_string()
-        })?;
+    );
 
-    let route_sender = sender.clone();
-    layout
-        .route_with_progress(&board, &PathFinderRouter::default(), |progress| {
-            let _ = route_sender.send(progress_event(
-                run_id,
-                progress,
-                &progress_context,
-                cancelled,
-            ));
-        })
-        .map_err(|errors| {
-            format_layout_errors(locale.text("布线失败", "Routing failed"), &errors)
-        })?;
-
-    drop(route_sender);
     drop(callback_sender);
     drop(sender);
     forwarder.join().map_err(|_| {
@@ -572,12 +622,397 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
     Ok(())
 }
 
-fn is_initial_capacity_error(errors: &[knead_net::LayoutError]) -> bool {
+struct FinalDiagnosticContext<'a, 'c> {
+    run_id: u64,
+    pcb_path: &'a str,
+    profile: ComputeProfile,
+    config: &'a SAConfig,
+    preset: Preset,
+    upper_half_only: bool,
+    attempted_board_count: usize,
+    best_seed: u64,
+    best_cost: f64,
+    top_positive_net: Option<&'a str>,
+    top_negative_net: Option<&'a str>,
+    bottom_positive_net: Option<&'a str>,
+    bottom_negative_net: Option<&'a str>,
+    circuit: &'c Circuit,
+    board: &'a Breadboard,
+    layout: &'a Layout<'c>,
+    schematic_metadata: &'a ComponentMetadataMap,
+}
+
+#[derive(Debug, Clone)]
+struct DiagnosticDisjointSet {
+    parent: Vec<usize>,
+}
+
+impl DiagnosticDisjointSet {
+    fn new(len: usize) -> Self {
+        Self {
+            parent: (0..len).collect(),
+        }
+    }
+
+    fn find(&mut self, node: usize) -> usize {
+        if self.parent[node] != node {
+            self.parent[node] = self.find(self.parent[node]);
+        }
+        self.parent[node]
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let a = self.find(a);
+        let b = self.find(b);
+        if a != b {
+            self.parent[b] = a;
+        }
+    }
+}
+
+fn optional_net_label(net: Option<&str>) -> &str {
+    net.unwrap_or("<unbound>")
+}
+
+fn gui_hole_label(hole: BreadboardHole) -> String {
+    let column = hole.col + 1;
+    match hole.region {
+        "main-top" => format!("{}{}", char::from(b'A' + hole.row as u8), column),
+        "main-bottom" => format!("{}{}", char::from(b'F' + hole.row as u8), column),
+        "rail-top" => format!("top{}{}", if hole.row == 0 { '-' } else { '+' }, column),
+        "rail-bottom" => {
+            format!("bottom{}{}", if hole.row == 0 { '-' } else { '+' }, column)
+        }
+        region => format!("{region}:{column}:{}", hole.row),
+    }
+}
+
+fn physical_hole_label(board: &Breadboard, hole: HoleId) -> String {
+    let physical = board.hole(hole);
+    format!(
+        "{}(x={},y={},rail={})",
+        gui_hole_label(display_hole(board, hole)),
+        physical.position.x,
+        physical.position.y,
+        board.effective_rail_id_of(hole)
+    )
+}
+
+fn diagnostic_hole_id(board: &Breadboard, displayed: BreadboardHole) -> Option<HoleId> {
+    board
+        .holes()
+        .iter()
+        .find_map(|hole| (display_hole(board, hole.id) == displayed).then_some(hole.id))
+}
+
+fn final_diagnostic_report(context: FinalDiagnosticContext<'_, '_>) -> String {
+    let FinalDiagnosticContext {
+        run_id,
+        pcb_path,
+        profile,
+        config,
+        preset,
+        upper_half_only,
+        attempted_board_count,
+        best_seed,
+        best_cost,
+        top_positive_net,
+        top_negative_net,
+        bottom_positive_net,
+        bottom_negative_net,
+        circuit,
+        board,
+        layout,
+        schematic_metadata,
+    } = context;
+    let snapshot = LayoutSnapshot {
+        placements: layout.placements().to_vec(),
+        wires: layout.wires().to_vec(),
+    };
+    let board_cols = preset.default_cols();
+    let gap_cols = preset.inter_board_gap_cols();
+    let visible_board_count = visible_board_count(
+        &snapshot,
+        circuit,
+        board,
+        board_cols,
+        gap_cols,
+        attempted_board_count,
+    );
+    let visible_allocation = BoardAllocation {
+        preset,
+        board_cols,
+        board_count: visible_board_count,
+    };
+    let delivered_frame = snapshot_frame_with_power_links(
+        &snapshot,
+        circuit,
+        board,
+        schematic_metadata,
+        visible_allocation,
+        None,
+        None,
+    );
+
+    let mut placement_only = Layout::new(circuit);
+    for (index, placement) in layout.placements().iter().copied().enumerate() {
+        if let Some(placement) = placement {
+            placement_only.place(circuit.components()[index].id(), placement);
+        }
+    }
+    let placement_occupancy = placement_only.occupancy(board).ok();
+
+    let mut graph = DiagnosticDisjointSet::new(board.len());
+    let mut representative_by_rail = HashMap::<u32, HoleId>::new();
+    for hole in board.holes() {
+        let rail = board.effective_rail_id_of(hole.id);
+        if let Some(representative) = representative_by_rail.insert(rail, hole.id) {
+            graph.union(representative.raw(), hole.id.raw());
+        }
+    }
+    for wire in layout.wires() {
+        graph.union(wire.from.raw(), wire.to.raw());
+    }
+    let mut gui_graph = graph.clone();
+    if let Ok(frame) = &delivered_frame {
+        for wire in frame.wires.iter().filter(|wire| wire.kind != "air") {
+            if let (Some(from), Some(to)) = (
+                diagnostic_hole_id(board, wire.from),
+                diagnostic_hole_id(board, wire.to),
+            ) {
+                gui_graph.union(from.raw(), to.raw());
+            }
+        }
+    }
+
+    let mut endpoints_by_net = vec![Vec::<(HoleId, String)>::new(); circuit.nets().len()];
+    let mut report = String::new();
+    let _ = writeln!(report, "===== KNEAD-NET FINAL DIAGNOSTIC BEGIN =====");
+    let _ = writeln!(
+        report,
+        "RUN run_id={run_id} package_version={} pcb={pcb_path:?}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let _ = writeln!(
+        report,
+        "CONFIG profile={} base_seed={} best_seed={} best_cost={best_cost:.6} n_seeds={} max_iters={} t_start={} t_end={}",
+        profile.id(),
+        config.seed,
+        best_seed,
+        config.n_seeds,
+        config.max_iters,
+        config.t_start,
+        config.t_end
+    );
+    let _ = writeln!(
+        report,
+        "BOARD preset={} upper_half_only={} attempted_boards={} visible_boards={} board_cols={} gap_cols={}",
+        preset.name(),
+        upper_half_only,
+        attempted_board_count,
+        visible_board_count,
+        board_cols,
+        gap_cols
+    );
+    let _ = writeln!(
+        report,
+        "BINDINGS top_positive={:?} top_negative={:?} bottom_positive={:?} bottom_negative={:?}",
+        optional_net_label(top_positive_net),
+        optional_net_label(top_negative_net),
+        optional_net_label(bottom_positive_net),
+        optional_net_label(bottom_negative_net)
+    );
+
+    let delivered_wire_count = delivered_frame.as_ref().map_or(0, |frame| {
+        frame.wires.iter().filter(|wire| wire.kind != "air").count()
+    });
+    let _ = writeln!(
+        report,
+        "COUNTS placements={} raw_routed_wires={} gui_non_air_wires={}",
+        layout.placements().iter().flatten().count(),
+        layout.wires().len(),
+        delivered_wire_count
+    );
+
+    let _ = writeln!(report, "-- PLACEMENTS AND PINS --");
+    for component in circuit.components() {
+        let Some(placement) = layout.placement(component.id()) else {
+            let _ = writeln!(report, "PART ref={} placement=<missing>", component.ref_());
+            continue;
+        };
+        let Some(footprint) = component
+            .footprint()
+            .map(|id| &circuit.footprints()[id.raw()])
+        else {
+            let _ = writeln!(
+                report,
+                "PART ref={} placement={placement:?} footprint=<missing>",
+                component.ref_()
+            );
+            continue;
+        };
+        let Ok(placed) = placement.apply(component, footprint, board, circuit.pins()) else {
+            let _ = writeln!(
+                report,
+                "PART ref={} placement={placement:?} apply=<failed>",
+                component.ref_()
+            );
+            continue;
+        };
+        let mut pins = Vec::new();
+        for pin_hole in placed.pin_holes {
+            let pin = &circuit.pins()[pin_hole.pin.raw()];
+            let net_name = pin
+                .net()
+                .map(|net| circuit.nets()[net.raw()].name())
+                .unwrap_or("<unconnected>");
+            pins.push(format!(
+                "{}.{}:{}:{}",
+                component.ref_(),
+                pin.num(),
+                net_name,
+                physical_hole_label(board, pin_hole.hole)
+            ));
+            if let Some(net) = pin.net() {
+                endpoints_by_net[net.raw()]
+                    .push((pin_hole.hole, format!("{}.{}", component.ref_(), pin.num())));
+            }
+        }
+        let _ = writeln!(
+            report,
+            "PART ref={} placement={placement:?} pins=[{}]",
+            component.ref_(),
+            pins.join(", ")
+        );
+    }
+    for (anchor, net) in board.bound_power_rail_anchors() {
+        if net.raw() < endpoints_by_net.len() {
+            endpoints_by_net[net.raw()].push((anchor, "power-anchor".to_string()));
+        }
+    }
+
+    let _ = writeln!(report, "-- RAW ROUTER WIRES --");
+    for wire in layout.wires() {
+        let _ = writeln!(
+            report,
+            "RAW_WIRE id={} net={:?} from={} to={}",
+            wire.id.raw(),
+            circuit.nets()[wire.net.raw()].name(),
+            physical_hole_label(board, wire.from),
+            physical_hole_label(board, wire.to)
+        );
+    }
+
+    let _ = writeln!(report, "-- GUI DELIVERED WIRES --");
+    match &delivered_frame {
+        Ok(frame) => {
+            for wire in frame.wires.iter().filter(|wire| wire.kind != "air") {
+                let _ = writeln!(
+                    report,
+                    "GUI_WIRE id={:?} kind={} net={:?} from={} to={}",
+                    wire.id,
+                    wire.kind,
+                    wire.net_name,
+                    gui_hole_label(wire.from),
+                    gui_hole_label(wire.to)
+                );
+            }
+        }
+        Err(_) => {
+            let _ = writeln!(report, "GUI_WIRE_ERROR power-link postprocessing failed");
+        }
+    }
+
+    let _ = writeln!(report, "-- EFFECTIVE CONNECTIVITY --");
+    let mut raw_split_nets = Vec::new();
+    let mut gui_split_nets = Vec::new();
+    for net in circuit.nets() {
+        let endpoints = &endpoints_by_net[net.id().raw()];
+        let mut raw_groups = BTreeMap::<usize, Vec<String>>::new();
+        let mut gui_groups = BTreeMap::<usize, Vec<String>>::new();
+        for (hole, label) in endpoints {
+            let rail_holes = board.effectively_connected_to(*hole);
+            let free_before_routing = placement_occupancy.as_ref().map_or(0, |occupancy| {
+                rail_holes
+                    .iter()
+                    .filter(|&&candidate| occupancy.can_place_pin(candidate))
+                    .count()
+            });
+            let endpoint = format!(
+                "{label}@{}[free_before_routing={}/{}]",
+                physical_hole_label(board, *hole),
+                free_before_routing,
+                rail_holes.len()
+            );
+            raw_groups
+                .entry(graph.find(hole.raw()))
+                .or_default()
+                .push(endpoint.clone());
+            gui_groups
+                .entry(gui_graph.find(hole.raw()))
+                .or_default()
+                .push(endpoint);
+        }
+        let raw_status = if raw_groups.len() <= 1 {
+            "CONNECTED"
+        } else {
+            raw_split_nets.push(net.name().to_string());
+            "SPLIT"
+        };
+        let gui_status = if gui_groups.len() <= 1 {
+            "CONNECTED"
+        } else {
+            gui_split_nets.push(net.name().to_string());
+            "SPLIT"
+        };
+        let raw_group_text = raw_groups
+            .values()
+            .map(|members| format!("[{}]", members.join(", ")))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let gui_group_text = gui_groups
+            .values()
+            .map(|members| format!("[{}]", members.join(", ")))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let _ = writeln!(
+            report,
+            "NET name={:?} raw_status={} gui_status={} raw_groups={} gui_groups={}",
+            net.name(),
+            raw_status,
+            gui_status,
+            raw_group_text,
+            gui_group_text
+        );
+    }
+    let _ = writeln!(
+        report,
+        "CONNECTIVITY_SUMMARY raw_split_net_count={} raw_split_nets={raw_split_nets:?} gui_split_net_count={} gui_split_nets={gui_split_nets:?}",
+        raw_split_nets.len(),
+        gui_split_nets.len()
+    );
+    let _ = writeln!(report, "===== KNEAD-NET FINAL DIAGNOSTIC END =====");
+    report
+}
+
+fn is_board_capacity_error(errors: &[knead_net::LayoutError]) -> bool {
     !errors.is_empty()
         && errors.iter().all(|error| {
             matches!(
                 error,
                 knead_net::LayoutError::NoLegalInitialPlacement { .. }
+                    | knead_net::LayoutError::InsufficientRoutingPorts { .. }
+            )
+        })
+}
+
+fn is_routing_capacity_error(errors: &[knead_net::LayoutError]) -> bool {
+    !errors.is_empty()
+        && errors.iter().all(|error| {
+            matches!(
+                error,
+                knead_net::LayoutError::DisconnectedNet { .. }
+                    | knead_net::LayoutError::InsufficientRoutingPorts { .. }
             )
         })
 }
@@ -1357,7 +1792,45 @@ mod tests {
     }
 
     #[test]
-    fn only_initial_capacity_errors_request_another_board() {
+    fn final_diagnostic_report_has_copyable_boundaries_and_layer_counts() {
+        let circuit = Circuit::empty();
+        let board = Preset::Hole400.make_repeated_upper_half(1);
+        let layout = Layout::new(&circuit);
+        let config = ComputeProfile::Full.config();
+        let metadata = ComponentMetadataMap::new();
+
+        let report = final_diagnostic_report(FinalDiagnosticContext {
+            run_id: 17,
+            pcb_path: "/tmp/example.kicad_pcb",
+            profile: ComputeProfile::Full,
+            config: &config,
+            preset: Preset::Hole400,
+            upper_half_only: true,
+            attempted_board_count: 1,
+            best_seed: 123,
+            best_cost: 45.5,
+            top_positive_net: Some("+12V"),
+            top_negative_net: Some("GND"),
+            bottom_positive_net: None,
+            bottom_negative_net: None,
+            circuit: &circuit,
+            board: &board,
+            layout: &layout,
+            schematic_metadata: &metadata,
+        });
+
+        assert!(report.starts_with("===== KNEAD-NET FINAL DIAGNOSTIC BEGIN =====\n"));
+        assert!(report.ends_with("===== KNEAD-NET FINAL DIAGNOSTIC END =====\n"));
+        assert!(report.contains("profile=full"));
+        assert!(report.contains("best_seed=123"));
+        assert!(report.contains("upper_half_only=true"));
+        assert!(report.contains("raw_routed_wires=0 gui_non_air_wires=0"));
+        assert!(report.contains("raw_split_net_count=0"));
+        assert!(report.contains("gui_split_net_count=0"));
+    }
+
+    #[test]
+    fn only_board_or_routing_capacity_errors_request_another_board() {
         use knead_net::LayoutError;
 
         let text =
@@ -1366,14 +1839,30 @@ mod tests {
         let first = circuit.components()[0].id();
         let second = circuit.components()[1].id();
 
-        assert!(is_initial_capacity_error(&[
+        assert!(is_board_capacity_error(&[
             LayoutError::NoLegalInitialPlacement { component: first },
             LayoutError::NoLegalInitialPlacement { component: second },
         ]));
-        assert!(!is_initial_capacity_error(&[LayoutError::NoFootprint {
+        assert!(is_board_capacity_error(&[
+            LayoutError::InsufficientRoutingPorts {
+                net: circuit.nets()[0].id(),
+                effective_rail: Some(1),
+                available: 0,
+                required: 1,
+            },
+        ]));
+        assert!(is_routing_capacity_error(&[LayoutError::DisconnectedNet {
+            net: circuit.nets()[0].id(),
+            connected_groups: 2,
+        },]));
+        assert!(!is_board_capacity_error(&[LayoutError::NoFootprint {
             component: first,
         }]));
-        assert!(!is_initial_capacity_error(&[]));
+        assert!(!is_routing_capacity_error(&[LayoutError::NoFootprint {
+            component: first,
+        }]));
+        assert!(!is_board_capacity_error(&[]));
+        assert!(!is_routing_capacity_error(&[]));
     }
 
     #[test]

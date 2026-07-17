@@ -261,6 +261,63 @@ fn fast_cost_and_breakdown_include_the_same_congestion_total() {
 }
 
 #[test]
+fn hard_legality_rejects_a_net_island_with_no_routing_port() {
+    let mut circuit = three_single_pin_components();
+    circuit.components = (0..6)
+        .map(|i| Component {
+            id: ComponentId(i),
+            ref_: format!("X{i}"),
+            kind: "X".into(),
+            value: None,
+            pins: vec![PinId(i)],
+            footprint: Some(FootprintId(0)),
+            bridgeable: false,
+        })
+        .collect();
+    circuit.pins = (0..6)
+        .map(|i| Pin {
+            id: PinId(i),
+            component: ComponentId(i),
+            num: "1".into(),
+            pinfunction: None,
+            physical_pin_index: 0,
+            net: Some(NetId(0)),
+        })
+        .collect();
+    circuit.nets = vec![Net {
+        id: NetId(0),
+        name: "N".into(),
+        pins: (0..6).map(PinId).collect(),
+    }];
+    let board = Breadboard::new(2, 5);
+    let state = SAState {
+        placeable: (0..6).map(ComponentId).collect(),
+        x: vec![0, 0, 0, 0, 0, 1],
+        y: vec![0, 1, 2, 3, 4, 0],
+        rotation: vec![Rotation::R0; 6],
+        ..SAState::no_bridging(6)
+    };
+    let mut context = SAContext::new(&circuit, &state.placeable);
+    context.fill_bridged_bboxes(&state, &circuit, &board, &[]);
+    context.fill_problem(&crate::layout::problem::AnnealProblem::default());
+    let mut buffer = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
+
+    assert!(
+        cost_fast_if_legal(
+            &state,
+            &circuit,
+            &board,
+            &[],
+            &Weights::default(),
+            &context,
+            &mut buffer,
+        )
+        .is_none(),
+        "the full first island cannot accept the required jumper endpoint"
+    );
+}
+
+#[test]
 fn mixed_fixed_bridged_and_power_inputs_are_permutation_invariant() {
     let (circuit, board) = bridgeable_two_pin_circuit();
     let placeable = bridgeable_placeables(&circuit);

@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
-    BridgeInitial, BridgePolicy, HoleId, Layout, NetId, PathFinderRouter, Placement, Preset,
-    SAConfig, prepare_for_layout,
+    BridgeInitial, BridgePolicy, ComponentId, HoleId, Layout, NetId, PathFinderRouter, Placement,
+    Position, Preset, Rotation, Router, SAConfig, prepare_for_layout,
+    prepare_for_layout_with_individual_power_nets,
 };
 
 const SA_ALGORITHM_VERSION: &str = "initializer-families-v1";
@@ -203,4 +204,240 @@ fn real_pcb_parse_prepare_sa_route_connectivity() {
         first.wires, second.wires,
         "algorithm {SA_ALGORITHM_VERSION} with a fixed seed must reproduce routing"
     );
+}
+
+fn different_order_circuit() -> knead_net::Circuit {
+    parse_pcb(include_str!(
+        "../examples/folders/h-bridge_different_order/h-bridge.kicad_pcb"
+    ))
+    .expect("different-order h-bridge PCB fixture should parse")
+}
+
+fn component_id(circuit: &knead_net::Circuit, reference: &str) -> ComponentId {
+    circuit
+        .components()
+        .iter()
+        .find(|component| component.ref_() == reference)
+        .unwrap_or_else(|| panic!("missing component {reference}"))
+        .id()
+}
+
+fn pin_id(circuit: &knead_net::Circuit, component: ComponentId, number: &str) -> knead_net::PinId {
+    circuit.components()[component.raw()]
+        .pins()
+        .iter()
+        .copied()
+        .find(|pin| circuit.pins()[pin.raw()].num() == number)
+        .unwrap_or_else(|| panic!("missing pin {number}"))
+}
+
+fn place_reported_unroutable_solution(
+    circuit: &knead_net::Circuit,
+    board: &knead_net::Breadboard,
+    layout: &mut Layout<'_>,
+) {
+    for (reference, x, y, rotation) in [
+        ("D4", 12, 2, Rotation::R0),
+        ("Q2", 22, 0, Rotation::R180),
+        ("Q4", 5, 1, Rotation::R180),
+        ("R7", 11, 4, Rotation::R180),
+        ("Q3", 18, 1, Rotation::R180),
+        ("R8", 6, 3, Rotation::R180),
+        ("Q6", 14, 3, Rotation::R0),
+        ("R5", 0, 2, Rotation::R0),
+        ("Q5", 12, 1, Rotation::R180),
+        ("Q1", 25, 3, Rotation::R180),
+        ("R1", 28, 4, Rotation::R180),
+        ("R4", 17, 4, Rotation::R180),
+        ("R3", 21, 1, Rotation::R0),
+    ] {
+        layout.place(
+            component_id(circuit, reference),
+            Placement::OnBoard {
+                position: Position { x, y },
+                rotation,
+            },
+        );
+    }
+    for (reference, first_pin, first, second_pin, second) in [
+        ("D2", "2", (18, -4), "1", (18, 0)),
+        ("R2", "2", (26, -3), "1", (26, 1)),
+        ("D3", "1", (14, -3), "2", (14, 1)),
+        ("D1", "1", (19, -3), "2", (19, 1)),
+        ("R6", "2", (7, -3), "1", (7, 1)),
+    ] {
+        let component = component_id(circuit, reference);
+        layout.place(
+            component,
+            Placement::Bridged {
+                pin_holes: [
+                    (
+                        board.at(first.0, first.1).expect("first bridge hole"),
+                        pin_id(circuit, component, first_pin),
+                    ),
+                    (
+                        board.at(second.0, second.1).expect("second bridge hole"),
+                        pin_id(circuit, component, second_pin),
+                    ),
+                ],
+            },
+        );
+    }
+}
+
+#[test]
+fn different_order_reported_solution_is_rejected_as_disconnected() {
+    use std::cell::Cell;
+
+    let mut circuit = different_order_circuit();
+    let prepared = prepare_for_layout_with_individual_power_nets(
+        &mut circuit,
+        Preset::Hole400.make_repeated_upper_half(2),
+        Some("+12V"),
+        Some("GND"),
+        None,
+        None,
+    );
+    let board = prepared.board;
+    let mut layout = Layout::new(&circuit);
+    place_reported_unroutable_solution(&circuit, &board, &mut layout);
+    layout
+        .validate(&board)
+        .expect("reported placement is structurally legal");
+    let port_errors = layout
+        .validate_routing_ports(&board)
+        .expect_err("full column 15 must be hard-unroutable");
+    assert!(port_errors.iter().any(|error| {
+        matches!(
+            error,
+            knead_net::LayoutError::InsufficientRoutingPorts {
+                net,
+                effective_rail: Some(_),
+                available: 0,
+                required: 1,
+            } if circuit.nets()[net.raw()].name() == "Net-(D3-A)"
+        )
+    }));
+    let occupancy = layout.occupancy(&board).expect("placement occupancy");
+    let existing =
+        PathFinderRouter::default().route(&circuit, &board, &occupancy, &layout.bridged_pins());
+    layout.add_wire(existing[0].clone());
+    let original_wires = layout
+        .wires()
+        .iter()
+        .map(|wire| (wire.net.raw(), wire.from.raw(), wire.to.raw()))
+        .collect::<Vec<_>>();
+
+    let completed = Cell::new(false);
+    let result = layout.route_with_progress(&board, &PathFinderRouter::default(), |_| {
+        completed.set(true);
+    });
+
+    assert!(result.is_err(), "a split Net-(D3-A) must not be accepted");
+    assert!(
+        !completed.get(),
+        "failed routing must not publish completion"
+    );
+    assert_eq!(
+        layout
+            .wires()
+            .iter()
+            .map(|wire| (wire.net.raw(), wire.from.raw(), wire.to.raw()))
+            .collect::<Vec<_>>(),
+        original_wires,
+        "failed routing must preserve the previous wires"
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NormalizedResult {
+    placements: Vec<(String, String)>,
+    wires: Vec<NormalizedWire>,
+}
+
+type NormalizedWire = (String, (i32, i32), (i32, i32));
+
+fn normalized_order_result(source: &str) -> NormalizedResult {
+    let mut circuit = parse_pcb(source).expect("fixture should parse");
+    let prepared = prepare_for_layout_with_individual_power_nets(
+        &mut circuit,
+        Preset::Hole400.make_repeated_upper_half(2),
+        Some("+12V"),
+        Some("GND"),
+        None,
+        None,
+    );
+    let board = prepared.board;
+    let mut layout = Layout::new(&circuit);
+    layout
+        .place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 2_000,
+                n_seeds: 8,
+                seed: 0xD1FF_E2E0,
+                use_spectral: true,
+                bridge_policy: BridgePolicy::Explore {
+                    initial: BridgeInitial::BestOfBoth,
+                },
+                ..SAConfig::default()
+            },
+        )
+        .expect("placement should succeed");
+    layout
+        .route_with_progress(&board, &PathFinderRouter::default(), |_| {})
+        .expect("routing should succeed");
+
+    let mut placements = Vec::new();
+    for component in circuit.components() {
+        let placement = layout.placement(component.id()).expect("placed component");
+        let normalized = match placement {
+            Placement::OnBoard { position, rotation } => {
+                format!("onboard:{},{}:{rotation:?}", position.x, position.y)
+            }
+            Placement::Bridged { pin_holes } => {
+                let mut pins = pin_holes
+                    .iter()
+                    .map(|(hole, pin)| {
+                        let position = board.hole(*hole).position;
+                        format!(
+                            "{}@{},{}",
+                            circuit.pins()[pin.raw()].num(),
+                            position.x,
+                            position.y
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                pins.sort();
+                format!("bridged:{}", pins.join(";"))
+            }
+        };
+        placements.push((component.ref_().to_string(), normalized));
+    }
+    placements.sort();
+
+    let mut wires = layout
+        .wires()
+        .iter()
+        .map(|wire| {
+            let mut endpoints = [board.hole(wire.from).position, board.hole(wire.to).position];
+            endpoints.sort_by_key(|position| (position.x, position.y));
+            (
+                circuit.nets()[wire.net.raw()].name().to_string(),
+                (endpoints[0].x, endpoints[0].y),
+                (endpoints[1].x, endpoints[1].y),
+            )
+        })
+        .collect::<Vec<_>>();
+    wires.sort();
+    NormalizedResult { placements, wires }
+}
+
+#[test]
+fn reordered_kicad_footprints_keep_fixed_seed_result() {
+    let original = normalized_order_result(include_str!("../examples/inputs/h-bridge.kicad_pcb"));
+    let reordered = normalized_order_result(include_str!(
+        "../examples/folders/h-bridge_different_order/h-bridge.kicad_pcb"
+    ));
+    assert_eq!(original, reordered);
 }
