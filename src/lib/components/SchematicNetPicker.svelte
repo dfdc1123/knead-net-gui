@@ -205,6 +205,7 @@
     {#if open && schematicSvg}
       <div
         class="schematic-host min-h-0 flex-1 select-none overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
+        data-theme="nord"
         bind:this={schematicHost}
         use:centerCanvas
         use:observeViewport
@@ -283,7 +284,7 @@
   }
 
   :global(.schematic-host .sch-net-line.is-muted) {
-    opacity: 0.16;
+    opacity: 0.5;
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {

@@ -844,6 +844,7 @@
           {#if schematicSvg}
             <div
               class="diagram-viewport schematic-host min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-200 p-3"
+              data-theme="nord"
               bind:this={schematicHost}
               use:centerCanvas
               use:observeDiagramViewport={"schematic"}
@@ -1105,7 +1106,7 @@
                   {#each assemblyParts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}"
                       data-component-id={part.reference}
                     >
                       <button
@@ -1155,7 +1156,7 @@
                     {@const completed = completedWireIds.includes(wire.id)}
                     {@const wireNumber = wireNumbers.get(wire.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}"
                       data-wire-id={wire.id}
                     >
                       <button
@@ -1239,7 +1240,7 @@
   }
 
   :global(.schematic-host .is-muted) {
-    opacity: 0.16;
+    opacity: 0.5;
   }
 
   :global(.schematic-host .sch-component.is-selected) {

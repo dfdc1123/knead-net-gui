@@ -212,7 +212,7 @@
           {#if selectedProject}<span class="badge badge-ghost badge-sm font-mono">{selectedProject}</span>{/if}
         </div>
         {#if svg}
-          <div class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-100 p-3">
+          <div class="min-h-0 flex-1 overflow-auto rounded-box border border-base-300 bg-base-100 p-3" data-theme="nord">
             {@html svg}
           </div>
         {:else}
