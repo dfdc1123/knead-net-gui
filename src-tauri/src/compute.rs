@@ -1408,7 +1408,7 @@ fn snapshot_frame(
     }
 
     let mut wires = if snapshot.wires.is_empty() {
-        air_wires(circuit, &pin_holes)
+        air_wires(circuit, board, &pin_holes)
     } else {
         snapshot
             .wires
@@ -1417,7 +1417,7 @@ fn snapshot_frame(
                 id: format!("wire-{}", wire.id.raw()),
                 from: display_hole(board, wire.from),
                 to: display_hole(board, wire.to),
-                color: net_color(wire.net.raw()),
+                color: wire_color(board, wire.net),
                 kind: "routed",
                 net_id: circuit.nets()[wire.net.raw()].name().to_string(),
                 net_name: circuit.nets()[wire.net.raw()].name().to_string(),
@@ -1738,6 +1738,7 @@ mod layout_metadata_tests {
 
 fn air_wires(
     circuit: &Circuit,
+    board: &Breadboard,
     pin_holes: &HashMap<knead_net::PinId, BreadboardHole>,
 ) -> Vec<LayoutWire> {
     let mut wires = Vec::new();
@@ -1755,7 +1756,7 @@ fn air_wires(
                 id: format!("air-{}-{index}", net.id().raw()),
                 from: first,
                 to,
-                color: net_color(net.id().raw()),
+                color: wire_color(board, net.id()),
                 kind: "air",
                 net_id: net.name().to_string(),
                 net_name: net.name().to_string(),
@@ -1813,6 +1814,28 @@ fn net_color(index: usize) -> &'static str {
     COLORS[index % COLORS.len()]
 }
 
+fn wire_color(board: &Breadboard, net: knead_net::NetId) -> &'static str {
+    const POSITIVE_RAIL_COLOR: &str = "#c83434";
+    const NEGATIVE_RAIL_COLOR: &str = "#2f6fbd";
+
+    let Some(bindings) = board.power_rail_bindings() else {
+        return net_color(net.raw());
+    };
+    if bindings
+        .iter()
+        .any(|(_, polarity, bound_net)| polarity == Polarity::Positive && bound_net == net)
+    {
+        return POSITIVE_RAIL_COLOR;
+    }
+    if bindings
+        .iter()
+        .any(|(_, polarity, bound_net)| polarity == Polarity::Negative && bound_net == net)
+    {
+        return NEGATIVE_RAIL_COLOR;
+    }
+    net_color(net.raw())
+}
+
 fn format_layout_errors(context: &str, errors: &[knead_net::LayoutError]) -> String {
     let details = errors
         .iter()
@@ -1826,6 +1849,33 @@ fn format_layout_errors(context: &str, errors: &[knead_net::LayoutError]) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wires_use_the_color_of_their_bound_power_rail_polarity() {
+        use knead_net::{PowerRailBinding, PowerRailBindings};
+
+        let text =
+            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let circuit = parse_pcb(&text).unwrap();
+        let positive_net = circuit.nets()[2].id();
+        let negative_net = circuit.nets()[3].id();
+        assert_ne!(net_color(positive_net.raw()), "#c83434");
+        assert_ne!(net_color(negative_net.raw()), "#2f6fbd");
+
+        let board = Breadboard::standard().with_power_rail_bindings(PowerRailBindings {
+            top: PowerRailBinding {
+                positive: Some(positive_net),
+                negative: Some(negative_net),
+            },
+            bottom: PowerRailBinding {
+                positive: None,
+                negative: None,
+            },
+        });
+
+        assert_eq!(wire_color(&board, positive_net), "#c83434");
+        assert_eq!(wire_color(&board, negative_net), "#2f6fbd");
+    }
 
     #[test]
     fn compute_profiles_map_to_distinct_backend_configs() {
