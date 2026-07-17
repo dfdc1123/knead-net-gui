@@ -36,9 +36,9 @@
     { id: "full", name: ui.step3.profiles.full, description: ui.step3.profileDescriptions.full },
   ];
   const phases: { id: Exclude<ComputePhase, "idle" | "error">; label: string }[] = [
-    { id: "spectral", label: "Initial" },
-    { id: "annealing", label: "SA" },
-    { id: "routing", label: "Routing" },
+    { id: "spectral", label: ui.step3.phaseInitial },
+    { id: "annealing", label: ui.step3.phaseLayout },
+    { id: "routing", label: ui.step3.phaseRouting },
     { id: "done", label: ui.step3.done },
   ];
 
@@ -291,10 +291,18 @@
         {interrupting ? ui.step3.interrupting : ui.step3.interruptAndRoute}
       </button>
     {:else}
-      <button class="btn btn-sm btn-primary" onclick={start} disabled={busy || !listenerReady}>
-        {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
-        {phase === "done" || phase === "error" ? ui.step3.recompute : busy ? ui.step3.computing : ui.step3.start}
-      </button>
+      {#if phase === "idle" && listenerReady}
+        <span class="aura aura-sm workflow-next-step text-primary">
+          <button class="btn btn-sm btn-primary" onclick={start}>
+            {ui.step3.start}
+          </button>
+        </span>
+      {:else}
+        <button class="btn btn-sm btn-primary" onclick={start} disabled={busy || !listenerReady}>
+          {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
+          {phase === "done" || phase === "error" ? ui.step3.recompute : busy ? ui.step3.computing : ui.step3.start}
+        </button>
+      {/if}
     {/if}
   </header>
 
@@ -322,7 +330,13 @@
 
         <div class="mt-auto space-y-2">
           <div class="flex items-center justify-between gap-3 text-sm">
-            <span class="flex min-w-0 items-center gap-2 truncate font-medium"><span class="status {busy ? 'status-info' : phase === 'error' ? 'status-error' : phase === 'done' ? 'status-success' : 'status-neutral'}"></span>{message}</span>
+            <span class="flex min-w-0 items-center gap-2 truncate font-medium">
+              <span
+                class="status {busy ? 'status-info animate-bounce motion-reduce:animate-none' : phase === 'error' ? 'status-error' : phase === 'done' ? 'status-success' : 'status-neutral'}"
+                aria-hidden="true"
+              ></span>
+              {message}
+            </span>
             <span class="tabular-nums text-base-content/50">{Math.round(safeProgress)}%</span>
           </div>
           <progress class="progress progress-primary w-full" value={safeProgress} max="100"></progress>

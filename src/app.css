@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @plugin "daisyui" {
-  themes: corporate --default, business --prefersdark;
+  themes: nord --default, dim --prefersdark;
 }
 
 html,
@@ -11,4 +11,12 @@ body {
 
 body {
   margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-next-step,
+  .workflow-next-step::before,
+  .workflow-next-step::after {
+    animation: none !important;
+  }
 }

@@ -882,7 +882,7 @@
   class="grid select-none place-items-center bg-base-200 p-3 text-base-content"
   style:width={hasPanPadding ? `calc(100% + ${renderWidth * renderedZoom + 24}px)` : `max(100%, ${renderWidth * renderedZoom + 24}px)`}
   style:height={hasPanPadding ? `calc(100% + ${renderHeight * renderedZoom + 24}px)` : `max(100%, ${renderHeight * renderedZoom + 24}px)`}
-  data-theme="corporate"
+  data-theme="nord"
   role="presentation"
   onclick={() => onSelect(null)}
 >
