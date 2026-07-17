@@ -24,6 +24,10 @@ test("Step 2 fits every preset against the 830-hole board footprint", () => {
   assert.match(step2Source, /fitReference=\{STEP2_FIT_REFERENCE\}/);
 });
 
+test("breadboard canvas prevents native text selection on double click", () => {
+  assert.match(source, /class="[^"]*select-none[^"]*"[\s\S]*role="presentation"/);
+});
+
 test("selected pin callout text centers without relying on dominant-baseline", () => {
   assert.match(
     source,
