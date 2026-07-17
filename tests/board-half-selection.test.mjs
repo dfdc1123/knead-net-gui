@@ -1,36 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { nextBoardHalfSelection } from "../src/lib/boardHalfSelection.js";
+import {
+  modeAfterHalfClick,
+  selectionForBoardHalfMode,
+} from "../src/lib/boardHalfSelection.js";
 
-test("disabling the only active half switches to the other half", () => {
-  assert.deepEqual(
-    nextBoardHalfSelection({ useUpperHalf: true, useLowerHalf: false }, "upper", false),
-    { useUpperHalf: false, useLowerHalf: true },
-  );
-  assert.deepEqual(
-    nextBoardHalfSelection({ useUpperHalf: false, useLowerHalf: true }, "lower", false),
-    { useUpperHalf: true, useLowerHalf: false },
-  );
+test("three board modes map to the only three valid half selections", () => {
+  assert.deepEqual(selectionForBoardHalfMode("upper"), {
+    useUpperHalf: true,
+    useLowerHalf: false,
+  });
+  assert.deepEqual(selectionForBoardHalfMode("full"), {
+    useUpperHalf: true,
+    useLowerHalf: true,
+  });
+  assert.deepEqual(selectionForBoardHalfMode("lower"), {
+    useUpperHalf: false,
+    useLowerHalf: true,
+  });
 });
 
-test("disabling either half keeps the other active when both are enabled", () => {
-  assert.deepEqual(
-    nextBoardHalfSelection({ useUpperHalf: true, useLowerHalf: true }, "upper", false),
-    { useUpperHalf: false, useLowerHalf: true },
-  );
-  assert.deepEqual(
-    nextBoardHalfSelection({ useUpperHalf: true, useLowerHalf: true }, "lower", false),
-    { useUpperHalf: true, useLowerHalf: false },
-  );
-});
-
-test("enabling a half preserves the state of the other half", () => {
-  assert.deepEqual(
-    nextBoardHalfSelection({ useUpperHalf: false, useLowerHalf: true }, "upper", true),
-    { useUpperHalf: true, useLowerHalf: true },
-  );
-  assert.deepEqual(
-    nextBoardHalfSelection({ useUpperHalf: true, useLowerHalf: false }, "lower", true),
-    { useUpperHalf: true, useLowerHalf: true },
-  );
+test("clicking a preview half selects it or expands it back to full", () => {
+  assert.equal(modeAfterHalfClick("full", "upper"), "upper");
+  assert.equal(modeAfterHalfClick("lower", "upper"), "upper");
+  assert.equal(modeAfterHalfClick("upper", "upper"), "full");
+  assert.equal(modeAfterHalfClick("full", "lower"), "lower");
+  assert.equal(modeAfterHalfClick("upper", "lower"), "lower");
+  assert.equal(modeAfterHalfClick("lower", "lower"), "full");
 });

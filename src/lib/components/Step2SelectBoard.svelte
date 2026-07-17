@@ -1,7 +1,10 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { nextBoardHalfSelection } from "$lib/boardHalfSelection.js";
+  import {
+    modeAfterHalfClick,
+    selectionForBoardHalfMode,
+  } from "$lib/boardHalfSelection.js";
   import { locale, ui } from "$lib/i18n";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
@@ -27,6 +30,7 @@
     positive_net: string | null;
     negative_net: string | null;
   };
+  type BoardHalfMode = "upper" | "full" | "lower";
 
   const PRESETS: { id: BreadboardPreset; name: string; defaultCols: number }[] = [
     { id: "hole170", name: ui.step2.holes(170), defaultCols: 17 },
@@ -50,6 +54,9 @@
   let busy = $state(false);
   let error = $state("");
   let hasPowerRails = $derived(preset !== "hole170");
+  let boardHalfMode = $derived<BoardHalfMode>(
+    useUpperHalf && useLowerHalf ? "full" : useUpperHalf ? "upper" : "lower",
+  );
   let submitGeneration = 0;
 
   onMount(() => {
@@ -89,13 +96,14 @@
     if (powerOptionsReady) void submit(p);
   }
 
-  function toggleBoardHalf(half: "upper" | "lower", enabled: boolean) {
-    ({ useUpperHalf, useLowerHalf } = nextBoardHalfSelection(
-      { useUpperHalf, useLowerHalf },
-      half,
-      enabled,
-    ));
+  function selectBoardHalfMode(mode: BoardHalfMode) {
+    if (busy || mode === boardHalfMode) return;
+    ({ useUpperHalf, useLowerHalf } = selectionForBoardHalfMode(mode));
     submitNow();
+  }
+
+  function selectPreviewHalf(half: "upper" | "lower") {
+    selectBoardHalfMode(modeAfterHalfClick(boardHalfMode, half));
   }
 
   async function submit(p: BreadboardPreset) {
@@ -170,25 +178,37 @@
         </fieldset>
 
         <fieldset class="fieldset" disabled={busy}>
-          <label class="fieldset-label cursor-pointer items-start justify-start gap-3">
+          <legend class="fieldset-legend">{ui.step2.boardArea}</legend>
+          <div class="join w-full">
             <input
-              class="toggle toggle-primary toggle-sm"
-              type="checkbox"
-              checked={useUpperHalf}
-              onchange={(event) => toggleBoardHalf("upper", event.currentTarget.checked)}
+              class="btn btn-sm join-item min-w-0 flex-1"
+              class:btn-primary={boardHalfMode === "upper"}
+              type="radio"
+              name="breadboard-area"
+              checked={boardHalfMode === "upper"}
+              onchange={() => selectBoardHalfMode("upper")}
+              aria-label={ui.step2.upperOnly}
             />
-            <span>{ui.step2.useUpperHalf}</span>
-          </label>
-          <label class="fieldset-label cursor-pointer items-start justify-start gap-3">
             <input
-              class="toggle toggle-primary toggle-sm"
-              type="checkbox"
-              checked={useLowerHalf}
-              onchange={(event) => toggleBoardHalf("lower", event.currentTarget.checked)}
+              class="btn btn-sm join-item min-w-0 flex-1"
+              class:btn-primary={boardHalfMode === "full"}
+              type="radio"
+              name="breadboard-area"
+              checked={boardHalfMode === "full"}
+              onchange={() => selectBoardHalfMode("full")}
+              aria-label={ui.step2.fullBoard}
             />
-            <span>{ui.step2.useLowerHalf}</span>
-          </label>
-          <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.halfBoardHint}</p>
+            <input
+              class="btn btn-sm join-item min-w-0 flex-1"
+              class:btn-primary={boardHalfMode === "lower"}
+              type="radio"
+              name="breadboard-area"
+              checked={boardHalfMode === "lower"}
+              onchange={() => selectBoardHalfMode("lower")}
+              aria-label={ui.step2.lowerOnly}
+            />
+          </div>
+          <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.previewHalfHint}</p>
         </fieldset>
 
         <p class="text-xs leading-relaxed text-base-content/60">{ui.step2.autoBoardHint}</p>
@@ -292,21 +312,24 @@
           <h2 class="card-title text-sm">{ui.common.preview}</h2>
           {#if info}<span class="badge badge-ghost badge-sm">{info.cols} × {(info.use_upper_half ? 5 : 0) + (info.use_lower_half ? 5 : 0)}</span>{/if}
         </div>
-        <div inert use:observePreview class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
+        <div use:observePreview class="relative min-h-0 flex-1 overflow-hidden rounded-box border border-base-300 bg-base-200">
           {#if info}
             {#key `${info.preset}:${info.cols}:${info.use_upper_half}:${info.use_lower_half}`}
               <BreadboardPreview
                 preset={info.preset}
                 boardCols={info.cols}
                 boardCount={1}
-                useUpperHalf={info.use_upper_half}
-                useLowerHalf={info.use_lower_half}
+                useUpperHalf={true}
+                useLowerHalf={true}
+                activeUpperHalf={info.use_upper_half}
+                activeLowerHalf={info.use_lower_half}
                 fitWidth={previewWidth}
                 fitHeight={previewHeight}
                 fitReference={STEP2_FIT_REFERENCE}
                 panCanvas={false}
                 tieNegativeRails={topNegativeNet === bottomNegativeNet}
                 tiePositiveRails={topPositiveNet === bottomPositiveNet}
+                onHalfSelect={selectPreviewHalf}
               />
             {/key}
           {:else}

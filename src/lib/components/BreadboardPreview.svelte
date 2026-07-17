@@ -26,6 +26,8 @@
     gapCols,
     useUpperHalf = true,
     useLowerHalf = true,
+    activeUpperHalf = useUpperHalf,
+    activeLowerHalf = useLowerHalf,
     frame,
     zoom = 1,
     fitWidth = 0,
@@ -37,6 +39,7 @@
     completedWireIds = [],
     tieNegativeRails = true,
     tiePositiveRails = true,
+    onHalfSelect,
     onSelect = () => {},
   }: {
     preset: BreadboardPreset;
@@ -45,6 +48,8 @@
     gapCols?: number;
     useUpperHalf?: boolean;
     useLowerHalf?: boolean;
+    activeUpperHalf?: boolean;
+    activeLowerHalf?: boolean;
     frame?: LayoutFrame | null;
     zoom?: number;
     fitWidth?: number;
@@ -61,6 +66,7 @@
     completedWireIds?: string[];
     tieNegativeRails?: boolean;
     tiePositiveRails?: boolean;
+    onHalfSelect?: (half: "upper" | "lower") => void;
     onSelect?: (selection: CircuitSelection | null) => void;
   } = $props();
 
@@ -859,6 +865,17 @@
           },
     );
   }
+
+  function selectHalf(event: Event, half: "upper" | "lower") {
+    event.stopPropagation();
+    onHalfSelect?.(half);
+  }
+
+  function selectHalfByKeyboard(event: KeyboardEvent, half: "upper" | "lower") {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    selectHalf(event, half);
+  }
 </script>
 
 <div
@@ -1262,6 +1279,56 @@
       {/if}
       {/if}
     {/if}
+
+    {#if onHalfSelect}
+      {@const halfHeight = boardHeight / 2}
+      <g aria-label={ui.step2.boardArea}>
+        <g
+          class="half-selection-hit cursor-pointer"
+          role="button"
+          tabindex="0"
+          aria-label={ui.step2.selectUpperHalf}
+          aria-pressed={activeUpperHalf}
+          onclick={(event) => selectHalf(event, "upper")}
+          onkeydown={(event) => selectHalfByKeyboard(event, "upper")}
+        >
+          {#if !activeUpperHalf}
+            <rect width={boardWidth} height={halfHeight} fill="var(--color-base-content)" fill-opacity="0.12" pointer-events="none" />
+          {/if}
+          <rect class="half-selection-hover" width={boardWidth} height={halfHeight} rx="7" />
+        </g>
+        <g
+          class="half-selection-hit cursor-pointer"
+          role="button"
+          tabindex="0"
+          aria-label={ui.step2.selectLowerHalf}
+          aria-pressed={activeLowerHalf}
+          onclick={(event) => selectHalf(event, "lower")}
+          onkeydown={(event) => selectHalfByKeyboard(event, "lower")}
+        >
+          {#if !activeLowerHalf}
+            <rect y={halfHeight} width={boardWidth} height={halfHeight} fill="var(--color-base-content)" fill-opacity="0.12" pointer-events="none" />
+          {/if}
+          <rect class="half-selection-hover" y={halfHeight} width={boardWidth} height={halfHeight} rx="7" />
+        </g>
+      </g>
+    {/if}
     </g>
   </svg>
 </div>
+
+<style>
+  .half-selection-hover {
+    fill: var(--color-primary);
+    fill-opacity: 0;
+    stroke: var(--color-primary);
+    stroke-opacity: 0;
+    stroke-width: 2;
+  }
+
+  .half-selection-hit:hover .half-selection-hover,
+  .half-selection-hit:focus-visible .half-selection-hover {
+    fill-opacity: 0.1;
+    stroke-opacity: 0.8;
+  }
+</style>
