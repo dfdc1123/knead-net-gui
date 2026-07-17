@@ -169,7 +169,7 @@ impl Default for SAConfig {
 enum Move {
     /// 翻转单个元件的旋转 (R0 ↔ R180)
     Flip(usize),
-    /// 单个元件 x 增 ±N (N 随温度: 高温 1..=3, 低温 1)
+    /// 单个元件横移 ±N 个可用姿态 (板间空隙不计步; N 随温度: 高温 1..=3, 低温 1)
     ShiftX(usize, i32),
     /// 单个元件 y 增 ±N (N 随温度: 高温 1..=3, 低温 1)
     ShiftY(usize, i32),
@@ -436,8 +436,7 @@ fn find_left_shiftable_group(state: &SAState, board: &Breadboard, i: usize) -> O
 /// 设计要点:
 /// - generator 不会为 Bridged 生成 `Flip` / `ShiftY`；直接调用时仍返回 `None`，
 ///   且不得修改任何字段。
-/// - `ShiftX` 在 bridged 上: 在 cache 里找 (power.x+dx, signal.x+dx); 没找到时
-///   退一步 (dx + sign(dx)) 跳过电源轨 gap 再试一次, 仍失败再返 `false`。
+/// - `ShiftX` 在 bridged 上: 沿方向扫描 cache，缺孔列不消耗 move 步数。
 /// - `ShiftGroup` 见 `apply_group_shift_x`: 两段式验证 / 落写, 任何成员失败
 ///   则全组放弃, 不留半成品。
 /// - backup 保存 move 修改的全部原始字段，用于 reject 时完整恢复。
@@ -696,6 +695,85 @@ fn apply_move(state: &mut SAState, m: &Move, board: &Breadboard) -> Option<Backu
     }
 }
 
+/// Resolve an OnBoard ShiftX expressed in usable placement steps into a raw global-column delta.
+/// Board gaps and any intermediate anchor that would leave part of the footprint in a gap do not
+/// consume a step. Other components and fixed geometry are deliberately ignored here so ShiftX
+/// cannot tunnel through occupancy; the normal hard-legality pass still rejects those collisions.
+fn resolve_shift_x_move(
+    state: &SAState,
+    movement: Move,
+    board: &Breadboard,
+    ctx: &SAContext,
+) -> Move {
+    match movement {
+        Move::ShiftX(i, dx) if !state.bridged[i] => {
+            let target_x = onboard_shift_x_target(state, board, ctx, i, dx);
+            Move::ShiftX(i, target_x - state.x[i])
+        }
+        other => other,
+    }
+}
+
+fn onboard_shift_x_target(
+    state: &SAState,
+    board: &Breadboard,
+    ctx: &SAContext,
+    i: usize,
+    dx: i32,
+) -> i32 {
+    if dx == 0 {
+        return state.x[i];
+    }
+
+    let direction = dx.signum();
+    let mut remaining = dx.unsigned_abs();
+    let mut candidate_x = state.x[i];
+    loop {
+        candidate_x += direction;
+        if candidate_x < 0 || candidate_x >= board.cols() as i32 {
+            return candidate_x;
+        }
+        if onboard_component_fits_board_at_x(state, i, candidate_x, board, ctx) {
+            remaining -= 1;
+            if remaining == 0 {
+                return candidate_x;
+            }
+        }
+    }
+}
+
+fn onboard_component_fits_board_at_x(
+    state: &SAState,
+    idx: usize,
+    x: i32,
+    board: &Breadboard,
+    ctx: &SAContext,
+) -> bool {
+    let info = &ctx.comp_infos[idx];
+    let rotation_index = match state.rotation[idx] {
+        Rotation::R0 => 0,
+        Rotation::R180 => 1,
+        Rotation::R90 => 2,
+        Rotation::R270 => 3,
+    };
+    if info.pins.iter().any(|(offsets, _)| {
+        let offset = offsets[rotation_index];
+        board.at(x + offset.x, state.y[idx] + offset.y).is_none()
+    }) {
+        return false;
+    }
+
+    let bbox = info.world_bbox(x, state.y[idx], state.rotation[idx]);
+    let allow_channel_crossing = state.y_locked[idx].is_some();
+    !bbox.iter_cells().any(|position| {
+        position.x < 0
+            || position.x >= board.cols() as i32
+            || position.y < 0
+            || position.y >= board.main_rows() as i32
+            || (!allow_channel_crossing && board.at(position.x, position.y).is_none())
+    })
+}
+
 /// Cheap, conservative geometry rejection for an already-applied Shift/Swap.
 /// Returning true must imply that the full hard-legality pass would reject it.
 fn has_obvious_shift_or_swap_conflict(
@@ -723,33 +801,10 @@ fn component_has_obvious_geometry_conflict(
         return false;
     };
 
-    if !state.bridged[idx] {
-        let info = &ctx.comp_infos[idx];
-        let rotation_index = match state.rotation[idx] {
-            Rotation::R0 => 0,
-            Rotation::R180 => 1,
-            Rotation::R90 => 2,
-            Rotation::R270 => 3,
-        };
-        if info.pins.iter().any(|(offsets, _)| {
-            let offset = offsets[rotation_index];
-            board
-                .at(state.x[idx] + offset.x, state.y[idx] + offset.y)
-                .is_none()
-        }) {
-            return true;
-        }
-
-        let allow_channel_crossing = state.y_locked[idx].is_some();
-        if bbox.iter_cells().any(|position| {
-            position.x < 0
-                || position.x >= board.cols() as i32
-                || position.y < 0
-                || position.y >= board.main_rows() as i32
-                || (!allow_channel_crossing && board.at(position.x, position.y).is_none())
-        }) {
-            return true;
-        }
+    if !state.bridged[idx]
+        && !onboard_component_fits_board_at_x(state, idx, state.x[idx], board, ctx)
+    {
+        return true;
     }
 
     if ctx
@@ -814,12 +869,11 @@ fn bboxes_overlap_on_hole(first: &BBox, second: &BBox, board: &Breadboard) -> bo
     (min_y..=max_y).any(|y| (min_x..=max_x).any(|x| board.at(x, y).is_some()))
 }
 
-/// bridged 元件: 尝试在 cache 里找 (power+dx, signal+dx), 找不到时按
-/// `dx + sign(dx)` 跳 gap 再试。两次都失败 → 返 `false` (state 不变)。
+/// Bridged ShiftX counts only translated candidate pairs. Missing power-rail holes and
+/// inter-board gaps are invisible to its step count, so the search continues in the requested
+/// direction until it finds the Nth candidate or reaches the board boundary.
 ///
-/// "跳 gap" 只表示 group 之间没有可插线的孔，并非底层导体断开。例如 x=4
-/// 右移一步没有孔时，`ShiftX(+1)` 尝试 `+2` 落到下一 group 的 x=6；两处仍属于
-/// 同一条天然导通的完整电源轨行。`ShiftGroup` 保持严格左移 1 列，不跳过无孔位置。
+/// `ShiftGroup` remains a strict one-column move and does not use this search.
 fn try_bridged_shift_x(state: &mut SAState, board: &Breadboard, i: usize, dx: i32) -> bool {
     let Some(target) = bridged_shift_target(state, board, i, dx) else {
         return false;
@@ -829,18 +883,34 @@ fn try_bridged_shift_x(state: &mut SAState, board: &Breadboard, i: usize, dx: i3
 }
 
 fn bridged_shift_target(state: &SAState, board: &Breadboard, i: usize, dx: i32) -> Option<usize> {
+    if dx == 0 {
+        return None;
+    }
     let cur = state.active_bridge_pair(i)?;
     let old_power = board.hole(cur[0].0).position;
     let old_signal = board.hole(cur[1].0).position;
 
-    if let Some(target) = shifted_candidate(state, board, i, old_power, old_signal, dx) {
-        return Some(target);
+    let direction = dx.signum();
+    let mut remaining = dx.unsigned_abs();
+    let mut raw_delta = 0;
+    loop {
+        raw_delta += direction;
+        let target_power_x = old_power.x + raw_delta;
+        let target_signal_x = old_signal.x + raw_delta;
+        if target_power_x < 0
+            || target_power_x >= board.cols() as i32
+            || target_signal_x < 0
+            || target_signal_x >= board.cols() as i32
+        {
+            return None;
+        }
+        if let Some(target) = shifted_candidate(state, board, i, old_power, old_signal, raw_delta) {
+            remaining -= 1;
+            if remaining == 0 {
+                return Some(target);
+            }
+        }
     }
-    if dx != 0 {
-        let bumped = dx + dx.signum();
-        return shifted_candidate(state, board, i, old_power, old_signal, bumped);
-    }
-    None
 }
 
 fn shifted_candidate(
@@ -1250,6 +1320,7 @@ pub(super) fn simulate_with_initializer(
             metrics.no_candidate += 1;
             continue;
         };
+        let m = resolve_shift_x_move(&state, m, board, &ctx);
         // in-place apply: 返 Some(backup) 表成功, None 表该 move 在当前状态下不应落地
         // (state 未变, 不需 revert)。
         #[cfg(profile_sa)]
@@ -1351,7 +1422,7 @@ mod tests {
         Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin,
         PinId, Position,
     };
-    use crate::layout::Breadboard;
+    use crate::layout::{Breadboard, Preset};
 
     /// 构造一个最简电路: 2 个 2-pin 元件, pin1=net0, pin2=net0 (都连一起)
     fn simple_circuit() -> Circuit {
@@ -1691,6 +1762,41 @@ mod tests {
     }
 
     #[test]
+    fn shift_x_treats_inter_board_gap_as_invisible_for_single_column_parts() {
+        let circuit = three_single_pin_circuit();
+        let board = Preset::Hole400.make_repeated(2);
+        let mut state = SAState::from_order(vec![ComponentId(0)], 0, &[1]);
+        state.x[0] = 33;
+        state.y[0] = 0;
+        let ctx = SAContext::new(&circuit, &state.placeable);
+
+        assert_eq!(onboard_shift_x_target(&state, &board, &ctx, 0, -1), 29);
+        let movement = resolve_shift_x_move(&state, Move::ShiftX(0, -1), &board, &ctx);
+        let backup = apply_move(&mut state, &movement, &board).expect("resolved ShiftX");
+        assert_eq!(state.x[0], 29);
+        backup.revert(&mut state);
+        assert_eq!(
+            state.x[0], 33,
+            "rejected ShiftX must restore the original x"
+        );
+
+        state.x[0] = 29;
+        assert_eq!(onboard_shift_x_target(&state, &board, &ctx, 0, 1), 33);
+    }
+
+    #[test]
+    fn shift_x_skips_every_anchor_that_would_leave_a_wide_part_in_the_gap() {
+        let circuit = simple_circuit();
+        let board = Preset::Hole400.make_repeated(2);
+        let mut state = SAState::from_order(vec![ComponentId(0)], 0, &[2]);
+        state.x[0] = 33;
+        state.y[0] = 0;
+        let ctx = SAContext::new(&circuit, &state.placeable);
+
+        assert_eq!(onboard_shift_x_target(&state, &board, &ctx, 0, -1), 28);
+    }
+
+    #[test]
     fn apply_shift_y_increments_y() {
         let mut state = SAState::from_order(vec![ComponentId(0)], 2, &[1]);
         apply_move(&mut state, &Move::ShiftY(0, 1), &board());
@@ -2017,14 +2123,46 @@ mod tests {
         );
     }
 
-    /// ShiftX 双跳都不命中 (e.g. 起点 + dx 都越界) → 返 false, state 不变。
+    #[test]
+    fn bridged_shift_x_skips_the_complete_inter_board_gap() {
+        let (circuit, _) = bridgable_fixture();
+        let board = Preset::Hole400
+            .make_repeated(2)
+            .with_power_rail_binding(PowerRailBinding {
+                positive: Some(NetId(0)),
+                negative: Some(NetId(1)),
+            });
+        let mut state = SAState::from_greedy(
+            vec![ComponentId(0)],
+            &circuit,
+            &board,
+            &crate::layout::preprocess::PreprocessResult {
+                r90_only: std::collections::HashSet::new(),
+                y_locked: std::collections::HashMap::new(),
+            },
+            &crate::layout::problem::AnnealProblem::default(),
+        )
+        .unwrap();
+        populate_bridgeable_info(&mut state, &circuit, &board, &[NetId(0), NetId(1)]);
+        state.bridged[0] = true;
+        state.active_bridge_idx[0] = state.bridged_pin_pairs[0]
+            .iter()
+            .position(|pair| board.hole(pair[0].0).position.x == 33)
+            .expect("second board must expose a bridged candidate at x=33");
+
+        assert!(try_bridged_shift_x(&mut state, &board, 0, -1));
+        let shifted_power = state.active_bridge_pair(0).unwrap()[0].0;
+        assert_eq!(board.hole(shifted_power).position.x, 28);
+    }
+
+    /// ShiftX 沿指定方向找不到足够候选 → 返 false, state 不变。
     #[test]
     fn apply_shift_x_on_bridged_rejects_when_no_target_anywhere() {
         let (_circuit, board) = bridgable_fixture();
         let mut state = bridgable_state_in_bridged(vec![ComponentId(0)]);
 
         // x=0 被 preset RailTie 占用，不在 catalog。找到最左 x=1 候选，
-        // dx=-2 及 gap fallback -3 都越界，必须拒绝。
+        // 左侧不足两个可用候选，必须拒绝。
         let target1 = state.bridged_pin_pairs[0]
             .iter()
             .position(|pair| board.hole(pair[0].0).position.x == 1)
@@ -2033,7 +2171,7 @@ mod tests {
         let active_before = state.active_bridge_idx[0];
 
         let ok = try_bridged_shift_x(&mut state, &board, 0, -2);
-        assert!(!ok, "dx = -2 越界 + fallback 依然越界, 必须返 false");
+        assert!(!ok, "dx = -2 找不到两个左侧候选, 必须返 false");
         assert_eq!(
             state.active_bridge_idx[0], active_before,
             "active_bridge_idx 不应被改"
