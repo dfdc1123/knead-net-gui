@@ -363,8 +363,8 @@
                 fitHeight={previewHeight}
                 fitReference={STEP2_FIT_REFERENCE}
                 panCanvas={false}
-                tieNegativeRails={topNegativeNet === bottomNegativeNet}
-                tiePositiveRails={topPositiveNet === bottomPositiveNet}
+                tieNegativeRails={false}
+                tiePositiveRails={false}
                 onHalfSelect={selectPreviewHalf}
               />
             {/key}

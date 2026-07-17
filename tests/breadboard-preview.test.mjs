@@ -24,6 +24,11 @@ test("Step 2 fits every preset against the 830-hole board footprint", () => {
   assert.match(step2Source, /fitReference=\{STEP2_FIT_REFERENCE\}/);
 });
 
+test("Step 2 never draws top-to-bottom power-rail ties", () => {
+  assert.match(step2Source, /tieNegativeRails=\{false\}/);
+  assert.match(step2Source, /tiePositiveRails=\{false\}/);
+});
+
 test("breadboard canvas prevents native text selection on double click", () => {
   assert.match(source, /class="[^"]*select-none[^"]*"[\s\S]*role="presentation"/);
 });
