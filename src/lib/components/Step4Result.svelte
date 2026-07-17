@@ -528,6 +528,51 @@
     }
   }
 
+  function selectionElements(target: DiagramTarget) {
+    const host = target === "schematic" ? schematicHost : breadboardHost;
+    if (!host || !selected) return { host, elements: [] as SVGGraphicsElement[] };
+
+    const selector = (name: string, id: string) => `[data-${name}="${CSS.escape(id)}"]`;
+    const selectors = selected.type === "component"
+      ? [selector("component", selected.id)]
+      : selected.type === "wire"
+        ? target === "breadboard"
+          ? [selector("wire", selected.id)]
+          : selected.netId ? [selector("net", selected.netId)] : []
+        : [selector("net", selected.id)];
+    return {
+      host,
+      elements: selectors.flatMap((query) => [...host.querySelectorAll<SVGGraphicsElement>(query)]),
+    };
+  }
+
+  function revealSelectionInDiagram(target: DiagramTarget) {
+    const { host, elements } = selectionElements(target);
+    if (!host || elements.length === 0) return;
+
+    const rectangles = elements.map((element) => element.getBoundingClientRect());
+    const bounds = rectangles.reduce(
+      (combined, rect) => ({
+        left: Math.min(combined.left, rect.left),
+        top: Math.min(combined.top, rect.top),
+        right: Math.max(combined.right, rect.right),
+        bottom: Math.max(combined.bottom, rect.bottom),
+      }),
+      { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
+    );
+    const viewport = host.getBoundingClientRect();
+    const fullyVisible =
+      bounds.left >= viewport.left && bounds.right <= viewport.right &&
+      bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
+    if (fullyVisible) return;
+
+    host.scrollTo({
+      left: host.scrollLeft + (bounds.left + bounds.right - viewport.left - viewport.right) / 2,
+      top: host.scrollTop + (bounds.top + bounds.bottom - viewport.top - viewport.bottom) / 2,
+      behavior: "smooth",
+    });
+  }
+
   async function revealWireInAssemblyList(wireId: string) {
     await tick();
     const row = [...(assemblyListHost?.querySelectorAll<HTMLElement>("[data-wire-id]") ?? [])]
@@ -539,6 +584,14 @@
     selected;
     schematicSvg;
     queueMicrotask(syncSchematicHighlight);
+  });
+
+  $effect(() => {
+    selected;
+    void tick().then(() => {
+      revealSelectionInDiagram("schematic");
+      revealSelectionInDiagram("breadboard");
+    });
   });
 
   $effect(() => {
