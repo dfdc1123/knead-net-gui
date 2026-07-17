@@ -52,7 +52,7 @@
     </div>
     {#if sourceReady}
       <div class:hidden={step !== 1} class="h-full">
-        <Step2SelectBoard onStatusChange={handleBoardStatus} onBoardChange={handleBoardChange} />
+        <Step2SelectBoard {schematicSvg} onStatusChange={handleBoardStatus} onBoardChange={handleBoardChange} />
       </div>
     {/if}
     {#if sourceReady && boardReady && board}

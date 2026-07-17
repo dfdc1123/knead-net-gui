@@ -35,6 +35,8 @@ const dictionaries = {
       schematic: "原理图",
       noSchematic: "无原理图",
       placeholder: "—",
+      close: "关闭",
+      cancel: "取消",
     },
     step1: {
       title: "导入工程",
@@ -80,6 +82,14 @@ const dictionaries = {
       negativeRail: "负极（−）",
       unbound: "不绑定",
       powerRailHint: "默认上下同极性轨使用相同网络并保持短接；分别选择不同网络时会自动取消对应短接。",
+      chooseNetwork: "从原理图选择网络",
+      chooseNetFor: (rail: string, polarity: string) => `为${rail}${polarity}选择网络`,
+      netPickerHint: "点击原理图中的网络连线即可绑定。滚轮缩放，按住右键拖动画布。",
+      currentBinding: "当前绑定",
+      clearBinding: "取消绑定",
+      netUnavailable: (net: string) => `网络 ${net} 不存在于当前 PCB 中，无法绑定。`,
+      bindingButtonLabel: (rail: string, polarity: string, net: string) =>
+        `${rail}${polarity}：${net || "未绑定，点击从原理图选择"}`,
     },
     step3: {
       title: "计算布局",
@@ -206,6 +216,8 @@ const dictionaries = {
       schematic: "Schematic",
       noSchematic: "No schematic",
       placeholder: "—",
+      close: "Close",
+      cancel: "Cancel",
     },
     step1: {
       title: "Import Project",
@@ -251,6 +263,14 @@ const dictionaries = {
       negativeRail: "Negative (−)",
       unbound: "Not bound",
       powerRailHint: "Matching top and bottom rails stay tied by default; choosing different nets removes that tie.",
+      chooseNetwork: "Choose from schematic",
+      chooseNetFor: (rail: string, polarity: string) => `Choose a net for ${rail} ${polarity}`,
+      netPickerHint: "Click a net in the schematic to bind it. Scroll to zoom; hold the right mouse button to pan.",
+      currentBinding: "Current binding",
+      clearBinding: "Clear binding",
+      netUnavailable: (net: string) => `Net ${net} is not present in the current PCB and cannot be bound.`,
+      bindingButtonLabel: (rail: string, polarity: string, net: string) =>
+        `${rail} ${polarity}: ${net || "unbound; click to choose from the schematic"}`,
     },
     step3: {
       title: "Compute Layout",

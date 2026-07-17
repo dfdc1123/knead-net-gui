@@ -8,13 +8,16 @@
   import { locale, ui } from "$lib/i18n";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import SchematicNetPicker from "./SchematicNetPicker.svelte";
 
   let {
     onStatusChange = () => {},
     onBoardChange = () => {},
+    schematicSvg = "",
   }: {
     onStatusChange?: (ready: boolean) => void;
     onBoardChange?: (board: BreadboardSelection | null) => void;
+    schematicSvg?: string;
   } = $props();
 
   type Info = {
@@ -31,6 +34,11 @@
     negative_net: string | null;
   };
   type BoardHalfMode = "upper" | "full" | "lower";
+  type PowerRailTarget =
+    | "top-negative"
+    | "top-positive"
+    | "bottom-negative"
+    | "bottom-positive";
 
   const PRESETS: { id: BreadboardPreset; name: string; defaultCols: number }[] = [
     { id: "hole170", name: ui.step2.holes(170), defaultCols: 17 },
@@ -53,10 +61,21 @@
   let powerOptionsReady = $state(false);
   let busy = $state(false);
   let error = $state("");
+  let netPickerOpen = $state(false);
+  let powerRailTarget = $state<PowerRailTarget>("top-negative");
   let hasPowerRails = $derived(preset !== "hole170");
   let boardHalfMode = $derived<BoardHalfMode>(
     useUpperHalf && useLowerHalf ? "full" : useUpperHalf ? "upper" : "lower",
   );
+  let pickerSelectedNet = $derived(powerRailNet(powerRailTarget));
+  let pickerTitle = $derived.by(() => {
+    const top = powerRailTarget.startsWith("top");
+    const negative = powerRailTarget.endsWith("negative");
+    return ui.step2.chooseNetFor(
+      top ? ui.step2.topPowerRails : ui.step2.bottomPowerRails,
+      negative ? ui.step2.negativeRail : ui.step2.positiveRail,
+    );
+  });
   let submitGeneration = 0;
 
   onMount(() => {
@@ -104,6 +123,31 @@
 
   function selectPreviewHalf(half: "upper" | "lower") {
     selectBoardHalfMode(modeAfterHalfClick(boardHalfMode, half));
+  }
+
+  function powerRailNet(target: PowerRailTarget) {
+    switch (target) {
+      case "top-negative": return topNegativeNet;
+      case "top-positive": return topPositiveNet;
+      case "bottom-negative": return bottomNegativeNet;
+      case "bottom-positive": return bottomPositiveNet;
+    }
+  }
+
+  function openNetPicker(target: PowerRailTarget) {
+    if (busy) return;
+    powerRailTarget = target;
+    netPickerOpen = true;
+  }
+
+  function bindPowerRailNet(net: string) {
+    switch (powerRailTarget) {
+      case "top-negative": topNegativeNet = net; break;
+      case "top-positive": topPositiveNet = net; break;
+      case "bottom-negative": bottomNegativeNet = net; break;
+      case "bottom-positive": bottomPositiveNet = net; break;
+    }
+    submitNow();
   }
 
   async function submit(p: BreadboardPreset) {
@@ -221,33 +265,29 @@
               <div class="grid grid-cols-2 gap-2">
                 <label class="fieldset-label flex-col items-stretch gap-1" for="top-negative-power-net">
                   <span>{ui.step2.negativeRail}</span>
-                  <select
+                  <button
                     id="top-negative-power-net"
-                    class="select w-full min-w-0 font-mono"
-                    value={topNegativeNet}
-                    onchange={(event) => {
-                      topNegativeNet = event.currentTarget.value;
-                      submitNow();
-                    }}
+                    class="btn btn-sm btn-outline w-full min-w-0 justify-between gap-2 font-normal"
+                    type="button"
+                    onclick={() => openNetPicker("top-negative")}
+                    aria-label={ui.step2.bindingButtonLabel(ui.step2.topPowerRails, ui.step2.negativeRail, topNegativeNet)}
                   >
-                    <option value="">{ui.step2.unbound}</option>
-                    {#each netNames as net}<option value={net}>{net}</option>{/each}
-                  </select>
+                    <span class="min-w-0 truncate font-mono">{topNegativeNet || ui.step2.chooseNetwork}</span>
+                    <span aria-hidden="true">›</span>
+                  </button>
                 </label>
                 <label class="fieldset-label flex-col items-stretch gap-1" for="top-positive-power-net">
                   <span>{ui.step2.positiveRail}</span>
-                  <select
+                  <button
                     id="top-positive-power-net"
-                    class="select w-full min-w-0 font-mono"
-                    value={topPositiveNet}
-                    onchange={(event) => {
-                      topPositiveNet = event.currentTarget.value;
-                      submitNow();
-                    }}
+                    class="btn btn-sm btn-outline w-full min-w-0 justify-between gap-2 font-normal"
+                    type="button"
+                    onclick={() => openNetPicker("top-positive")}
+                    aria-label={ui.step2.bindingButtonLabel(ui.step2.topPowerRails, ui.step2.positiveRail, topPositiveNet)}
                   >
-                    <option value="">{ui.step2.unbound}</option>
-                    {#each netNames as net}<option value={net}>{net}</option>{/each}
-                  </select>
+                    <span class="min-w-0 truncate font-mono">{topPositiveNet || ui.step2.chooseNetwork}</span>
+                    <span aria-hidden="true">›</span>
+                  </button>
                 </label>
               </div>
             {/if}
@@ -257,33 +297,29 @@
               <div class="grid grid-cols-2 gap-2">
                 <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-negative-power-net">
                   <span>{ui.step2.negativeRail}</span>
-                  <select
+                  <button
                     id="bottom-negative-power-net"
-                    class="select w-full min-w-0 font-mono"
-                    value={bottomNegativeNet}
-                    onchange={(event) => {
-                      bottomNegativeNet = event.currentTarget.value;
-                      submitNow();
-                    }}
+                    class="btn btn-sm btn-outline w-full min-w-0 justify-between gap-2 font-normal"
+                    type="button"
+                    onclick={() => openNetPicker("bottom-negative")}
+                    aria-label={ui.step2.bindingButtonLabel(ui.step2.bottomPowerRails, ui.step2.negativeRail, bottomNegativeNet)}
                   >
-                    <option value="">{ui.step2.unbound}</option>
-                    {#each netNames as net}<option value={net}>{net}</option>{/each}
-                  </select>
+                    <span class="min-w-0 truncate font-mono">{bottomNegativeNet || ui.step2.chooseNetwork}</span>
+                    <span aria-hidden="true">›</span>
+                  </button>
                 </label>
                 <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-positive-power-net">
                   <span>{ui.step2.positiveRail}</span>
-                  <select
+                  <button
                     id="bottom-positive-power-net"
-                    class="select w-full min-w-0 font-mono"
-                    value={bottomPositiveNet}
-                    onchange={(event) => {
-                      bottomPositiveNet = event.currentTarget.value;
-                      submitNow();
-                    }}
+                    class="btn btn-sm btn-outline w-full min-w-0 justify-between gap-2 font-normal"
+                    type="button"
+                    onclick={() => openNetPicker("bottom-positive")}
+                    aria-label={ui.step2.bindingButtonLabel(ui.step2.bottomPowerRails, ui.step2.positiveRail, bottomPositiveNet)}
                   >
-                    <option value="">{ui.step2.unbound}</option>
-                    {#each netNames as net}<option value={net}>{net}</option>{/each}
-                  </select>
+                    <span class="min-w-0 truncate font-mono">{bottomPositiveNet || ui.step2.chooseNetwork}</span>
+                    <span aria-hidden="true">›</span>
+                  </button>
                 </label>
               </div>
             {/if}
@@ -340,3 +376,12 @@
     </section>
   </div>
 </div>
+
+<SchematicNetPicker
+  bind:open={netPickerOpen}
+  {schematicSvg}
+  selectedNet={pickerSelectedNet}
+  allowedNetNames={netNames}
+  title={pickerTitle}
+  onSelect={bindPowerRailNet}
+/>
