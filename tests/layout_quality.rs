@@ -148,7 +148,7 @@ fn run_fixture(
     max_iters: usize,
 ) -> RunMetrics {
     let mut circuit = parse_pcb(fixture.source).expect("quality fixture should parse");
-    let prepared = prepare_for_layout(&mut circuit, Preset::Hole800.make(63));
+    let prepared = prepare_for_layout(&mut circuit, Preset::Hole830.make(63));
     let board = prepared.board;
     let config = quick_config(seed, initializer, max_iters);
     let progress_costs = Mutex::new((None, None));

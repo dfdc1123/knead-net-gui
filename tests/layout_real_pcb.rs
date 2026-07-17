@@ -56,7 +56,7 @@ impl DisjointSet {
 fn run_real_fixture() -> FixtureResult {
     let mut circuit = parse_pcb(include_str!("../examples/inputs/h-bridge.kicad_pcb"))
         .expect("real h-bridge PCB fixture should parse");
-    let prepared = prepare_for_layout(&mut circuit, Preset::Hole800.make(63));
+    let prepared = prepare_for_layout(&mut circuit, Preset::Hole830.make(63));
     let board = prepared.board;
     assert!(
         board.power_rail_binding().is_some(),

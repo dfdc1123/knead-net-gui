@@ -13,7 +13,7 @@
 需要在两个产品方案中作出决定：
 
 - **A：物理默认。** 每条完整电源轨行是一个 `ConductiveIsland`，top 与 bottom 分别独立；仅显式 `RailTie` 能连接两行。优点是开箱状态完全符合裸板，且不会凭空假设用户接线；缺点是默认布局会改变当前产品一直采用的“同极性 top/bottom 已短接”体验。
-- **B：产品便利默认。** 使用与 A 相同的独立 island 物理底模，但 400/800 preset 为每种 polarity 默认带一条显式 top/bottom `RailTie`，表示产品假设用户会按图短接同极性上下轨。优点是保留当前的有效连通语义，同时所有假设都可见、可序列化、可占孔并可验证；代价是默认结果中会出现两根真实跳线，用户删除 tie 后上下轨连通性也随之改变。
+- **B：产品便利默认。** 使用与 A 相同的独立 island 物理底模，但 400/830 preset 为每种 polarity 默认带一条显式 top/bottom `RailTie`，表示产品假设用户会按图短接同极性上下轨。优点是保留当前的有效连通语义，同时所有假设都可见、可序列化、可占孔并可验证；代价是默认结果中会出现两根真实跳线，用户删除 tie 后上下轨连通性也随之改变。
 
 ## 决策
 
@@ -43,16 +43,16 @@
 - tie 不拥有独立 net。它连接的 effective component 决定其 net；连接两个互斥 `bound_net` 或已被不同 net 占用的 component 是硬错误。
 - tie 是布局中的固定几何，不由 router 移动、删除或悄悄替换。用户显式编辑 tie 时才改变它。
 
-### 4. 400 与 800 preset 的默认 ties
+### 4. 400 与 830 preset 的默认 ties
 
-400 与 800 preset 都有四个电源轨 island：top negative、top positive、bottom negative、bottom positive。同一行内部天然导通，无须也不得生成 group 间 tie。preset 只为每种 polarity 添加一条 top/bottom tie，使两个 negative island 成为一个 effective component、两个 positive island 成为另一个 effective component。
+400 与 830 preset 都有四个电源轨 island：top negative、top positive、bottom negative、bottom positive。同一行内部天然导通，无须也不得生成 group 间 tie。preset 只为每种 polarity 添加一条 top/bottom tie，使两个 negative island 成为一个 effective component、两个 positive island 成为另一个 effective component。
 
 端点规则固定为使用对应 top/bottom 行最左侧的可用孔：
 
 | preset | negative top/bottom | positive top/bottom | 合计 |
 | --- | ---: | ---: | ---: |
 | 400（30 列） | 1 | 1 | 2 |
-| 800（63 列） | 1 | 1 | 2 |
+| 830（63 列） | 1 | 1 | 2 |
 
 参数化列宽或末尾不足 5 孔不会改变数量：每种 polarity 在 top 和 bottom 均有至少一个孔时生成一条 top/bottom tie。170 preset 没有电源轨，因此没有默认 tie。
 
@@ -60,7 +60,7 @@
 
 ### 5. 默认连通边界
 
-- 裸板物理模型中 top/bottom **不连接**；400/800 产品 preset 仅因上述两条显式 top/bottom `RailTie` 而默认连接。
+- 裸板物理模型中 top/bottom **不连接**；400/830 产品 preset 仅因上述两条显式 top/bottom `RailTie` 而默认连接。
 - 同一行的相邻 5 孔组 **天然连接**，不需要默认 tie；删除任何 `RailTie` 都不能改变这一板内连通事实。
 - 删除某种 polarity 的 top/bottom tie 后，该极性的上下两行必须立即断开。不得按 polarity、preset 名称或历史 `rail_id` 补回隐式连接。
 
@@ -116,7 +116,7 @@ cost、router 和 validation 必须消费同一个派生的 connectivity view，
 旧模型把同极性所有电源轨隐式视为短接。为保持旧文件的电气结果，缺少 `schema_version` 或版本为 1 的布局在加载时执行一次确定性迁移：
 
 1. 按旧文件的 preset 和 cols 重建独立 islands；每条完整电源轨行重建为一个 island。
-2. 对 400/800 物化本 ADR 第 4 节规定的全部默认 ties，标记 `source: preset`；170 不生成。
+2. 对 400/830 物化本 ADR 第 4 节规定的全部默认 ties，标记 `source: preset`；170 不生成。
 3. 旧的 polarity-level power binding 展开到该 polarity 的 top 与 bottom 两个 island。由于默认 tie 已把它们连成一个 component，语义与旧模型一致。
 4. 用新规则验证 placements、wires、ties 和 bindings；若旧布局占用了某个默认 tie 端点或暴露出不同 net 冲突，迁移失败并报告可操作的端点冲突，不静默换孔或删除对象。
 5. 仅在用户保存后写出完整 v2 数据；读取本身不覆盖原文件。再次加载 v2 时不得重新追加 preset ties。

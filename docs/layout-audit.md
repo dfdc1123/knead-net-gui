@@ -78,7 +78,7 @@ BridgePolicy::Forced
 - `bound_net`：期望该 island 属于哪个 net；
 - `RailTie`：用户明确声明的外部短接。
 
-产品决策记录在 [power-rail-connectivity.md](adr/power-rail-connectivity.md)：400/800 preset 默认各包含两条可显示、可占孔、可验证的 `RailTie`，分别短接 negative 和 positive 的 top/bottom。相邻 5 孔 group 天然导通，不生成 group 间 tie。
+产品决策记录在 [power-rail-connectivity.md](adr/power-rail-connectivity.md)：400/830 preset 默认各包含两条可显示、可占孔、可验证的 `RailTie`，分别短接 negative 和 positive 的 top/bottom。相邻 5 孔 group 天然导通，不生成 group 间 tie。
 
 ## 注释与诊断已按当前实现校正
 

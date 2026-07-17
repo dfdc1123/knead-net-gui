@@ -269,10 +269,10 @@ impl PowerRailBinding {
     }
 }
 
-/// 预设板型 (170 / 400 / 800 孔) — main.rs 唯一选择点。
+/// 预设板型 (170 / 400 / 830 孔) — main.rs 唯一选择点。
 ///
 /// 选 `Preset` + 传 `cols` 调 [`Preset::make`] 就能拿到 [`Breadboard`]。
-/// 电源轨 (`Preset::Hole170` 无, `Preset::Hole400` 是 5×5, `Preset::Hole800` 是 10×5 左右空 2)
+/// 电源轨 (`Preset::Hole170` 无, `Preset::Hole400` 是 5×5, `Preset::Hole830` 是 10×5 左右空 2)
 /// 全部由 `make` 内部决定, 上层不用拼。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Preset {
@@ -281,7 +281,7 @@ pub enum Preset {
     /// 30×10 main + 4 条 5×5 电源轨 (无左右留白)。默认 cols=30 → 400 孔; cols=N → N×10 + 4 rail 孔。
     Hole400,
     /// 63×10 main + 4 条 10×5 电源轨 (左右各空 2)。默认 cols=63 → 830 孔; cols=N → N×10 + 4 rail 孔。
-    Hole800,
+    Hole830,
 }
 
 impl Preset {
@@ -291,7 +291,7 @@ impl Preset {
         match self {
             Self::Hole170 => Breadboard::preset_170(cols),
             Self::Hole400 => Breadboard::preset_400(cols),
-            Self::Hole800 => Breadboard::preset_800(cols),
+            Self::Hole830 => Breadboard::preset_830(cols),
         }
     }
 
@@ -309,11 +309,11 @@ impl Preset {
                 5..12,
                 top_power_rails_only(standard_power_rails(cols as i32)),
             ),
-            Self::Hole800 => Breadboard::with_power_rails(
+            Self::Hole830 => Breadboard::with_power_rails(
                 cols,
                 12,
                 5..12,
-                top_power_rails_only(wide_power_rails_800(cols as i32)),
+                top_power_rails_only(wide_power_rails_830(cols as i32)),
             ),
         }
     }
@@ -342,13 +342,13 @@ impl Preset {
                 )),
             )
             .with_default_power_rail_ties(),
-            Self::Hole800 => Breadboard::with_blocked_rows_cols_and_power_rails(
+            Self::Hole830 => Breadboard::with_blocked_rows_cols_and_power_rails(
                 cols,
                 12,
                 [5, 6],
                 blocked_cols,
                 Some(repeat_power_rails(
-                    wide_power_rails_800(board_cols as i32),
+                    wide_power_rails_830(board_cols as i32),
                     board_cols,
                     gap_cols,
                     board_count,
@@ -379,13 +379,13 @@ impl Preset {
                     board_count,
                 ))),
             ),
-            Self::Hole800 => Breadboard::with_blocked_rows_cols_and_power_rails(
+            Self::Hole830 => Breadboard::with_blocked_rows_cols_and_power_rails(
                 cols,
                 12,
                 5..12,
                 blocked_cols,
                 Some(top_power_rails_only(repeat_power_rails(
-                    wide_power_rails_800(board_cols as i32),
+                    wide_power_rails_830(board_cols as i32),
                     board_cols,
                     gap_cols,
                     board_count,
@@ -399,7 +399,7 @@ impl Preset {
         match self {
             Self::Hole170 => 17,
             Self::Hole400 => 30,
-            Self::Hole800 => 63,
+            Self::Hole830 => 63,
         }
     }
 
@@ -407,16 +407,16 @@ impl Preset {
     pub fn inter_board_gap_cols(self) -> usize {
         match self {
             Self::Hole170 => 2,
-            Self::Hole400 | Self::Hole800 => INTER_BOARD_GAP_COLS,
+            Self::Hole400 | Self::Hole830 => INTER_BOARD_GAP_COLS,
         }
     }
 
-    /// 预设名 (“170” / “400” / “800”), 跟文件名 / 日志一起用。
+    /// 预设名 (“170” / “400” / “830”), 跟文件名 / 日志一起用。
     pub fn name(self) -> &'static str {
         match self {
             Self::Hole170 => "170",
             Self::Hole400 => "400",
-            Self::Hole800 => "800",
+            Self::Hole830 => "800",
         }
     }
 }
@@ -715,7 +715,7 @@ impl Breadboard {
     }
 
     // ============================================================
-    //  预设板 (preset) — 170 / 400 / 800 孔
+    //  预设板 (preset) — 170 / 400 / 830 孔
     // ============================================================
 
     /// 170 孔预设: `cols` 列 × 12 行 main (中央 2 行 blocked, 上半 5 行 + 下半 5 行 = 10 行),
@@ -734,12 +734,12 @@ impl Breadboard {
             .with_default_power_rail_ties()
     }
 
-    /// 800 孔预设: `cols` 列 × 12 行 main (10 行可用 + 2 行中央 blocked),
+    /// 830 孔预设: `cols` 列 × 12 行 main (10 行可用 + 2 行中央 blocked),
     /// 上下各两组 10×5 横向短接的电源轨 (左右各留 2 格空)。
-    /// 默认 63 列: 63 × 10 = 630 main + 4 × 50 = 200 rail = 830 孔 (名“800”是约数)。
+    /// 默认 63 列: 63 × 10 = 630 main + 4 × 50 = 200 rail = 830 孔。
     /// 改 `cols` 后电源轨在 [2, cols-2) 区间按 6-col 节拍重新生成。
-    pub fn preset_800(cols: usize) -> Self {
-        Self::with_power_rails(cols, 12, [5, 6], wide_power_rails_800(cols as i32))
+    pub fn preset_830(cols: usize) -> Self {
+        Self::with_power_rails(cols, 12, [5, 6], wide_power_rails_830(cols as i32))
             .with_default_power_rail_ties()
     }
 
@@ -1313,8 +1313,8 @@ pub fn standard_power_rails(cols: i32) -> PowerRails {
 /// 800 预设的电源轨: 左右各留 2 格空, 中间按 6-col 节拍排 5-孔 group
 /// (e.g. cols=63: x=2..60 排 10 个 5-孔 group, 间隔 1 空)。
 /// 与 [`standard_power_rails`] 唯一区别: 这里从 `start = 2` 开始, 终点上限是 `cols - 3`。
-pub fn wide_power_rails_800(cols: i32) -> PowerRails {
-    assert!(cols >= 4, "800 preset 需要 cols >= 4 (左右各留 2 格)");
+pub fn wide_power_rails_830(cols: i32) -> PowerRails {
+    assert!(cols >= 4, "830 preset 需要 cols >= 4 (左右各留 2 格)");
     let margin: i32 = 2;
     let mut groups: Vec<RangeInclusive<i32>> = Vec::new();
     let mut start = margin;
@@ -1547,7 +1547,7 @@ mod tests {
 
     #[test]
     fn preset_power_rail_ties_use_the_rightmost_available_column() {
-        for board in [Preset::Hole400.make(30), Preset::Hole800.make(63)] {
+        for board in [Preset::Hole400.make(30), Preset::Hole830.make(63)] {
             let rightmost = board.power_rails().unwrap().top.rows[0]
                 .columns()
                 .max()
@@ -1562,8 +1562,8 @@ mod tests {
     }
 
     #[test]
-    fn preset_800_has_exactly_two_top_bottom_ties() {
-        let b = Breadboard::preset_800(63);
+    fn preset_830_has_exactly_two_top_bottom_ties() {
+        let b = Breadboard::preset_830(63);
         assert_eq!(b.rail_ties().len(), 2);
         for polarity in [Polarity::Negative, Polarity::Positive] {
             let [top, bottom] = b.power_rail_anchors(polarity).unwrap();
@@ -1801,7 +1801,7 @@ mod tests {
     }
 
     // ============================================================
-    //  预设板 (preset_170 / preset_400 / preset_800)
+    //  预设板 (preset_170 / preset_400 / preset_830)
     // ============================================================
 
     #[test]
@@ -1840,8 +1840,8 @@ mod tests {
     }
 
     #[test]
-    fn preset_800_default_63_cols_has_2_col_margins() {
-        let b = Breadboard::preset_800(63);
+    fn preset_830_default_63_cols_has_2_col_margins() {
+        let b = Breadboard::preset_830(63);
         assert_eq!(b.cols(), 63);
         assert_eq!(b.main_rows(), 12);
         assert_eq!(b.blocked_rows(), vec![5, 6]);
@@ -1860,8 +1860,8 @@ mod tests {
     }
 
     #[test]
-    fn preset_800_with_50_cols_still_has_margins() {
-        let b = Breadboard::preset_800(50);
+    fn preset_830_with_50_cols_still_has_margins() {
+        let b = Breadboard::preset_830(50);
         assert_eq!(b.cols(), 50);
         let pr = b.power_rails().unwrap();
         for rail in pr.top.rows.iter().chain(pr.bottom.rows.iter()) {
@@ -1871,9 +1871,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "800 preset 需要 cols >= 4")]
-    fn preset_800_panics_with_cols_too_small() {
-        let _ = Breadboard::preset_800(3);
+    #[should_panic(expected = "830 preset 需要 cols >= 4")]
+    fn preset_830_panics_with_cols_too_small() {
+        let _ = Breadboard::preset_830(3);
     }
 
     // ============================================================
@@ -1884,26 +1884,26 @@ mod tests {
     fn preset_enum_dispatches_to_right_constructor() {
         assert_eq!(Preset::Hole170.make(17).len(), 170);
         assert_eq!(Preset::Hole400.make(30).len(), 400);
-        assert_eq!(Preset::Hole800.make(63).len(), 830);
+        assert_eq!(Preset::Hole830.make(63).len(), 830);
         // 改 cols 走同一预设仍 OK
         assert_eq!(Preset::Hole400.make(50).len(), 668);
-        // wide_power_rails_800(50): 7 组 5 孔 + 1 组 4 孔 = 39 孔/行 × 4 行 = 156 rail
-        assert_eq!(Preset::Hole800.make(50).len(), 500 + 156);
+        // wide_power_rails_830(50): 7 组 5 孔 + 1 组 4 孔 = 39 孔/行 × 4 行 = 156 rail
+        assert_eq!(Preset::Hole830.make(50).len(), 500 + 156);
     }
 
     #[test]
     fn preset_default_cols_match_naming() {
         assert_eq!(Preset::Hole170.default_cols(), 17);
         assert_eq!(Preset::Hole400.default_cols(), 30);
-        assert_eq!(Preset::Hole800.default_cols(), 63);
+        assert_eq!(Preset::Hole830.default_cols(), 63);
         assert_eq!(Preset::Hole170.inter_board_gap_cols(), 2);
         assert_eq!(Preset::Hole400.inter_board_gap_cols(), 3);
-        assert_eq!(Preset::Hole800.inter_board_gap_cols(), 3);
+        assert_eq!(Preset::Hole830.inter_board_gap_cols(), 3);
     }
 
     #[test]
-    fn repeated_800_preset_restarts_physical_rail_margins_on_each_board() {
-        let board = Preset::Hole800.make_repeated(2);
+    fn repeated_830_preset_restarts_physical_rail_margins_on_each_board() {
+        let board = Preset::Hole830.make_repeated(2);
         let rail = &board.power_rails().unwrap().top.rows[0];
 
         assert!(rail.contains(60));
@@ -1928,7 +1928,7 @@ mod tests {
 
     #[test]
     fn repeated_presets_leave_their_configured_unusable_columns_between_boards() {
-        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
             let board_cols = preset.default_cols();
             let gap_cols = preset.inter_board_gap_cols();
             let board = preset.make_repeated(2);
@@ -1956,7 +1956,7 @@ mod tests {
 
     #[test]
     fn repeated_upper_half_presets_keep_only_each_top_half() {
-        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
             let board = preset.make_repeated_upper_half(3);
             let gap_cols = preset.inter_board_gap_cols();
             assert_eq!(board.cols(), preset.default_cols() * 3 + gap_cols * 2);
@@ -1978,7 +1978,7 @@ mod tests {
     fn preset_name_is_stable_label() {
         assert_eq!(Preset::Hole170.name(), "170");
         assert_eq!(Preset::Hole400.name(), "400");
-        assert_eq!(Preset::Hole800.name(), "800");
+        assert_eq!(Preset::Hole830.name(), "800");
     }
 
     #[test]
@@ -2000,7 +2000,7 @@ mod tests {
 
     #[test]
     fn upper_half_preset_blocks_the_entire_lower_main_region() {
-        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
             let board = preset.make_upper_half(30);
 
             for y in 0..5 {
@@ -2017,9 +2017,9 @@ mod tests {
     }
 
     #[test]
-    fn board_800_has_same_rail_names_as_400() {
+    fn board_830_has_same_rail_names_as_400() {
         let a = Breadboard::preset_400(30);
-        let b = Breadboard::preset_800(63);
+        let b = Breadboard::preset_830(63);
         assert_eq!(a.positive_names(), b.positive_names());
         assert_eq!(a.negative_names(), b.negative_names());
     }

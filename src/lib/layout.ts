@@ -1,4 +1,4 @@
-export type BreadboardPreset = "hole170" | "hole400" | "hole800";
+export type BreadboardPreset = "hole170" | "hole400" | "hole830";
 
 export type BreadboardSelection = {
   preset: BreadboardPreset;

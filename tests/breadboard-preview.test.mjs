@@ -49,7 +49,7 @@ test("global columns map to consecutive physical breadboards", () => {
 test("breadboard presets expose their physical inter-board spacing", () => {
   assert.equal(interBoardGapColumns("hole170"), 2);
   assert.equal(interBoardGapColumns("hole400"), 3);
-  assert.equal(interBoardGapColumns("hole800"), 3);
+  assert.equal(interBoardGapColumns("hole830"), 3);
 
   assert.equal(boardIndexForColumn(16, 17, 2), 0);
   assert.equal(boardIndexForColumn(19, 17, 2), 1);
@@ -70,8 +70,8 @@ test("400-hole power rails restart symmetrically on every board", () => {
 });
 
 test("800-hole power rails keep two local columns clear on both sides of every board", () => {
-  const first = railColumnsForBoard("hole800", 63, 3, 0);
-  const second = railColumnsForBoard("hole800", 63, 3, 1);
+  const first = railColumnsForBoard("hole830", 63, 3, 0);
+  const second = railColumnsForBoard("hole830", 63, 3, 1);
 
   assert.equal(first[0], 2);
   assert.equal(first.at(-1), 60);

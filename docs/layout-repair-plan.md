@@ -238,7 +238,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 构造器 `breadboard.rs:311` 只按 polarity 分配两个 rail_id，使同极性的同一行、top 和 bottom 全部共享 id。跨 group 共享 id 是正确的板内连通；top/bottom 共享 id 则把外部短接伪装成板内连通。`connected_to`、MST、conflict validation、bridge matching 和 router 因而无法区分“同一行天然导通”和“上下轨由跳线连接”。现有跨 group 连通测试应保留；要求 top/bottom 无条件共享 rail 的测试应由显式 `RailTie` 场景替换。
 
-产品决定见 `docs/adr/power-rail-connectivity.md`：采用独立 top/bottom islands，并在 400/800 preset 中为 negative 和 positive 各物化一条默认 top/bottom `RailTie`。同一行不生成 group 间 tie。
+产品决定见 `docs/adr/power-rail-connectivity.md`：采用独立 top/bottom islands，并在 400/830 preset 中为 negative 和 positive 各物化一条默认 top/bottom `RailTie`。同一行不生成 group 间 tie。
 
 受影响路径：`Breadboard::connected_to`、`rail_id_of`、cost MST/congestion/rail conflict、bridge 候选 matching、router 的 net dedup/empty-hole 选择、最终 wire 数、GUI 结果图。
 
@@ -359,7 +359,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 - 前置：无。
 - 最小验收场景：记录 T09 的期望答案——同一电源轨行的各 5 孔 group 天然导通，默认无 tie 时 top/bottom 独立；如果产品假设预接线，列出每一条默认 `RailTie` 以及 UI 如何展示。
 - 允许修改范围：仅 ADR/产品文档；本阶段不改 Rust/测试。
-- 完成条件：**已完成**。`docs/adr/power-rail-connectivity.md` 已明确 `ConductiveIsland`、`bound_net`、`RailTie` 三者语义；每条完整电源轨行是一个 island；400/800 preset 默认各有两条 top/bottom ties。
+- 完成条件：**已完成**。`docs/adr/power-rail-connectivity.md` 已明确 `ConductiveIsland`、`bound_net`、`RailTie` 三者语义；每条完整电源轨行是一个 island；400/830 preset 默认各有两条 top/bottom ties。
 
 ### R1. 纠正 conductive-island / RailTie 基础模型
 
@@ -367,7 +367,7 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 - 对应：A9；为 A5、A3、A7 的最终语义打基础。
 - 最小失败测试：T09；旧的“同 polarity 全共享 rail_id”测试必须按 R0 决定替换，不能简单删除断言。
 - 允许修改范围：`src/layout/{breadboard,mod,routing,prepare}.rs`，以及因新连通 API 必须同步的 `src/layout/cost/{mst,context,cost_fast,bridge}.rs`；若 R0 选择显式 ties，可改 `src-tauri/src/{lib,compute}.rs`、`src/lib/components/{Step2SelectBoard,BreadboardPreview,Step4Result}.svelte` 和 `src/lib/i18n.ts`。不得改 SA move/temperature。
-- 完成条件：物理内部连通只由 island 表示；同一电源轨行跨 5 孔 group 天然导通；top/bottom 外部连接只由 RailTie 表示；cost、occupancy、router 对同一 effective connectivity graph 给出一致答案；400/800 的行内连通及 top/bottom tie 测试通过。
+- 完成条件：物理内部连通只由 island 表示；同一电源轨行跨 5 孔 group 天然导通；top/bottom 外部连接只由 RailTie 表示；cost、occupancy、router 对同一 effective connectivity graph 给出一致答案；400/830 的行内连通及 top/bottom tie 测试通过。
 
 ### R2. 收紧 public legality：Bridged bijection + rail binding
 

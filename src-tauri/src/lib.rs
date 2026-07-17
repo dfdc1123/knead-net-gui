@@ -231,7 +231,7 @@ fn preset_from_str(s: &str) -> Result<knead_net::layout::Preset, String> {
     match s {
         "hole170" => Ok(Preset::Hole170),
         "hole400" => Ok(Preset::Hole400),
-        "hole800" => Ok(Preset::Hole800),
+        "hole830" => Ok(Preset::Hole830),
         other => Err(format!("未知预设: {other}")),
     }
 }
@@ -402,14 +402,14 @@ mod tests {
             400
         );
         assert_eq!(
-            make_breadboards(Preset::Hole800, 1, false).unwrap().cols(),
+            make_breadboards(Preset::Hole830, 1, false).unwrap().cols(),
             63
         );
     }
 
     #[test]
     fn automatic_board_counts_scale_each_preset_through_four_boards() {
-        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
             for board_count in 1..=MAX_BOARD_COUNT {
                 let board = make_breadboards(preset, board_count, false).unwrap();
                 assert_eq!(
@@ -420,7 +420,7 @@ mod tests {
             }
         }
         assert_eq!(
-            make_breadboards(Preset::Hole800, 4, false).unwrap().cols(),
+            make_breadboards(Preset::Hole830, 4, false).unwrap().cols(),
             261
         );
     }
@@ -432,8 +432,8 @@ mod tests {
     }
 
     #[test]
-    fn repeated_800_boards_restart_power_rail_margins_around_the_inter_board_gap() {
-        let board = make_breadboards(Preset::Hole800, 2, false).unwrap();
+    fn repeated_830_boards_restart_power_rail_margins_around_the_inter_board_gap() {
+        let board = make_breadboards(Preset::Hole830, 2, false).unwrap();
 
         for col in [60, 68, 126] {
             assert!(board.at(col, -4).is_some(), "rail hole missing at {col}");
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn upper_half_multi_boards_have_no_lower_main_holes_or_rail_ties() {
-        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole830] {
             let board = make_breadboards(preset, MAX_BOARD_COUNT, true).unwrap();
             assert!(board.at(0, 4).is_some());
             assert!(board.at((board.cols() - 1) as i32, 4).is_some());

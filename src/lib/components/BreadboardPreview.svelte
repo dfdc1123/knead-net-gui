@@ -762,7 +762,7 @@
     viewBox="0 0 {boardWidth} {boardHeight}"
     style:overflow="visible"
     role="img"
-    aria-label={ui.boardPreview.preview(preset === "hole170" ? ui.boardPreview.hole170 : preset === "hole400" ? ui.boardPreview.hole400 : ui.boardPreview.hole800)}
+    aria-label={ui.boardPreview.preview(preset === "hole170" ? ui.boardPreview.hole170 : preset === "hole400" ? ui.boardPreview.hole400 : ui.boardPreview.hole830)}
     class="block max-w-none"
   >
     {#each boards as boardIndex}

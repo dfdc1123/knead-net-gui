@@ -29,7 +29,7 @@
   const PRESETS: { id: BreadboardPreset; name: string; defaultCols: number }[] = [
     { id: "hole170", name: ui.step2.holes(170), defaultCols: 17 },
     { id: "hole400", name: ui.step2.holes(400), defaultCols: 30 },
-    { id: "hole800", name: ui.step2.holes(800), defaultCols: 63 },
+    { id: "hole830", name: ui.step2.holes(800), defaultCols: 63 },
   ];
 
   let preset = $state<BreadboardPreset>("hole400");

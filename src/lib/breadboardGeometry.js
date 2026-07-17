@@ -2,7 +2,7 @@
 
 export const INTER_BOARD_GAP_COLS = 3;
 
-/** @param {"hole170" | "hole400" | "hole800"} preset */
+/** @param {"hole170" | "hole400" | "hole830"} preset */
 export function interBoardGapColumns(preset) {
   return preset === "hole170" ? 2 : INTER_BOARD_GAP_COLS;
 }
@@ -56,14 +56,14 @@ export function globalColumnX(column, boardCols, gapCols, pitch, xInset, boardGa
 
 /**
  * Global power-rail columns for one physical board. Rail cadence always restarts locally.
- * @param {"hole170" | "hole400" | "hole800"} preset
+ * @param {"hole170" | "hole400" | "hole830"} preset
  * @param {number} boardCols
  * @param {number} gapCols
  * @param {number} boardIndex
  */
 export function railColumnsForBoard(preset, boardCols, gapCols, boardIndex) {
   if (preset === "hole170") return [];
-  const margin = preset === "hole800" ? 2 : 0;
+  const margin = preset === "hole830" ? 2 : 0;
   const boardStart = boardIndex * (boardCols + gapCols);
   const result = [];
   for (let start = margin; start < boardCols - margin; start += 6) {

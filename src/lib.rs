@@ -24,5 +24,5 @@ pub use layout::{
     PowerRailMatch, PowerRailSide, PowerRails, PowerStrip, Preset, ProgressOptions, Region,
     Rotation, Router, SAConfig, Weights, Wire, WireId, prepare_for_layout,
     prepare_for_layout_with_individual_power_nets, prepare_for_layout_with_power_nets,
-    spectral_debug_positions, standard_power_rails, wide_power_rails_800,
+    spectral_debug_positions, standard_power_rails, wide_power_rails_830,
 };

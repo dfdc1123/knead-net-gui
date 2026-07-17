@@ -1,6 +1,6 @@
 # Layout SA 历史 release 性能基线
 
-基准日期：2026-07-15。固定 workload 是 `examples/inputs/h-bridge.kicad_pcb`、800 preset 40 列、spectral 初始化、10 seeds × 5000 attempts、base seed `0xCAFE_F00D`。这些数据由当时的临时调试二进制采集；该二进制已随项目转为纯 GUI 入口而删除，以下结果作为历史基线保留。
+基准日期：2026-07-15。固定 workload 是 `examples/inputs/h-bridge.kicad_pcb`、830 preset 40 列、spectral 初始化、10 seeds × 5000 attempts、base seed `0xCAFE_F00D`。这些数据由当时的临时调试二进制采集；该二进制已随项目转为纯 GUI 入口而删除，以下结果作为历史基线保留。
 
 计时是所有并行 seed 的各阶段累计 CPU 时间，用于比较热点占比，不等同于单次 wall time。质量 gate 是 10-seed cost 分布、最终 placements 与 routing wire 数；系统等价性另由 release T14 连通图回归验证。
 

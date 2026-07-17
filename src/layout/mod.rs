@@ -25,7 +25,7 @@ pub mod sa;
 pub use breadboard::{
     Breadboard, ConductiveIslandId, Hole, HoleId, INTER_BOARD_GAP_COLS, Polarity, PowerRail,
     PowerRailBinding, PowerRailBindings, PowerRailSide, PowerRails, PowerStrip, Preset, RailTie,
-    RailTieError, RailTieId, RailTieSource, Region, standard_power_rails, wide_power_rails_800,
+    RailTieError, RailTieId, RailTieSource, Region, standard_power_rails, wide_power_rails_830,
 };
 pub use cost::{BridgeInitial, BridgePolicy, Weights};
 pub use occupancy::{Occupancy, Occupant};

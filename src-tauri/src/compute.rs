@@ -1560,7 +1560,7 @@ fn last_visible_power_rail_col(
         return None;
     }
     let gap_cols = preset.inter_board_gap_cols();
-    let margin = if preset == Preset::Hole800 { 2 } else { 0 };
+    let margin = if preset == Preset::Hole830 { 2 } else { 0 };
     let mut last = None;
     let mut start = margin;
     while start < board_cols.saturating_sub(margin) {
@@ -1911,9 +1911,9 @@ mod tests {
     }
 
     #[test]
-    fn trimmed_800_frame_moves_visual_rail_ties_to_the_last_visible_board() {
+    fn trimmed_830_frame_moves_visual_rail_ties_to_the_last_visible_board() {
         let circuit = Circuit::empty();
-        let board = Preset::Hole800.make_repeated(2);
+        let board = Preset::Hole830.make_repeated(2);
         let metadata = ComponentMetadataMap::new();
         let frame = snapshot_frame(
             &LayoutSnapshot {
@@ -1924,7 +1924,7 @@ mod tests {
             &board,
             &metadata,
             BoardAllocation {
-                preset: Preset::Hole800,
+                preset: Preset::Hole830,
                 board_cols: 63,
                 board_count: 1,
             },
@@ -1949,7 +1949,7 @@ mod tests {
     #[test]
     fn multi_board_frames_include_logical_gaps_and_local_rail_margins() {
         let circuit = Circuit::empty();
-        let board = Preset::Hole800.make_repeated(2);
+        let board = Preset::Hole830.make_repeated(2);
         let metadata = ComponentMetadataMap::new();
         let frame = snapshot_frame(
             &LayoutSnapshot {
@@ -1960,7 +1960,7 @@ mod tests {
             &board,
             &metadata,
             BoardAllocation {
-                preset: Preset::Hole800,
+                preset: Preset::Hole830,
                 board_cols: 63,
                 board_count: 2,
             },
@@ -1968,7 +1968,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(frame.gap_cols, Preset::Hole800.inter_board_gap_cols());
+        assert_eq!(frame.gap_cols, Preset::Hole830.inter_board_gap_cols());
         assert_eq!(frame.total_cols, 129);
         assert!(frame
             .wires
@@ -2067,7 +2067,7 @@ mod tests {
         occupied.insert(left);
         occupied.insert(right);
 
-        let wide_board = Preset::Hole800.make_repeated(2);
+        let wide_board = Preset::Hole830.make_repeated(2);
         let wide_left =
             find_free_power_hole(&wide_board, -3, 0, 63, true, &HashSet::new()).unwrap();
         let wide_right =
