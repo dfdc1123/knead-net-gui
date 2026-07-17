@@ -45,3 +45,61 @@ jobs:
             Windows 安装包请见下方 Assets。
           releaseDraft: true
           prerelease: false
+
+  publish-aur:
+    name: Publish AUR source package
+    needs: build-windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Prepare the AUR package files
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          pkgver="${RELEASE_TAG#v}"
+          source_url="https://github.com/dfdc1123/knead-net-gui/archive/refs/tags/v${pkgver}.tar.gz"
+          sha256sum="$(curl --fail --location --silent --show-error "$source_url" | sha256sum | awk '{print $1}')"
+
+          mkdir aur-package
+          cp packaging/aur/PKGBUILD packaging/aur/.SRCINFO packaging/aur/knead-net-gui.desktop aur-package/
+          sed -i "s/^pkgver=.*/pkgver=${pkgver}/" aur-package/PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${sha256sum}')/" aur-package/PKGBUILD
+          sed -i "s/^\\tpkgver = .*/\\tpkgver = ${pkgver}/" aur-package/.SRCINFO
+          sed -i "s|^\\tsource = .*|\\tsource = knead-net-gui-${pkgver}.tar.gz::${source_url}|" aur-package/.SRCINFO
+          sed -i "s/^\\tsha256sums = .*/\\tsha256sums = ${sha256sum}/" aur-package/.SRCINFO
+
+      - name: Configure the AUR SSH key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
+
+      - name: Push package metadata to AUR
+        run: |
+          set -euo pipefail
+          # AUR has no Git repository until the first push, so initialize a
+          # local repository and fetch its history only when it already exists.
+          git init -b master aur-repo
+          git -C aur-repo remote add origin ssh://aur@aur.archlinux.org/knead-net-gui.git
+          git -C aur-repo fetch origin master || true
+          if git -C aur-repo show-ref --verify --quiet refs/remotes/origin/master; then
+            git -C aur-repo checkout -B master origin/master
+          fi
+          cp aur-package/PKGBUILD aur-package/.SRCINFO aur-package/knead-net-gui.desktop aur-repo/
+          cd aur-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO knead-net-gui.desktop
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Update to ${GITHUB_REF_NAME}"
+          git push origin HEAD:master

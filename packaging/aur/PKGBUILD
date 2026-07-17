@@ -1,0 +1,28 @@
+# Maintained automatically from GitHub release tags. Do not edit in the AUR clone.
+pkgname=knead-net-gui
+pkgver=0.0.9
+pkgrel=1
+pkgdesc='Desktop GUI for automatic breadboard layout from KiCad schematics'
+arch=('x86_64')
+url='https://github.com/dfdc1123/knead-net-gui'
+license=('GPL-3.0-only')
+depends=('gtk3' 'libayatana-appindicator' 'webkit2gtk-4.1')
+makedepends=('cargo' 'nodejs' 'pnpm' 'rust')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('6c98206997023639d3beaa2ee2e39775a802045d07b73e1451f436a26ea5d86f')
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  pnpm install --frozen-lockfile
+  pnpm tauri build --no-bundle
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+  install -Dm755 target/release/${pkgname} "${pkgdir}/usr/bin/${pkgname}"
+  install -Dm644 src-tauri/icons/128x128.png \
+    "${pkgdir}/usr/share/icons/hicolor/128x128/apps/${pkgname}.png"
+  install -Dm644 "${startdir}/${pkgname}.desktop" \
+    "${pkgdir}/usr/share/applications/${pkgname}.desktop"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

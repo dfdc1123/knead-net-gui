@@ -52,6 +52,12 @@ Windows 用户请在 [GitHub Releases](https://github.com/dfdc1123/knead-net-gui
 
 首次运行时，Windows 可能显示 SmartScreen 提示，因为应用尚未进行代码签名；请确认发布者和下载来源为本项目后继续。
 
+Arch Linux 用户可在 AUR 中安装：
+
+```bash
+yay -S knead-net-gui
+```
+
 ## 从源码运行
 
 目前只提供 Tauri 桌面 GUI，不提供命令行界面。
@@ -117,4 +123,4 @@ knead-net-gui/
 
 - 项目仍在开发中，复杂电路和少见封装可能无法得到理想布局。
 - 结果导出功能尚未完成。
-- Windows 安装包通过 GitHub Releases 提供；其他平台的安装包尚未发布。
+- Windows 安装包通过 GitHub Releases 提供；Arch Linux 源码包通过 AUR 提供。

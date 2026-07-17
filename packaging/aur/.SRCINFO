@@ -1,0 +1,18 @@
+pkgbase = knead-net-gui
+	pkgdesc = Desktop GUI for automatic breadboard layout from KiCad schematics
+	pkgver = 0.0.9
+	pkgrel = 1
+	url = https://github.com/dfdc1123/knead-net-gui
+	arch = x86_64
+	license = GPL-3.0-only
+	makedepends = cargo
+	makedepends = nodejs
+	makedepends = pnpm
+	makedepends = rust
+	depends = gtk3
+	depends = libayatana-appindicator
+	depends = webkit2gtk-4.1
+	source = knead-net-gui-0.0.9.tar.gz::https://github.com/dfdc1123/knead-net-gui/archive/refs/tags/v0.0.9.tar.gz
+	sha256sums = 6c98206997023639d3beaa2ee2e39775a802045d07b73e1451f436a26ea5d86f
+
+pkgname = knead-net-gui
