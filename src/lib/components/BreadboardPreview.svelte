@@ -284,6 +284,65 @@
             ];
   });
   let plannedWires = $derived(planWires(visibleWires));
+  let selectedNetIds = $derived(
+    selected?.type === "net" ? new Set([selected.id]) : new Set<string>(),
+  );
+  let selectedWire = $derived(
+    selected?.type === "wire"
+      ? visibleWires.find((wire) => wire.id === selected.id)
+      : undefined,
+  );
+
+  function wireIsHighlighted(wire: LayoutWire) {
+    return selected?.type === "wire"
+      ? selected.id === wire.id
+      : selected?.type === "net" && selected.id === wire.net_id;
+  }
+
+  function internalConnectionKey(hole: BreadboardHole) {
+    return hole.region.startsWith("main")
+      ? `${hole.region}:${hole.col}`
+      : `${hole.region}:${hole.row}:${Math.floor(hole.col / (safeBoardCols + safeGapCols))}`;
+  }
+
+  let highlightedHoles = $derived.by(() => {
+    if (selectedWire) return [selectedWire.from, selectedWire.to];
+    const holes: BreadboardHole[] = [];
+    if (selectedNetIds.size === 0) return holes;
+    for (const part of frame?.parts ?? []) {
+      holes.push(...part.pins.filter((pin) => pin.net_id && selectedNetIds.has(pin.net_id)).map((pin) => pin.hole));
+    }
+    for (const wire of visibleWires) {
+      if (wire.net_id && selectedNetIds.has(wire.net_id)) holes.push(wire.from, wire.to);
+    }
+    return holes;
+  });
+  let highlightedConnectionKeys = $derived(
+    new Set(highlightedHoles.map(internalConnectionKey)),
+  );
+  let internalConnectionHighlights = $derived.by(() => {
+    const seen = new Set<string>();
+    return highlightedHoles.flatMap((hole) => {
+      const key = internalConnectionKey(hole);
+      if (seen.has(key)) return [];
+      seen.add(key);
+      if (hole.region.startsWith("main")) {
+        const first = holePosition({ ...hole, row: 0 });
+        const last = holePosition({ ...hole, row: 4 });
+        return [{ key, from: first, to: last }];
+      }
+      const boardIndex = Math.floor(hole.col / (safeBoardCols + safeGapCols));
+      const railColumns = railColumnsForBoard(preset, safeBoardCols, safeGapCols, boardIndex);
+      const firstColumn = railColumns[0];
+      const lastColumn = railColumns.at(-1);
+      if (firstColumn === undefined || lastColumn === undefined) return [];
+      return [{
+        key,
+        from: holePosition({ ...hole, col: firstColumn }),
+        to: holePosition({ ...hole, col: lastColumn }),
+      }];
+    });
+  });
 
   function wirePath(plan: PlannedWire) {
     const { from, to } = plan;
@@ -882,6 +941,22 @@
     {/each}
 
     {#if frame || plannedWires.length > 0}
+      {#if internalConnectionHighlights.length > 0}
+        <g aria-label="Highlighted breadboard connections" pointer-events="none">
+          {#each internalConnectionHighlights as connection (connection.key)}
+            <path
+              data-net={selected?.type === "net" ? selected.id : undefined}
+              d={`M ${connection.from.x} ${connection.from.y} L ${connection.to.x} ${connection.to.y}`}
+              fill="none"
+              stroke="var(--color-warning)"
+              stroke-width="3"
+              stroke-linecap="round"
+              opacity="0.72"
+            />
+          {/each}
+        </g>
+      {/if}
+
       <g aria-label={ui.boardPreview.wires}>
         {#each plannedWires as planned (planned.wire.id)}
           {@const wire = planned.wire}
@@ -889,6 +964,8 @@
           {@const completed = completedWireIds.includes(wire.id)}
           <g
             class="cursor-pointer"
+            data-wire={wire.id}
+            data-net={wire.net_id}
             role="button"
             tabindex="0"
             aria-label={ui.boardPreview.selectWire(wire.net_name ?? wire.net_id ?? wire.id)}
@@ -901,7 +978,7 @@
               d={path}
               fill="none"
               stroke={wire.kind === "air" ? "var(--color-neutral)" : wire.color ?? "var(--color-primary)"}
-              stroke-width={(selected?.type === "wire" && selected.id === wire.id) || (selected?.type === "net" && selected.id === wire.net_id) ? 5 : completed ? 3 : wire.kind === "rail-tie" ? 2.8 : wire.kind === "routed" || wire.kind === "rail-link" ? 2.2 : 1.2}
+              stroke-width={completed ? 3 : wire.kind === "rail-tie" ? 2.8 : wire.kind === "routed" || wire.kind === "rail-link" ? 2.2 : 1.2}
               stroke-dasharray={solidWires ? undefined : wire.kind === "air" || !completed ? "5 4" : undefined}
               stroke-linecap="round"
               opacity={selected ? ((selected.type === "wire" && selected.id === wire.id) || (selected.type === "net" && selected.id === wire.net_id) ? 1 : 0.14) : solidWires ? 0.95 : completed ? 0.95 : 0.38}
@@ -927,6 +1004,7 @@
           {@const label = plannedPartLabels.get(part.id) ?? { x: bounds.cx, y: bounds.cy }}
           <g
             class="cursor-pointer transition-opacity"
+            data-component={part.reference}
             role="button"
             tabindex="0"
             aria-label={ui.boardPreview.selectComponent(part.reference)}
@@ -997,18 +1075,18 @@
                   width="4.2"
                   height="4.2"
                   rx="0.55"
-                  fill={selected?.type === "net" && selected.id === pin.net_id ? "var(--color-warning)" : "var(--color-base-100)"}
-                  stroke="var(--color-warning-content)"
-                  stroke-width="0.8"
+                  fill="var(--color-base-100)"
+                  stroke={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? "var(--color-warning)" : "var(--color-warning-content)"}
+                  stroke-width={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? 1.6 : 0.8}
                 />
               {:else}
                 <circle
                   cx={point.x}
                   cy={point.y}
-                  r={selected?.type === "net" && selected.id === pin.net_id ? 4 : 2.4}
-                  fill={selected?.type === "net" && selected.id === pin.net_id ? "var(--color-warning)" : "var(--color-base-100)"}
-                  stroke="var(--color-neutral)"
-                  stroke-width="0.8"
+                  r={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? 3.7 : 2.4}
+                  fill="var(--color-base-100)"
+                  stroke={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? "var(--color-warning)" : "var(--color-neutral)"}
+                  stroke-width={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? 1.6 : 0.8}
                 />
               {/if}
               <title>{part.reference} pin {pinLabelText(pin)}</title>
@@ -1062,11 +1140,38 @@
         {/each}
       </g>
 
+      {#if selected?.type === "wire" || selected?.type === "net"}
+        <g aria-label="Selected wires" pointer-events="none">
+          {#each plannedWires.filter((planned) => wireIsHighlighted(planned.wire)) as planned (planned.wire.id)}
+            <path
+              d={wirePath(planned)}
+              fill="none"
+              stroke="var(--color-warning)"
+              stroke-width="4.4"
+              stroke-linecap="round"
+              opacity="0.9"
+            />
+            <path
+              d={wirePath(planned)}
+              fill="none"
+              stroke={planned.wire.kind === "air" ? "var(--color-neutral)" : planned.wire.color ?? "var(--color-primary)"}
+              stroke-width={planned.wire.kind === "rail-tie" ? 2.8 : planned.wire.kind === "routed" || planned.wire.kind === "rail-link" ? 2.2 : 1.8}
+              stroke-dasharray={solidWires ? undefined : planned.wire.kind === "air" || !completedWireIds.includes(planned.wire.id) ? "5 4" : undefined}
+              stroke-linecap="round"
+            />
+          {/each}
+        </g>
+      {/if}
+
       {#if selected?.type === "component"}
         {@const selectedPart = frame.parts.find((part) => part.reference === selected.id)}
         {#if selectedPart}
           {@const pinLabels = planSelectedPinLabels(selectedPart)}
-          <g aria-label={ui.boardPreview.pinDefinitions(selectedPart.reference)} pointer-events="none">
+          <g
+            data-component={selectedPart.reference}
+            aria-label={ui.boardPreview.pinDefinitions(selectedPart.reference)}
+            pointer-events="none"
+          >
             <!-- 所有引线统一置于标签下层，并只画到标签边框，避免穿过任何标签。 -->
             <g aria-hidden="true">
               {#each pinLabels as pinLabel}
