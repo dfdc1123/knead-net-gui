@@ -16,6 +16,8 @@ use std::fs;
 use knead_net::input::pcb::parse_pcb;
 
 const SCALE: f64 = 10.0;
+const PIN_TEXT_MARGIN: f64 = 0.1016;
+const DEFAULT_TEXT_STROKE_WIDTH: f64 = 0.1524;
 
 // KiCad 默认浅色原理图主题的核心配色。将颜色集中在这里，既避免 SVG
 // 各处逐渐出现不一致的魔法值，也方便以后支持可切换主题。
@@ -132,6 +134,22 @@ struct Property {
     hide: bool,
     show_name: bool,
     font_size: f64,
+    h_align: TextHAlign,
+    v_align: TextVAlign,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextHAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextVAlign {
+    Top,
+    Center,
+    Bottom,
 }
 
 #[derive(Debug, Clone)]
@@ -382,11 +400,31 @@ fn extract_pin_text_settings(symbol: &Value) -> PinTextSettings {
     settings
 }
 
+fn text_justification(value: &Value) -> (TextHAlign, TextVAlign) {
+    let Some(justify) = child(value, "effects").and_then(|effects| child(effects, "justify"))
+    else {
+        return (TextHAlign::Center, TextVAlign::Center);
+    };
+    let mut horizontal = TextHAlign::Center;
+    let mut vertical = TextVAlign::Center;
+    for token in list_items(justify).skip(1).filter_map(as_symbol) {
+        match token {
+            "left" => horizontal = TextHAlign::Left,
+            "right" => horizontal = TextHAlign::Right,
+            "top" => vertical = TextVAlign::Top,
+            "bottom" => vertical = TextVAlign::Bottom,
+            _ => {}
+        }
+    }
+    (horizontal, vertical)
+}
+
 fn parse_property(property: &Value) -> Property {
     let mut iter = list_items(property);
     let _ = iter.next();
     let key = iter.next().and_then(as_str).unwrap_or_default();
     let value = iter.next().and_then(as_str).unwrap_or_default();
+    let (h_align, v_align) = text_justification(property);
     Property {
         key,
         value,
@@ -396,6 +434,8 @@ fn parse_property(property: &Value) -> Property {
         hide: is_hidden(property),
         show_name: token_bool(property, "show_name") == Some(true),
         font_size: text_font_size(property).unwrap_or(1.27),
+        h_align,
+        v_align,
     }
 }
 
@@ -899,6 +939,73 @@ fn to_svg(gx: f64, gy: f64, ox: f64, oy: f64) -> (f64, f64) {
     ((gx - ox) * SCALE, (gy - oy) * SCALE)
 }
 
+fn is_vertical_text_angle(angle: f64) -> bool {
+    let normalized = angle.rem_euclid(180.0);
+    (normalized - 90.0).abs() < 1e-9
+}
+
+fn transform_text_vector(vector: (f64, f64), inst: &Inst) -> (f64, f64) {
+    let rad = inst.at.2 * std::f64::consts::PI / 180.0;
+    let (s, c) = rad.sin_cos();
+    let mut x = vector.0 * c - vector.1 * s;
+    let mut y = vector.0 * s + vector.1 * c;
+    if inst.mirror_x {
+        y = -y;
+    }
+    if inst.mirror_y {
+        x = -x;
+    }
+    (x, -y)
+}
+
+fn property_text_layout(prop: &Property, inst: &Inst) -> (bool, TextHAlign, TextVAlign) {
+    let source_vertical = is_vertical_text_angle(prop.at.2);
+    let symbol_quarter_turned = is_vertical_text_angle(inst.at.2);
+    let draw_vertical = source_vertical ^ symbol_quarter_turned;
+
+    let source_text_direction = if source_vertical {
+        (0.0, 1.0)
+    } else {
+        (1.0, 0.0)
+    };
+    let transformed_text_direction = transform_text_vector(source_text_direction, inst);
+    let canonical_text_direction = if draw_vertical {
+        (0.0, -1.0)
+    } else {
+        (1.0, 0.0)
+    };
+    let flip_horizontal = transformed_text_direction.0 * canonical_text_direction.0
+        + transformed_text_direction.1 * canonical_text_direction.1
+        < 0.0;
+
+    let source_down_direction = if source_vertical {
+        (-1.0, 0.0)
+    } else {
+        (0.0, -1.0)
+    };
+    let transformed_down_direction = transform_text_vector(source_down_direction, inst);
+    let canonical_down_direction = if draw_vertical {
+        (-1.0, 0.0)
+    } else {
+        (0.0, 1.0)
+    };
+    let flip_vertical = transformed_down_direction.0 * canonical_down_direction.0
+        + transformed_down_direction.1 * canonical_down_direction.1
+        < 0.0;
+
+    let h_align = match (prop.h_align, flip_horizontal) {
+        (TextHAlign::Left, true) => TextHAlign::Right,
+        (TextHAlign::Right, true) => TextHAlign::Left,
+        (alignment, _) => alignment,
+    };
+    let v_align = match (prop.v_align, flip_vertical) {
+        (TextVAlign::Top, true) => TextVAlign::Bottom,
+        (TextVAlign::Bottom, true) => TextVAlign::Top,
+        (alignment, _) => alignment,
+    };
+    (draw_vertical, h_align, v_align)
+}
+
 // ─────────────────────────── BBox ───────────────────────────
 
 fn polyline_bbox(
@@ -1344,6 +1451,47 @@ fn render_graphic(svg: &mut String, g: &Graphic, inst: &Inst, ox: f64, oy: f64) 
     }
 }
 
+fn pin_name_position(start: (f64, f64), end: (f64, f64), name_offset: f64) -> Option<(f64, f64)> {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let length = dx.hypot(dy);
+    if length <= f64::EPSILON {
+        return None;
+    }
+    let direction = (dx / length, dy / length);
+    // In KiCad, a zero pin-name offset is a distinct display mode: names are
+    // centered beside the pin, above horizontal pins and left of vertical pins.
+    // A non-zero offset instead puts the name inside the symbol body.
+    if name_offset.abs() <= f64::EPSILON {
+        let midpoint = ((start.0 + end.0) / 2.0, (start.1 + end.1) / 2.0);
+        let outside_offset = (PIN_TEXT_MARGIN + DEFAULT_TEXT_STROKE_WIDTH) * SCALE;
+        if direction.1.abs() > direction.0.abs() {
+            Some((midpoint.0 - outside_offset, midpoint.1))
+        } else {
+            Some((midpoint.0, midpoint.1 - outside_offset))
+        }
+    } else {
+        let spacing = name_offset * SCALE;
+        Some((end.0 + direction.0 * spacing, end.1 + direction.1 * spacing))
+    }
+}
+
+fn pin_name_text_anchor(name_offset: f64, direction: (f64, f64)) -> &'static str {
+    if name_offset.abs() <= f64::EPSILON {
+        "middle"
+    } else if direction.1.abs() <= direction.0.abs() {
+        if direction.0 >= 0.0 {
+            "start"
+        } else {
+            "end"
+        }
+    } else if direction.1 >= 0.0 {
+        "end"
+    } else {
+        "start"
+    }
+}
+
 fn render_pin_labels(svg: &mut String, pin: &Pin, start: (f64, f64), end: (f64, f64)) {
     let dx = end.0 - start.0;
     let dy = end.1 - start.1;
@@ -1355,36 +1503,27 @@ fn render_pin_labels(svg: &mut String, pin: &Pin, start: (f64, f64), end: (f64, 
 
     if pin.name_text.visible && !pin.name.is_empty() {
         let font_size = pin.name_text.font_size * SCALE;
-        let spacing = pin.name_offset * SCALE + font_size * 0.15;
-        let x = end.0 + direction.0 * spacing;
-        let y = end.1 + direction.1 * spacing;
+        let (x, y) = pin_name_position(start, end, pin.name_offset)
+            .expect("non-zero-length pins have a label position");
         let vertical = direction.1.abs() > direction.0.abs();
-        let text_anchor = if !vertical {
-            if direction.0 >= 0.0 {
-                "start"
-            } else {
-                "end"
-            }
-        } else {
-            "start"
-        };
+        let text_anchor = pin_name_text_anchor(pin.name_offset, direction);
         let rotation = if vertical {
-            format!(
-                r#" transform="rotate({:.2} {:.2} {:.2})""#,
-                direction.1.atan2(direction.0).to_degrees(),
-                x,
-                y
-            )
+            format!(r#" transform="rotate({:.2} {:.2} {:.2})""#, -90.0, x, y)
         } else {
             String::new()
         };
         svg.push_str(&format!(
-            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" text-anchor="{}" dominant-baseline="central"{} class="sch-pin-name">{}</text>"##,
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" text-anchor="{}" dominant-baseline="{}"{} class="sch-pin-name">{}</text>"##,
             x,
             y,
             font_size,
             COLOR_PIN,
             text_anchor,
+            if pin.name_offset.abs() <= f64::EPSILON {
+                "alphabetic"
+            } else {
+                "central"
+            },
             rotation,
             render_kicad_text_markup(&pin.name)
         ));
@@ -1616,15 +1755,31 @@ fn render_instance(svg: &mut String, inst: &Inst, libs: &LibMap, ox: f64, oy: f6
         } else {
             COLOR_VALUE
         };
+        let (vertical, h_align, v_align) = property_text_layout(prop, inst);
+        let text_anchor = match h_align {
+            TextHAlign::Left => "start",
+            TextHAlign::Center => "middle",
+            TextHAlign::Right => "end",
+        };
+        let dominant_baseline = match v_align {
+            TextVAlign::Top => "text-before-edge",
+            TextVAlign::Center => "central",
+            TextVAlign::Bottom => "text-after-edge",
+        };
+        let rotation = if vertical {
+            format!(r#" transform="rotate(-90.00 {:.2} {:.2})""#, sx, sy)
+        } else {
+            String::new()
+        };
         svg.push_str(&format!(
-            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" transform="rotate({:.2} {:.2} {:.2})">{}</text>"##,
+            r##"<text x="{:.2}" y="{:.2}" font-family="monospace" font-size="{:.2}" fill="{}" text-anchor="{}" dominant-baseline="{}"{} class="sch-property">{}</text>"##,
             sx,
             sy,
             prop.font_size * SCALE,
             color,
-            -prop.at.2,
-            sx,
-            sy,
+            text_anchor,
+            dominant_baseline,
+            rotation,
             value
         ));
     }
@@ -2337,6 +2492,129 @@ mod tests {
     }
 
     #[test]
+    fn zero_pin_name_offset_places_bjt_names_beside_the_pin() {
+        // H-bridge's BJT symbols use `(pin_names (offset 0))`. KiCad treats
+        // that as a special outside-the-line placement mode, not zero inside
+        // placement: horizontal names are above the midpoint and vertical
+        // names are left of it.
+        let b = pin_name_position((-50.8, 0.0), (-25.4, 0.0), 0.0).unwrap();
+        assert!((b.0 + 38.1).abs() < 1e-9 && (b.1 + 2.54).abs() < 1e-9);
+
+        let c = pin_name_position((25.4, -50.8), (25.4, -25.4), 0.0).unwrap();
+        assert!((c.0 - 22.86).abs() < 1e-9 && (c.1 + 38.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn nonzero_pin_name_offset_uses_root_position_and_directional_anchor() {
+        let down = pin_name_position((0.0, 0.0), (0.0, 25.4), 0.508).unwrap();
+        assert!((down.0).abs() < 1e-9 && (down.1 - 30.48).abs() < 1e-9);
+        assert_eq!(pin_name_text_anchor(0.508, (0.0, 1.0)), "end");
+
+        let up = pin_name_position((0.0, 25.4), (0.0, 0.0), 0.508).unwrap();
+        assert!((up.0).abs() < 1e-9 && (up.1 + 5.08).abs() < 1e-9);
+        assert_eq!(pin_name_text_anchor(0.508, (0.0, -1.0)), "start");
+
+        assert_eq!(pin_name_text_anchor(0.508, (1.0, 0.0)), "start");
+        assert_eq!(pin_name_text_anchor(0.508, (-1.0, 0.0)), "end");
+        assert_eq!(pin_name_text_anchor(0.0, (0.0, 1.0)), "middle");
+    }
+
+    #[test]
+    fn ne555_vertical_power_pin_names_match_kicad_layout() {
+        let root = example_schematic("NE555+CD4017/NE555+CD4017.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let instances = extract_instances(&root);
+        let ne555 = instances
+            .iter()
+            .find(|inst| property_value(inst, "Reference") == Some("U1"))
+            .unwrap();
+        let mut svg = String::new();
+
+        render_instance(&mut svg, ne555, &libs, 0.0, 0.0);
+
+        assert!(svg.contains(
+            r##"x="1320.80" y="855.98" font-family="monospace" font-size="12.70" fill="#840000" text-anchor="end" dominant-baseline="central" transform="rotate(-90.00 1320.80 855.98)" class="sch-pin-name">VCC</text>"##
+        ));
+        assert!(svg.contains(
+            r##"x="1295.40" y="998.22" font-family="monospace" font-size="12.70" fill="#840000" text-anchor="start" dominant-baseline="central" transform="rotate(-90.00 1295.40 998.22)" class="sch-pin-name">GND</text>"##
+        ));
+    }
+
+    #[test]
+    fn mirrored_bjt_vertical_names_match_kicad_svg_positions() {
+        let root = example_schematic("h-bridge/h-bridge.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let instances = extract_instances(&root);
+
+        for (reference, expected_transform) in [
+            ("Q2", "rotate(-90.00 1597.66 825.50)"),
+            ("Q3", "rotate(-90.00 1597.66 1130.30)"),
+        ] {
+            let bjt = instances
+                .iter()
+                .find(|inst| property_value(inst, "Reference") == Some(reference))
+                .unwrap();
+            let mut svg = String::new();
+            render_instance(&mut svg, bjt, &libs, 0.0, 0.0);
+
+            assert!(
+                svg.contains(expected_transform),
+                "{reference} vertical pin name should match KiCad's left-side anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn symbol_properties_follow_instance_rotation_and_mirroring() {
+        let root = example_schematic("h-bridge/h-bridge.kicad_sch");
+        let libs = extract_lib_symbols(&root).unwrap();
+        let instances = extract_instances(&root);
+
+        for reference in ["Q5", "Q6"] {
+            let transistor = instances
+                .iter()
+                .find(|inst| property_value(inst, "Reference") == Some(reference))
+                .unwrap();
+            let reference_property = transistor
+                .properties
+                .iter()
+                .find(|property| property.key == "Reference")
+                .unwrap();
+            let (vertical, h_align, _) = property_text_layout(reference_property, transistor);
+            assert!(!vertical);
+            assert_eq!(h_align, TextHAlign::Right);
+
+            let mut svg = String::new();
+            render_instance(&mut svg, transistor, &libs, 0.0, 0.0);
+            assert!(svg.contains(&format!(
+                r#"text-anchor="end" dominant-baseline="central" class="sch-property">{reference}</text>"#
+            )));
+        }
+
+        let resistor = instances
+            .iter()
+            .find(|inst| property_value(inst, "Reference") == Some("R5"))
+            .unwrap();
+        let reference_property = resistor
+            .properties
+            .iter()
+            .find(|property| property.key == "Reference")
+            .unwrap();
+        let (vertical, h_align, _) = property_text_layout(reference_property, resistor);
+        assert!(!vertical);
+        assert_eq!(h_align, TextHAlign::Center);
+
+        let mut svg = String::new();
+        render_instance(&mut svg, resistor, &libs, 0.0, 0.0);
+        assert!(svg.contains(
+            r##"x="2590.80" y="889.00" font-family="monospace" font-size="12.70" fill="#008484" text-anchor="middle" dominant-baseline="central" class="sch-property">R5</text>"##
+        ));
+        assert!(svg.contains(
+            r##"x="2590.80" y="914.40" font-family="monospace" font-size="12.70" fill="#0000c2" text-anchor="middle" dominant-baseline="central" class="sch-property">220</text>"##
+        ));
+    }
+
+    #[test]
     fn extracts_meaningful_multi_unit_pin_metadata_from_sn4hc00() {
         let text = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2458,6 +2736,8 @@ mod tests {
                     hide: false,
                     show_name: false,
                     font_size: 1.27,
+                    h_align: TextHAlign::Center,
+                    v_align: TextVAlign::Center,
                 },
                 Property {
                     key: "Value".into(),
@@ -2466,6 +2746,8 @@ mod tests {
                     hide: false,
                     show_name: false,
                     font_size: 1.27,
+                    h_align: TextHAlign::Center,
+                    v_align: TextVAlign::Center,
                 },
             ],
         };
@@ -2554,6 +2836,8 @@ mod tests {
                 hide: false,
                 show_name: false,
                 font_size: 1.27,
+                h_align: TextHAlign::Center,
+                v_align: TextVAlign::Center,
             }],
         };
         let libs = HashMap::from([(
