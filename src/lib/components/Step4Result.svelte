@@ -45,6 +45,9 @@
   let breadboardViewportHeight = $state(0);
   let assemblyPanelWidth = $state(360);
   let schematicPanelHeight = $state<number | null>(null);
+  type SelectionSource = "schematic" | "breadboard" | "assembly";
+  let selectionSource = $state<SelectionSource | null>(null);
+  let selectionRevealRequest = 0;
 
   type PanGesture = {
     pointerId: number;
@@ -167,11 +170,13 @@
   let completedTaskCount = $derived(completedPartCount + completedWireCount);
   let assemblyProgress = $derived(taskCount === 0 ? 0 : Math.round((completedTaskCount / taskCount) * 100));
 
-  function choose(next: CircuitSelection | null) {
-    selected =
+  function choose(next: CircuitSelection | null, source: SelectionSource = "assembly") {
+    const nextSelection =
       next && selected?.type === next.type && selected.id === next.id
         ? null
         : next;
+    selected = nextSelection;
+    selectionSource = nextSelection ? source : null;
   }
 
   function clampZoom(zoom: number) {
@@ -510,7 +515,7 @@
   }
 
   function handleSchematicClick(event: MouseEvent) {
-    choose(selectionFromElement(event.target as Element));
+    choose(selectionFromElement(event.target as Element), "schematic");
   }
 
   function syncSchematicHighlight() {
@@ -546,20 +551,44 @@
     };
   }
 
+  function combinedElementBounds(elements: SVGGraphicsElement[]) {
+    return elements
+      .map((element) => element.getBoundingClientRect())
+      .reduce(
+        (combined, rect) => ({
+          left: Math.min(combined.left, rect.left),
+          top: Math.min(combined.top, rect.top),
+          right: Math.max(combined.right, rect.right),
+          bottom: Math.max(combined.bottom, rect.bottom),
+        }),
+        { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
+      );
+  }
+
+  async function fitBreadboardSelection() {
+    const { host, elements } = selectionElements("breadboard");
+    if (!host || elements.length === 0) return;
+
+    const bounds = combinedElementBounds(elements);
+    const viewport = host.getBoundingClientRect();
+    const targetWidth = bounds.right - bounds.left;
+    const targetHeight = bounds.bottom - bounds.top;
+    const availableWidth = Math.max(1, viewport.width - 32);
+    const availableHeight = Math.max(1, viewport.height - 32);
+    if (targetWidth <= availableWidth && targetHeight <= availableHeight) return;
+
+    const fitRatio = Math.min(availableWidth / targetWidth, availableHeight / targetHeight);
+    const nextZoom = clampZoom(breadboardZoom * fitRatio * 0.96);
+    if (nextZoom >= breadboardZoom) return;
+    setDiagramZoom(nextZoom, "breadboard");
+    await tick();
+  }
+
   function revealSelectionInDiagram(target: DiagramTarget) {
     const { host, elements } = selectionElements(target);
     if (!host || elements.length === 0) return;
 
-    const rectangles = elements.map((element) => element.getBoundingClientRect());
-    const bounds = rectangles.reduce(
-      (combined, rect) => ({
-        left: Math.min(combined.left, rect.left),
-        top: Math.min(combined.top, rect.top),
-        right: Math.max(combined.right, rect.right),
-        bottom: Math.max(combined.bottom, rect.bottom),
-      }),
-      { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
-    );
+    const bounds = combinedElementBounds(elements);
     const viewport = host.getBoundingClientRect();
     const fullyVisible =
       bounds.left >= viewport.left && bounds.right <= viewport.right &&
@@ -588,7 +617,12 @@
 
   $effect(() => {
     selected;
-    void tick().then(() => {
+    const source = selectionSource;
+    const request = ++selectionRevealRequest;
+    void tick().then(async () => {
+      if (request !== selectionRevealRequest) return;
+      if (source === "schematic") await fitBreadboardSelection();
+      if (request !== selectionRevealRequest) return;
       revealSelectionInDiagram("schematic");
       revealSelectionInDiagram("breadboard");
     });
@@ -611,6 +645,7 @@
       completedPartIds = [];
       completedWireIds = [];
       selected = null;
+      selectionSource = null;
     }
   });
 </script>
@@ -629,7 +664,14 @@
         <span class="badge badge-outline join-item h-8">{ui.step4.netCount(netCount)}</span>
       </div>
       {#if selected}
-        <button class="btn btn-sm btn-ghost" onclick={() => (selected = null)} aria-label={ui.step4.clearHighlight}>{ui.step4.clearHighlight}</button>
+        <button
+          class="btn btn-sm btn-ghost"
+          onclick={() => {
+            selected = null;
+            selectionSource = null;
+          }}
+          aria-label={ui.step4.clearHighlight}
+        >{ui.step4.clearHighlight}</button>
       {/if}
     </div>
   </header>
@@ -787,7 +829,7 @@
               panCanvas
               {selected}
               {completedWireIds}
-              onSelect={choose}
+              onSelect={(selection) => choose(selection, "breadboard")}
             />
           </div>
         </div>

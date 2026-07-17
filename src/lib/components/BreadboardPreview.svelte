@@ -929,6 +929,7 @@
         <g aria-label="Highlighted breadboard connections" pointer-events="none">
           {#each internalConnectionHighlights as connection (connection.key)}
             <path
+              data-net={selected?.type === "net" ? selected.id : undefined}
               d={`M ${connection.from.x} ${connection.from.y} L ${connection.to.x} ${connection.to.y}`}
               fill="none"
               stroke="var(--color-warning)"
@@ -1150,7 +1151,11 @@
         {@const selectedPart = frame.parts.find((part) => part.reference === selected.id)}
         {#if selectedPart}
           {@const pinLabels = planSelectedPinLabels(selectedPart)}
-          <g aria-label={ui.boardPreview.pinDefinitions(selectedPart.reference)} pointer-events="none">
+          <g
+            data-component={selectedPart.reference}
+            aria-label={ui.boardPreview.pinDefinitions(selectedPart.reference)}
+            pointer-events="none"
+          >
             <!-- 所有引线统一置于标签下层，并只画到标签边框，避免穿过任何标签。 -->
             <g aria-hidden="true">
               {#each pinLabels as pinLabel}
