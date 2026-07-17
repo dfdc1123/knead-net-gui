@@ -57,14 +57,15 @@
     {/if}
     {#if sourceReady && boardReady && board}
       <div class:hidden={step !== 2} class="h-full">
-        <Step3Compute preset={board.preset} boardCols={board.boardCols} upperHalfOnly={board.useUpperHalf && !board.useLowerHalf} onComplete={handleComputeComplete} />
+        <Step3Compute preset={board.preset} boardCols={board.boardCols} useUpperHalf={board.useUpperHalf} useLowerHalf={board.useLowerHalf} onComplete={handleComputeComplete} />
       </div>
     {/if}
     {#if resultReady && board && resultFrame}
       <div class:hidden={step !== 3} class="h-full">
         <Step4Result
           preset={board.preset}
-          upperHalfOnly={board.useUpperHalf && !board.useLowerHalf}
+          useUpperHalf={board.useUpperHalf}
+          useLowerHalf={board.useLowerHalf}
           frame={resultFrame}
           {schematicSvg}
         />

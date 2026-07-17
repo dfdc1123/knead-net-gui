@@ -17,12 +17,14 @@
 
   let {
     preset,
-    upperHalfOnly = false,
+    useUpperHalf = true,
+    useLowerHalf = true,
     frame,
     schematicSvg = "",
   }: {
     preset: BreadboardPreset;
-    upperHalfOnly?: boolean;
+    useUpperHalf?: boolean;
+    useLowerHalf?: boolean;
     frame: LayoutFrame;
     schematicSvg?: string;
   } = $props();
@@ -726,7 +728,8 @@
               boardCols={frame.board_cols}
               boardCount={frame.board_count}
               gapCols={frame.gap_cols}
-              {upperHalfOnly}
+              {useUpperHalf}
+              {useLowerHalf}
               {frame}
               zoom={breadboardZoom}
               fitWidth={breadboardViewportWidth}

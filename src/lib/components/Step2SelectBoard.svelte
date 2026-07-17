@@ -99,8 +99,8 @@
         useUpperHalf,
         useLowerHalf,
         powerNets: {
-          top_positive_net: usePowerRails && topPositiveNet ? topPositiveNet : null,
-          top_negative_net: usePowerRails && topNegativeNet ? topNegativeNet : null,
+          top_positive_net: usePowerRails && useUpperHalf && topPositiveNet ? topPositiveNet : null,
+          top_negative_net: usePowerRails && useUpperHalf && topNegativeNet ? topNegativeNet : null,
           bottom_positive_net: usePowerRails && useLowerHalf && bottomPositiveNet ? bottomPositiveNet : null,
           bottom_negative_net: usePowerRails && useLowerHalf && bottomNegativeNet ? bottomNegativeNet : null,
         },
@@ -199,42 +199,44 @@
         {#if hasPowerRails}
           <fieldset class="fieldset" disabled={busy || !powerOptionsReady}>
             <legend class="fieldset-legend">{ui.step2.powerRailBinding}</legend>
-            <p class="label mt-1 font-semibold">{ui.step2.topPowerRails}</p>
-            <div class="grid grid-cols-2 gap-2">
-              <label class="fieldset-label flex-col items-stretch gap-1" for="top-negative-power-net">
-                <span>{ui.step2.negativeRail}</span>
-                <select
-                  id="top-negative-power-net"
-                  class="select w-full min-w-0 font-mono"
-                  value={topNegativeNet}
-                  onchange={(event) => {
-                    topNegativeNet = event.currentTarget.value;
-                    submitNow();
-                  }}
-                >
-                  <option value="">{ui.step2.unbound}</option>
-                  {#each netNames as net}<option value={net}>{net}</option>{/each}
-                </select>
-              </label>
-              <label class="fieldset-label flex-col items-stretch gap-1" for="top-positive-power-net">
-                <span>{ui.step2.positiveRail}</span>
-                <select
-                  id="top-positive-power-net"
-                  class="select w-full min-w-0 font-mono"
-                  value={topPositiveNet}
-                  onchange={(event) => {
-                    topPositiveNet = event.currentTarget.value;
-                    submitNow();
-                  }}
-                >
-                  <option value="">{ui.step2.unbound}</option>
-                  {#each netNames as net}<option value={net}>{net}</option>{/each}
-                </select>
-              </label>
-            </div>
+            {#if useUpperHalf}
+              <p class="label mt-1 font-semibold">{ui.step2.topPowerRails}</p>
+              <div class="grid grid-cols-2 gap-2">
+                <label class="fieldset-label flex-col items-stretch gap-1" for="top-negative-power-net">
+                  <span>{ui.step2.negativeRail}</span>
+                  <select
+                    id="top-negative-power-net"
+                    class="select w-full min-w-0 font-mono"
+                    value={topNegativeNet}
+                    onchange={(event) => {
+                      topNegativeNet = event.currentTarget.value;
+                      submitNow();
+                    }}
+                  >
+                    <option value="">{ui.step2.unbound}</option>
+                    {#each netNames as net}<option value={net}>{net}</option>{/each}
+                  </select>
+                </label>
+                <label class="fieldset-label flex-col items-stretch gap-1" for="top-positive-power-net">
+                  <span>{ui.step2.positiveRail}</span>
+                  <select
+                    id="top-positive-power-net"
+                    class="select w-full min-w-0 font-mono"
+                    value={topPositiveNet}
+                    onchange={(event) => {
+                      topPositiveNet = event.currentTarget.value;
+                      submitNow();
+                    }}
+                  >
+                    <option value="">{ui.step2.unbound}</option>
+                    {#each netNames as net}<option value={net}>{net}</option>{/each}
+                  </select>
+                </label>
+              </div>
+            {/if}
 
             {#if useLowerHalf}
-              <p class="label mt-2 font-semibold">{ui.step2.bottomPowerRails}</p>
+              <p class="label font-semibold" class:mt-2={useUpperHalf}>{ui.step2.bottomPowerRails}</p>
               <div class="grid grid-cols-2 gap-2">
                 <label class="fieldset-label flex-col items-stretch gap-1" for="bottom-negative-power-net">
                   <span>{ui.step2.negativeRail}</span>
@@ -268,7 +270,9 @@
                 </label>
               </div>
             {/if}
-            <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.powerRailHint}</p>
+            {#if useUpperHalf && useLowerHalf}
+              <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.powerRailHint}</p>
+            {/if}
           </fieldset>
         {/if}
 

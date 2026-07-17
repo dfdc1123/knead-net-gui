@@ -15,12 +15,14 @@
   let {
     preset = "hole400",
     boardCols = 30,
-    upperHalfOnly = false,
+    useUpperHalf = true,
+    useLowerHalf = true,
     onComplete = () => {},
   }: {
     preset?: BreadboardPreset;
     boardCols?: number;
-    upperHalfOnly?: boolean;
+    useUpperHalf?: boolean;
+    useLowerHalf?: boolean;
     onComplete?: (frame: LayoutFrame) => void;
   } = $props();
 
@@ -246,7 +248,8 @@
               boardCount={previewBoardCount}
               gapCols={frame?.gap_cols}
               {frame}
-              {upperHalfOnly}
+              {useUpperHalf}
+              {useLowerHalf}
               panCanvas={false}
               solidWires={phase === "done"}
             />

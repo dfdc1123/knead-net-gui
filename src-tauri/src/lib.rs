@@ -300,8 +300,14 @@ fn set_breadboard(
         board,
         use_upper_half,
         use_lower_half,
-        top_positive_net: has_power_rails.then_some(top_positive_net).flatten(),
-        top_negative_net: has_power_rails.then_some(top_negative_net).flatten(),
+        top_positive_net: use_upper_half
+            .then_some(top_positive_net)
+            .flatten()
+            .filter(|_| has_power_rails),
+        top_negative_net: use_upper_half
+            .then_some(top_negative_net)
+            .flatten()
+            .filter(|_| has_power_rails),
         bottom_positive_net: use_lower_half
             .then_some(bottom_positive_net)
             .flatten()

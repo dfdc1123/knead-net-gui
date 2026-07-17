@@ -24,9 +24,8 @@
     boardCols,
     boardCount = 1,
     gapCols,
-    upperHalfOnly = false,
-    useUpperHalf,
-    useLowerHalf,
+    useUpperHalf = true,
+    useLowerHalf = true,
     frame,
     zoom = 1,
     fitWidth = 0,
@@ -43,7 +42,6 @@
     boardCols: number;
     boardCount?: number;
     gapCols?: number;
-    upperHalfOnly?: boolean;
     useUpperHalf?: boolean;
     useLowerHalf?: boolean;
     frame?: LayoutFrame | null;
@@ -123,8 +121,8 @@
   );
   let boardGap = $derived(visualBoardGap(safeGapCols));
   let isMini = $derived(preset === "hole170");
-  let showUpperHalf = $derived(useUpperHalf ?? true);
-  let showLowerHalf = $derived(useLowerHalf ?? !upperHalfOnly);
+  let showUpperHalf = $derived(useUpperHalf);
+  let showLowerHalf = $derived(useLowerHalf);
   let xInset = $derived(isMini ? 12.2 : 18.2);
   let boards = $derived(range(safeBoardCount));
   let columns = $derived(range(safeBoardCols));
@@ -773,7 +771,7 @@
     width={displayWidth * renderedZoom}
     height={displayHeight * renderedZoom}
     viewBox="0 0 {boardWidth} {boardHeight}"
-    style:overflow="visible"
+    style:overflow={!showUpperHalf && showLowerHalf ? "hidden" : "visible"}
     role="img"
     aria-label={ui.boardPreview.preview(preset === "hole170" ? ui.boardPreview.hole170 : preset === "hole400" ? ui.boardPreview.hole400 : ui.boardPreview.hole830)}
     class="block max-w-none"
@@ -781,10 +779,10 @@
     <g transform="translate(0 {-boardYOffset})">
     {#each boards as boardIndex}
       <g transform="translate({boardIndex * (singleBoardWidth + boardGap)} 0)" data-board-index={boardIndex}>
-        <rect x="0.8" y="0.8" width={singleBoardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
+        <rect x="0.8" y={boardYOffset + 0.8} width={singleBoardWidth - 1.6} height={boardHeight - 1.6} rx="7" fill="var(--color-base-100)" stroke="var(--color-base-300)" stroke-width="1.2" />
 
         {#if isMini}
-          {#if showLowerHalf}
+          {#if showUpperHalf && showLowerHalf}
             <rect x={xInset - 5} y="78.05" width={singleBoardWidth - 2 * xInset + 10} height="12.1" rx="2" fill="var(--color-base-300)" />
             <path d="M {xInset - 5} 78.6 H {singleBoardWidth - xInset + 5}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
@@ -806,7 +804,7 @@
 
           <g aria-hidden="true" fill="var(--color-base-content)" font-family="ui-sans-serif, system-ui, sans-serif" font-size="5.5" font-weight="700" text-anchor="middle">
             {#each columns as column}
-              <text x={xInset + column * pitch} y="8">{physicalColumnNumber(boardIndex * (safeBoardCols + safeGapCols) + column, safeBoardCols, safeGapCols)}</text>
+              <text x={xInset + column * pitch} y={showUpperHalf ? 8 : 92}>{physicalColumnNumber(boardIndex * (safeBoardCols + safeGapCols) + column, safeBoardCols, safeGapCols)}</text>
             {/each}
             {#each mainRows as row}
               <text x="5" y={18.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
@@ -816,8 +814,10 @@
             {/each}
           </g>
         {:else}
-          <path d="M 1 4 H {singleBoardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
-          <path d="M 1 32 H {singleBoardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
+          {#if showUpperHalf}
+            <path d="M 1 4 H {singleBoardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
+            <path d="M 1 32 H {singleBoardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
+          {/if}
           {#if showLowerHalf}
             <path d="M 1 220 H {singleBoardWidth - 1}" stroke="var(--color-primary)" stroke-width="1.4" opacity="0.9" />
             <path d="M 1 248 H {singleBoardWidth - 1}" stroke="var(--color-error)" stroke-width="1.4" opacity="0.9" />
@@ -826,7 +826,7 @@
             <path d="M 1 35 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
 
-          {#if showLowerHalf}
+          {#if showUpperHalf && showLowerHalf}
             <rect x="1" y="118.7" width={singleBoardWidth - 2} height="12" fill="var(--color-base-300)" />
             <path d="M 1 119.2 H {singleBoardWidth - 1} M 1 130.2 H {singleBoardWidth - 1}" stroke="var(--color-base-content)" stroke-opacity="0.3" stroke-width="1" />
           {/if}
@@ -856,8 +856,10 @@
           {/each}
 
           <g font-family="ui-sans-serif, system-ui, sans-serif" font-size="7" font-weight="700" text-anchor="middle">
-            <text x="7" y="14.5" fill="var(--color-primary)">−</text>
-            <text x="7" y="26.5" fill="var(--color-error)">+</text>
+            {#if showUpperHalf}
+              <text x="7" y="14.5" fill="var(--color-primary)">−</text>
+              <text x="7" y="26.5" fill="var(--color-error)">+</text>
+            {/if}
             {#if showLowerHalf}
               <text x="7" y="230.5" fill="var(--color-primary)">−</text>
               <text x="7" y="242.5" fill="var(--color-error)">+</text>
@@ -866,7 +868,7 @@
 
           <g aria-hidden="true" fill="var(--color-base-content)" font-family="ui-sans-serif, system-ui, sans-serif" font-size="5.5" font-weight="700" text-anchor="middle">
             {#each columns as column}
-              <text x={xInset + column * pitch} y="47">{physicalColumnNumber(boardIndex * (safeBoardCols + safeGapCols) + column, safeBoardCols, safeGapCols)}</text>
+              <text x={xInset + column * pitch} y={showUpperHalf ? 47 : 208}>{physicalColumnNumber(boardIndex * (safeBoardCols + safeGapCols) + column, safeBoardCols, safeGapCols)}</text>
             {/each}
             {#each mainRows as row}
               <text x="7" y={60 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>

@@ -266,7 +266,6 @@ pub async fn start_compute(
             pcb_path,
             schematic_metadata,
             preset: board_config.preset,
-            upper_half_only: board_config.use_upper_half && !board_config.use_lower_half,
             use_upper_half: board_config.use_upper_half,
             use_lower_half: board_config.use_lower_half,
             top_positive_net: board_config.top_positive_net,
@@ -306,7 +305,6 @@ struct ComputeJob {
     pcb_path: String,
     schematic_metadata: ComponentMetadataMap,
     preset: String,
-    upper_half_only: bool,
     use_upper_half: bool,
     use_lower_half: bool,
     top_positive_net: Option<String>,
@@ -324,7 +322,6 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
         pcb_path,
         schematic_metadata,
         preset,
-        upper_half_only,
         use_upper_half,
         use_lower_half,
         top_positive_net,
@@ -601,7 +598,8 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
             profile: request.profile,
             config: &config,
             preset,
-            upper_half_only,
+            use_upper_half,
+            use_lower_half,
             attempted_board_count: board_count,
             best_seed,
             best_cost,
@@ -635,7 +633,8 @@ struct FinalDiagnosticContext<'a, 'c> {
     profile: ComputeProfile,
     config: &'a SAConfig,
     preset: Preset,
-    upper_half_only: bool,
+    use_upper_half: bool,
+    use_lower_half: bool,
     attempted_board_count: usize,
     best_seed: u64,
     best_cost: f64,
@@ -719,7 +718,8 @@ fn final_diagnostic_report(context: FinalDiagnosticContext<'_, '_>) -> String {
         profile,
         config,
         preset,
-        upper_half_only,
+        use_upper_half,
+        use_lower_half,
         attempted_board_count,
         best_seed,
         best_cost,
@@ -813,9 +813,10 @@ fn final_diagnostic_report(context: FinalDiagnosticContext<'_, '_>) -> String {
     );
     let _ = writeln!(
         report,
-        "BOARD preset={} upper_half_only={} attempted_boards={} visible_boards={} board_cols={} gap_cols={}",
+        "BOARD preset={} use_upper_half={} use_lower_half={} attempted_boards={} visible_boards={} board_cols={} gap_cols={}",
         preset.name(),
-        upper_half_only,
+        use_upper_half,
+        use_lower_half,
         attempted_board_count,
         visible_board_count,
         board_cols,
@@ -1812,7 +1813,8 @@ mod tests {
             profile: ComputeProfile::Full,
             config: &config,
             preset: Preset::Hole400,
-            upper_half_only: true,
+            use_upper_half: true,
+            use_lower_half: false,
             attempted_board_count: 1,
             best_seed: 123,
             best_cost: 45.5,
@@ -1830,7 +1832,7 @@ mod tests {
         assert!(report.ends_with("===== KNEAD-NET FINAL DIAGNOSTIC END =====\n"));
         assert!(report.contains("profile=full"));
         assert!(report.contains("best_seed=123"));
-        assert!(report.contains("upper_half_only=true"));
+        assert!(report.contains("use_upper_half=true use_lower_half=false"));
         assert!(report.contains("raw_routed_wires=0 gui_non_air_wires=0"));
         assert!(report.contains("raw_split_net_count=0"));
         assert!(report.contains("gui_split_net_count=0"));
