@@ -389,7 +389,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use knead_net::layout::Preset;
+    use knead_net::layout::{Preset, INTER_BOARD_GAP_COLS};
 
     #[test]
     fn valid_breadboard_dimensions_are_still_accepted() {
@@ -412,12 +412,16 @@ mod tests {
         for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
             for board_count in 1..=MAX_BOARD_COUNT {
                 let board = make_breadboards(preset, board_count, false).unwrap();
-                assert_eq!(board.cols(), preset.default_cols() * board_count);
+                assert_eq!(
+                    board.cols(),
+                    preset.default_cols() * board_count
+                        + INTER_BOARD_GAP_COLS * board_count.saturating_sub(1)
+                );
             }
         }
         assert_eq!(
             make_breadboards(Preset::Hole800, 4, false).unwrap().cols(),
-            252
+            261
         );
     }
 
@@ -428,21 +432,23 @@ mod tests {
     }
 
     #[test]
-    fn repeated_800_boards_restart_power_rail_margins_without_splitting_main_columns() {
+    fn repeated_800_boards_restart_power_rail_margins_around_the_inter_board_gap() {
         let board = make_breadboards(Preset::Hole800, 2, false).unwrap();
 
-        for col in [60, 65, 123] {
+        for col in [60, 68, 126] {
             assert!(board.at(col, -4).is_some(), "rail hole missing at {col}");
         }
-        for col in [61, 62, 63, 64, 124, 125] {
+        for col in [61, 62, 63, 64, 65, 66, 67, 127, 128] {
             assert!(board.at(col, -4).is_none(), "rail margin missing at {col}");
         }
-        for col in [61, 62, 63, 64] {
+        for col in [63, 64, 65] {
             assert!(
-                board.at(col, 0).is_some(),
-                "main area must stay continuous at {col}"
+                board.at(col, 0).is_none(),
+                "inter-board main gap missing at {col}"
             );
         }
+        assert!(board.at(62, 0).is_some());
+        assert!(board.at(66, 0).is_some());
     }
 
     #[test]
@@ -451,9 +457,13 @@ mod tests {
 
         assert!(board.at(28, -4).is_some());
         assert!(board.at(29, -4).is_none());
-        assert!(board.at(30, -4).is_some());
-        assert!(board.at(58, -4).is_some());
-        assert!(board.at(59, -4).is_none());
+        for col in 30..33 {
+            assert!(board.at(col, -4).is_none());
+            assert!(board.at(col, 0).is_none());
+        }
+        assert!(board.at(33, -4).is_some());
+        assert!(board.at(61, -4).is_some());
+        assert!(board.at(62, -4).is_none());
     }
 
     #[test]

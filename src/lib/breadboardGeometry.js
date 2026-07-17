@@ -1,19 +1,21 @@
 /** Shared drawing geometry for mapping one logical column axis onto physical boards. */
 
-/** @param {number} column @param {number} boardCols */
-export function boardIndexForColumn(column, boardCols) {
-  return Math.floor(column / Math.max(1, boardCols));
+export const INTER_BOARD_GAP_COLS = 3;
+
+/** @param {number} column @param {number} boardCols @param {number} gapCols */
+export function boardIndexForColumn(column, boardCols, gapCols = INTER_BOARD_GAP_COLS) {
+  return Math.floor(column / Math.max(1, boardCols + gapCols));
 }
 
-/** @param {number} column @param {number} boardCols */
-export function localColumnForColumn(column, boardCols) {
-  const safeBoardCols = Math.max(1, boardCols);
-  return ((column % safeBoardCols) + safeBoardCols) % safeBoardCols;
+/** @param {number} column @param {number} boardCols @param {number} gapCols */
+export function localColumnForColumn(column, boardCols, gapCols = INTER_BOARD_GAP_COLS) {
+  const stride = Math.max(1, boardCols + gapCols);
+  return ((column % stride) + stride) % stride;
 }
 
-/** @param {number} column @param {number} boardCols */
-export function physicalColumnNumber(column, boardCols) {
-  return localColumnForColumn(column, boardCols) + 1;
+/** @param {number} column @param {number} boardCols @param {number} gapCols */
+export function physicalColumnNumber(column, boardCols, gapCols = INTER_BOARD_GAP_COLS) {
+  return localColumnForColumn(column, boardCols, gapCols) + 1;
 }
 
 /**
@@ -28,13 +30,14 @@ export function physicalBoardWidth(boardCols, pitch, xInset) {
 /**
  * @param {number} column
  * @param {number} boardCols
+ * @param {number} gapCols
  * @param {number} pitch
  * @param {number} xInset
  * @param {number} boardGap
  */
-export function globalColumnX(column, boardCols, pitch, xInset, boardGap) {
-  const boardIndex = boardIndexForColumn(column, boardCols);
-  const localColumn = localColumnForColumn(column, boardCols);
+export function globalColumnX(column, boardCols, gapCols, pitch, xInset, boardGap) {
+  const boardIndex = boardIndexForColumn(column, boardCols, gapCols);
+  const localColumn = localColumnForColumn(column, boardCols, gapCols);
   const boardWidth = physicalBoardWidth(boardCols, pitch, xInset);
   return boardIndex * (boardWidth + boardGap) + xInset + localColumn * pitch;
 }
@@ -43,12 +46,13 @@ export function globalColumnX(column, boardCols, pitch, xInset, boardGap) {
  * Global power-rail columns for one physical board. Rail cadence always restarts locally.
  * @param {"hole170" | "hole400" | "hole800"} preset
  * @param {number} boardCols
+ * @param {number} gapCols
  * @param {number} boardIndex
  */
-export function railColumnsForBoard(preset, boardCols, boardIndex) {
+export function railColumnsForBoard(preset, boardCols, gapCols, boardIndex) {
   if (preset === "hole170") return [];
   const margin = preset === "hole800" ? 2 : 0;
-  const boardStart = boardIndex * boardCols;
+  const boardStart = boardIndex * (boardCols + gapCols);
   const result = [];
   for (let start = margin; start < boardCols - margin; start += 6) {
     for (let offset = 0; offset < 5 && start + offset < boardCols - margin; offset += 1) {

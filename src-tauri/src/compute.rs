@@ -7,7 +7,7 @@ use knead_net::input::pcb::parse_pcb;
 use knead_net::{
     Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Circuit, HoleId, InitializerFamily,
     Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, Preset, ProgressOptions, Region,
-    SAConfig,
+    SAConfig, INTER_BOARD_GAP_COLS,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -74,6 +74,7 @@ struct ComputeEvent {
 struct LayoutFrame {
     board_cols: usize,
     board_count: usize,
+    gap_cols: usize,
     total_cols: usize,
     parts: Vec<LayoutPart>,
     wires: Vec<LayoutWire>,
@@ -584,11 +585,11 @@ fn is_initial_capacity_error(errors: &[knead_net::LayoutError]) -> bool {
 fn board_count_for_max_x(
     max_x: Option<i32>,
     board_cols: usize,
+    gap_cols: usize,
     attempted_board_count: usize,
 ) -> usize {
-    let required = max_x.map_or(1, |x| {
-        (x.max(0) as usize / board_cols.max(1)).saturating_add(1)
-    });
+    let stride = board_cols.saturating_add(gap_cols).max(1);
+    let required = max_x.map_or(1, |x| (x.max(0) as usize / stride).saturating_add(1));
     required.clamp(1, attempted_board_count.max(1))
 }
 
@@ -623,6 +624,7 @@ fn visible_board_count(
     board_count_for_max_x(
         placement_max.into_iter().chain(wire_max).max(),
         board_cols,
+        INTER_BOARD_GAP_COLS,
         attempted_board_count,
     )
 }
@@ -952,7 +954,8 @@ fn snapshot_frame(
     LayoutFrame {
         board_cols,
         board_count,
-        total_cols: board_cols * board_count,
+        gap_cols: INTER_BOARD_GAP_COLS,
+        total_cols: board_cols * board_count + INTER_BOARD_GAP_COLS * board_count.saturating_sub(1),
         parts,
         wires,
         iteration,
@@ -976,7 +979,7 @@ fn last_visible_power_rail_col(
         last = Some(end);
         start += 6;
     }
-    last.map(|local| ((board_count - 1) * board_cols + local) as i32)
+    last.map(|local| ((board_count - 1) * (board_cols + INTER_BOARD_GAP_COLS) + local) as i32)
 }
 
 fn classify_package(component_kind: &str, footprint_name: &str, pin_count: usize) -> &'static str {
@@ -1221,11 +1224,11 @@ mod tests {
 
     #[test]
     fn trailing_empty_boards_are_trimmed_from_the_visible_result() {
-        assert_eq!(board_count_for_max_x(None, 30, 2), 1);
-        assert_eq!(board_count_for_max_x(Some(29), 30, 2), 1);
-        assert_eq!(board_count_for_max_x(Some(30), 30, 2), 2);
-        assert_eq!(board_count_for_max_x(Some(62), 30, 4), 3);
-        assert_eq!(board_count_for_max_x(Some(999), 30, 4), 4);
+        assert_eq!(board_count_for_max_x(None, 30, 3, 2), 1);
+        assert_eq!(board_count_for_max_x(Some(29), 30, 3, 2), 1);
+        assert_eq!(board_count_for_max_x(Some(33), 30, 3, 2), 2);
+        assert_eq!(board_count_for_max_x(Some(68), 30, 3, 4), 3);
+        assert_eq!(board_count_for_max_x(Some(999), 30, 3, 4), 4);
     }
 
     #[test]
@@ -1287,6 +1290,7 @@ mod tests {
         );
 
         assert_eq!(frame.board_count, 1);
+        assert_eq!(frame.gap_cols, 3);
         assert_eq!(frame.total_cols, 63);
         let rail_ties: Vec<_> = frame
             .wires
@@ -1297,6 +1301,37 @@ mod tests {
         assert!(rail_ties
             .iter()
             .all(|wire| wire.from.col == 60 && wire.to.col == 60));
+    }
+
+    #[test]
+    fn multi_board_frames_include_logical_gaps_and_local_rail_margins() {
+        let circuit = Circuit::empty();
+        let board = Preset::Hole800.make_repeated(2);
+        let metadata = ComponentMetadataMap::new();
+        let frame = snapshot_frame(
+            &LayoutSnapshot {
+                placements: Vec::new(),
+                wires: Vec::new(),
+            },
+            &circuit,
+            &board,
+            &metadata,
+            BoardAllocation {
+                preset: Preset::Hole800,
+                board_cols: 63,
+                board_count: 2,
+            },
+            None,
+            None,
+        );
+
+        assert_eq!(frame.gap_cols, INTER_BOARD_GAP_COLS);
+        assert_eq!(frame.total_cols, 129);
+        assert!(frame
+            .wires
+            .iter()
+            .filter(|wire| wire.kind == "rail-tie")
+            .all(|wire| wire.from.col == 126 && wire.to.col == 126));
     }
 
     #[test]

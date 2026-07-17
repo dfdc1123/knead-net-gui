@@ -72,6 +72,7 @@ export type CircuitSelection =
 export type LayoutFrame = {
   board_cols: number;
   board_count: number;
+  gap_cols: number;
   total_cols: number;
   parts: LayoutPart[];
   wires?: LayoutWire[];

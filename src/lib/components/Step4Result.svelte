@@ -719,6 +719,7 @@
               {preset}
               boardCols={frame.board_cols}
               boardCount={frame.board_count}
+              gapCols={frame.gap_cols}
               {upperHalfOnly}
               {frame}
               zoom={breadboardZoom}

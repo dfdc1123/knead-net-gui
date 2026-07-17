@@ -41,6 +41,9 @@ use std::ops::RangeInclusive;
 
 use crate::circuit::{NetId, Position};
 
+/// Number of unavailable logical columns between adjacent physical breadboards.
+pub const INTER_BOARD_GAP_COLS: usize = 3;
+
 /// 板上一个孔的标识, 范围 0..board.len()。
 ///
 /// 编号规则: 在构造时按 (power rails → main board) 的顺序枚举所有孔, `HoleId` 是
@@ -316,35 +319,36 @@ impl Preset {
 
     /// Repeat a physical preset along one global x axis while restarting each board's
     /// power-rail hole pattern locally. The repeated strips remain one logical conductive
-    /// island per row; this models capacity without introducing inter-board connectivity.
+    /// island per row; physical inter-board connectivity is intentionally not modelled.
     pub fn make_repeated(self, board_count: usize) -> Breadboard {
         assert!(board_count > 0, "board_count must be positive");
         let board_cols = self.default_cols();
-        let cols = board_cols
-            .checked_mul(board_count)
-            .expect("repeated breadboard width overflow");
+        let cols = repeated_total_cols(board_cols, board_count);
+        let blocked_cols = repeated_gap_columns(board_cols, board_count);
         match self {
-            Self::Hole170 => Breadboard::preset_170(cols),
-            Self::Hole400 => Breadboard::with_power_rails(
+            Self::Hole170 => Breadboard::with_blocked_rows_and_cols(cols, 12, [5, 6], blocked_cols),
+            Self::Hole400 => Breadboard::with_blocked_rows_cols_and_power_rails(
                 cols,
                 12,
                 [5, 6],
-                repeat_power_rails(
+                blocked_cols,
+                Some(repeat_power_rails(
                     standard_power_rails(board_cols as i32),
                     board_cols,
                     board_count,
-                ),
+                )),
             )
             .with_default_power_rail_ties(),
-            Self::Hole800 => Breadboard::with_power_rails(
+            Self::Hole800 => Breadboard::with_blocked_rows_cols_and_power_rails(
                 cols,
                 12,
                 [5, 6],
-                repeat_power_rails(
+                blocked_cols,
+                Some(repeat_power_rails(
                     wide_power_rails_800(board_cols as i32),
                     board_cols,
                     board_count,
-                ),
+                )),
             )
             .with_default_power_rail_ties(),
         }
@@ -354,30 +358,31 @@ impl Preset {
     pub fn make_repeated_upper_half(self, board_count: usize) -> Breadboard {
         assert!(board_count > 0, "board_count must be positive");
         let board_cols = self.default_cols();
-        let cols = board_cols
-            .checked_mul(board_count)
-            .expect("repeated breadboard width overflow");
+        let cols = repeated_total_cols(board_cols, board_count);
+        let blocked_cols = repeated_gap_columns(board_cols, board_count);
         match self {
-            Self::Hole170 => Breadboard::with_blocked_rows(cols, 12, 5..12),
-            Self::Hole400 => Breadboard::with_power_rails(
+            Self::Hole170 => Breadboard::with_blocked_rows_and_cols(cols, 12, 5..12, blocked_cols),
+            Self::Hole400 => Breadboard::with_blocked_rows_cols_and_power_rails(
                 cols,
                 12,
                 5..12,
-                top_power_rails_only(repeat_power_rails(
+                blocked_cols,
+                Some(top_power_rails_only(repeat_power_rails(
                     standard_power_rails(board_cols as i32),
                     board_cols,
                     board_count,
-                )),
+                ))),
             ),
-            Self::Hole800 => Breadboard::with_power_rails(
+            Self::Hole800 => Breadboard::with_blocked_rows_cols_and_power_rails(
                 cols,
                 12,
                 5..12,
-                top_power_rails_only(repeat_power_rails(
+                blocked_cols,
+                Some(top_power_rails_only(repeat_power_rails(
                     wide_power_rails_800(board_cols as i32),
                     board_cols,
                     board_count,
-                )),
+                ))),
             ),
         }
     }
@@ -401,11 +406,32 @@ impl Preset {
     }
 }
 
+fn repeated_total_cols(board_cols: usize, board_count: usize) -> usize {
+    board_cols
+        .checked_mul(board_count)
+        .and_then(|cols| {
+            INTER_BOARD_GAP_COLS
+                .checked_mul(board_count.saturating_sub(1))
+                .and_then(|gaps| cols.checked_add(gaps))
+        })
+        .expect("repeated breadboard width overflow")
+}
+
+fn repeated_gap_columns(board_cols: usize, board_count: usize) -> BTreeSet<usize> {
+    let stride = board_cols + INTER_BOARD_GAP_COLS;
+    (1..board_count)
+        .flat_map(|board_index| {
+            let start = board_index * stride - INTER_BOARD_GAP_COLS;
+            start..start + INTER_BOARD_GAP_COLS
+        })
+        .collect()
+}
+
 fn repeat_power_rails(mut rails: PowerRails, board_cols: usize, board_count: usize) -> PowerRails {
     let offset_groups = |groups: &[RangeInclusive<i32>]| {
         (0..board_count)
             .flat_map(|board_index| {
-                let offset = (board_index * board_cols) as i32;
+                let offset = (board_index * (board_cols + INTER_BOARD_GAP_COLS)) as i32;
                 groups
                     .iter()
                     .map(move |group| (*group.start() + offset)..=(*group.end() + offset))
@@ -428,6 +454,7 @@ pub struct Breadboard {
     cols: usize,
     main_rows: usize,
     main_blocked_rows: BTreeSet<usize>,
+    main_blocked_cols: BTreeSet<usize>,
     power_rails: Option<PowerRails>,
     power_rail_bindings: Option<PowerRailBindings>,
     /// 仅当上下绑定相同时提供，保留旧的逐极性查询 API。
@@ -474,10 +501,41 @@ impl Breadboard {
         )
     }
 
+    fn with_blocked_rows_and_cols(
+        cols: usize,
+        main_rows: usize,
+        main_blocked_rows: impl IntoIterator<Item = usize>,
+        main_blocked_cols: impl IntoIterator<Item = usize>,
+    ) -> Self {
+        Self::with_blocked_rows_cols_and_power_rails(
+            cols,
+            main_rows,
+            main_blocked_rows,
+            main_blocked_cols,
+            None,
+        )
+    }
+
     fn with_blocked_rows_and_power_rails(
         cols: usize,
         main_rows: usize,
         main_blocked_rows: impl IntoIterator<Item = usize>,
+        power_rails: Option<PowerRails>,
+    ) -> Self {
+        Self::with_blocked_rows_cols_and_power_rails(
+            cols,
+            main_rows,
+            main_blocked_rows,
+            std::iter::empty(),
+            power_rails,
+        )
+    }
+
+    fn with_blocked_rows_cols_and_power_rails(
+        cols: usize,
+        main_rows: usize,
+        main_blocked_rows: impl IntoIterator<Item = usize>,
+        main_blocked_cols: impl IntoIterator<Item = usize>,
         power_rails: Option<PowerRails>,
     ) -> Self {
         let main_blocked_rows: BTreeSet<usize> = main_blocked_rows.into_iter().collect();
@@ -488,6 +546,10 @@ impl Breadboard {
                 r,
                 main_rows
             );
+        }
+        let main_blocked_cols: BTreeSet<usize> = main_blocked_cols.into_iter().collect();
+        for &col in &main_blocked_cols {
+            assert!(col < cols, "blocked column {} 越界 (cols = {})", col, cols);
         }
 
         // 校验 power rail 的 y 跟 main_rows 不冲突 (避免 -1 / 13 跟 main 内部 y 撞)
@@ -584,6 +646,9 @@ impl Breadboard {
             let rail_index = vertical_rails.iter().position(|&t| t == rail_top).unwrap();
             let rail_id = next_rail_id + (rail_index as u32) * (cols as u32); // 后面按 col 加
             for x in 0..cols {
+                if main_blocked_cols.contains(&x) {
+                    continue;
+                }
                 let id_rail = rail_id + x as u32;
                 let pos = Position {
                     x: x as i32,
@@ -605,6 +670,7 @@ impl Breadboard {
             cols,
             main_rows,
             main_blocked_rows,
+            main_blocked_cols,
             power_rails,
             power_rail_bindings: None,
             power_rail_binding: None,
@@ -696,11 +762,15 @@ impl Breadboard {
         self.main_blocked_rows.iter().copied().collect()
     }
 
+    pub fn is_blocked_col(&self, col: usize) -> bool {
+        self.main_blocked_cols.contains(&col)
+    }
+
     pub fn power_rails(&self) -> Option<&PowerRails> {
         self.power_rails.as_ref()
     }
 
-    /// 总孔数 (= `cols * (main_rows - |blocked_rows|) + 电源轨孔数`)。
+    /// 总孔数 (= 非 blocked 行列交叉点数 + 电源轨孔数)。
     pub fn len(&self) -> usize {
         self.holes.len()
     }
@@ -1818,23 +1888,71 @@ mod tests {
         assert!(!rail.contains(62));
         assert!(!rail.contains(63));
         assert!(!rail.contains(64));
-        assert!(rail.contains(65));
-        assert!(rail.contains(123));
-        assert!(!rail.contains(124));
-        assert!(!rail.contains(125));
+        assert!(!rail.contains(65));
+        assert!(!rail.contains(66));
+        assert!(!rail.contains(67));
+        assert!(rail.contains(68));
+        assert!(rail.contains(126));
+        assert!(!rail.contains(127));
+        assert!(!rail.contains(128));
         assert!(board.at(62, 0).is_some());
-        assert!(board.at(63, 0).is_some());
+        assert!(board.at(63, 0).is_none());
+        assert!(board.at(64, 0).is_none());
+        assert!(board.at(65, 0).is_none());
+        assert!(board.at(66, 0).is_some());
+        assert_eq!(board.cols(), 129);
+    }
+
+    #[test]
+    fn repeated_presets_leave_three_unusable_columns_between_boards() {
+        for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
+            let board_cols = preset.default_cols();
+            let board = preset.make_repeated(2);
+
+            assert_eq!(board.cols(), board_cols * 2 + INTER_BOARD_GAP_COLS);
+            for x in board_cols..board_cols + INTER_BOARD_GAP_COLS {
+                for y in 0..board.main_rows() {
+                    assert!(board.at(x as i32, y as i32).is_none());
+                }
+                if let Some(power_rails) = board.power_rails() {
+                    for rail in power_rails
+                        .top
+                        .rows
+                        .iter()
+                        .chain(power_rails.bottom.rows.iter())
+                    {
+                        assert!(board.at(x as i32, rail.y).is_none());
+                    }
+                }
+            }
+            assert!(board.at((board_cols - 1) as i32, 0).is_some());
+            assert!(
+                board
+                    .at((board_cols + INTER_BOARD_GAP_COLS) as i32, 0)
+                    .is_some()
+            );
+        }
     }
 
     #[test]
     fn repeated_upper_half_presets_keep_only_each_top_half() {
         for preset in [Preset::Hole170, Preset::Hole400, Preset::Hole800] {
             let board = preset.make_repeated_upper_half(3);
-            assert_eq!(board.cols(), preset.default_cols() * 3);
+            assert_eq!(
+                board.cols(),
+                preset.default_cols() * 3 + INTER_BOARD_GAP_COLS * 2
+            );
             assert!(board.at(0, 4).is_some());
             assert!(board.at((board.cols() - 1) as i32, 4).is_some());
             assert!(board.at(0, 7).is_none());
             assert!(board.at((board.cols() - 1) as i32, 7).is_none());
+            for board_index in 1..3 {
+                let gap_start =
+                    board_index * preset.default_cols() + (board_index - 1) * INTER_BOARD_GAP_COLS;
+                for x in gap_start..gap_start + INTER_BOARD_GAP_COLS {
+                    assert!(board.at(x as i32, 4).is_none());
+                }
+            }
             assert!(board.rail_ties().is_empty());
         }
     }

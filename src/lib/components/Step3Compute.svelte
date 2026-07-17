@@ -244,6 +244,7 @@
               {preset}
               boardCols={previewBoardCols}
               boardCount={previewBoardCount}
+              gapCols={frame?.gap_cols}
               {frame}
               {upperHalfOnly}
               panCanvas={false}

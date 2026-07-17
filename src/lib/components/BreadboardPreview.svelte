@@ -11,6 +11,7 @@
   import { parseKiCadTextMarkup } from "$lib/layout";
   import {
     globalColumnX,
+    INTER_BOARD_GAP_COLS,
     physicalColumnNumber,
     physicalBoardWidth,
     railColumnsForBoard,
@@ -21,6 +22,7 @@
     preset,
     boardCols,
     boardCount = 1,
+    gapCols = INTER_BOARD_GAP_COLS,
     upperHalfOnly = false,
     frame,
     zoom = 1,
@@ -37,6 +39,7 @@
     preset: BreadboardPreset;
     boardCols: number;
     boardCount?: number;
+    gapCols?: number;
     upperHalfOnly?: boolean;
     frame?: LayoutFrame | null;
     zoom?: number;
@@ -52,7 +55,6 @@
   } = $props();
 
   const pitch = 12;
-  const boardGap = 16;
   const mainRows = [0, 1, 2, 3, 4];
 
   type Point = { x: number; y: number };
@@ -78,11 +80,12 @@
   function presetRailTies(
     kind: BreadboardPreset,
     columnCount: number,
+    gapColumnCount: number,
     includeNegative: boolean,
     includePositive: boolean,
   ): LayoutWire[] {
     if (kind === "hole170") return [];
-    const availableColumns = railColumnsForBoard(kind, columnCount, 0);
+    const availableColumns = railColumnsForBoard(kind, columnCount, gapColumnCount, 0);
     const col = availableColumns[availableColumns.length - 1];
     if (col === undefined) return [];
     const ties: LayoutWire[] = [
@@ -110,11 +113,13 @@
 
   let safeBoardCols = $derived(Math.max(1, Math.trunc(Number(boardCols) || 1)));
   let safeBoardCount = $derived(Math.max(1, Math.trunc(Number(boardCount) || 1)));
+  let safeGapCols = $derived(Math.max(0, Math.trunc(Number(gapCols) || 0)));
+  let boardGap = $derived(safeGapCols * pitch);
   let isMini = $derived(preset === "hole170");
   let xInset = $derived(isMini ? 12.2 : 18.2);
   let boards = $derived(range(safeBoardCount));
   let columns = $derived(range(safeBoardCols));
-  let powerColumns = $derived(railColumnsForBoard(preset, safeBoardCols, 0));
+  let powerColumns = $derived(railColumnsForBoard(preset, safeBoardCols, safeGapCols, 0));
 
   // 400 孔电源轨的 5 组孔占 0..28 节拍，主区占 0..29 节拍；
   // 横移半个孔距后两者中心重合。这只是绘图坐标，算法仍使用整数列。
@@ -134,7 +139,7 @@
   let hasPanPadding = $derived(panCanvas);
 
   function holePosition(hole: BreadboardHole) {
-    const x = globalColumnX(hole.col, safeBoardCols, pitch, xInset, boardGap)
+    const x = globalColumnX(hole.col, safeBoardCols, safeGapCols, pitch, xInset, boardGap)
       + (hole.region.startsWith("rail") ? railOffset : 0);
     if (isMini) {
       return {
@@ -253,7 +258,16 @@
         ? wires
         : upperHalfOnly
           ? wires
-          : [...wires, ...presetRailTies(preset, safeBoardCols, tieNegativeRails, tiePositiveRails)];
+          : [
+              ...wires,
+              ...presetRailTies(
+                preset,
+                safeBoardCols,
+                safeGapCols,
+                tieNegativeRails,
+                tiePositiveRails,
+              ),
+            ];
   });
   let plannedWires = $derived(planWires(visibleWires));
 
@@ -775,7 +789,7 @@
 
           <g aria-hidden="true" fill="var(--color-base-content)" font-family="ui-sans-serif, system-ui, sans-serif" font-size="5.5" font-weight="700" text-anchor="middle">
             {#each columns as column}
-              <text x={xInset + column * pitch} y="8">{physicalColumnNumber(boardIndex * safeBoardCols + column, safeBoardCols)}</text>
+              <text x={xInset + column * pitch} y="8">{physicalColumnNumber(boardIndex * (safeBoardCols + safeGapCols) + column, safeBoardCols, safeGapCols)}</text>
             {/each}
             {#each mainRows as row}
               <text x="5" y={18.1 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
@@ -835,7 +849,7 @@
 
           <g aria-hidden="true" fill="var(--color-base-content)" font-family="ui-sans-serif, system-ui, sans-serif" font-size="5.5" font-weight="700" text-anchor="middle">
             {#each columns as column}
-              <text x={xInset + column * pitch} y="47">{physicalColumnNumber(boardIndex * safeBoardCols + column, safeBoardCols)}</text>
+              <text x={xInset + column * pitch} y="47">{physicalColumnNumber(boardIndex * (safeBoardCols + safeGapCols) + column, safeBoardCols, safeGapCols)}</text>
             {/each}
             {#each mainRows as row}
               <text x="7" y={60 + row * pitch} dominant-baseline="central">{mainRowLabel(row, false)}</text>
