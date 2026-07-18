@@ -331,8 +331,8 @@
 
         {#if info}
           <div class="flex flex-wrap gap-2">
-            <span class="badge badge-primary">{ui.step2.holes(info.holes)}</span>
-            <span class="badge badge-outline">{info.has_power_rails ? ui.step2.withRails : ui.step2.withoutRails}</span>
+            <span class="badge badge-ghost">{ui.step2.holes(info.holes)}</span>
+            <span class="badge badge-ghost">{info.has_power_rails ? ui.step2.withRails : ui.step2.withoutRails}</span>
           </div>
         {/if}
 

@@ -62,3 +62,14 @@ test("workflow pages share the same outer spacing", () => {
     assert.ok(source.includes(pageClass));
   }
 });
+
+test("badges use stable metadata, summary, selection, and state semantics", () => {
+  const workflowSources = [step1Source, step2Source, step3Source, step4Source, pickerSource];
+  for (const source of workflowSources) {
+    assert.doesNotMatch(source, /badge-(?:neutral|secondary)/);
+  }
+  assert.match(step1Source, /badge badge-outline badge-sm">\{projects\.length\}/);
+  assert.match(step2Source, /badge badge-ghost">\{ui\.step2\.holes/);
+  assert.match(pickerSource, /badge badge-accent max-w-full/);
+  assert.equal(step4Source.match(/\? 'badge-success' : 'badge-outline'/g)?.length, 3);
+});

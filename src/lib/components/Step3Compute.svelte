@@ -363,7 +363,7 @@
           </div>
           <div class="flex gap-2">
             {#if previewMode === "observing" && frame?.iteration !== undefined}<span class="badge badge-ghost badge-sm">#{frame.iteration}</span>{/if}
-            {#if frame?.cost !== undefined}<span class="badge badge-secondary badge-sm">{frame.cost.toFixed(2)}</span>{/if}
+            {#if frame?.cost !== undefined}<span class="badge badge-outline badge-sm">{frame.cost.toFixed(2)}</span>{/if}
           </div>
         </div>
 

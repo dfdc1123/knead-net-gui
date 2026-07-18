@@ -192,7 +192,7 @@
     {#if selectedNet}
       <div class="flex shrink-0 items-center gap-2 text-sm">
         <span class="text-base-content/60">{ui.step2.currentBinding}</span>
-        <span class="badge badge-primary max-w-full truncate font-mono">{selectedNet}</span>
+        <span class="badge badge-accent max-w-full truncate font-mono">{selectedNet}</span>
       </div>
     {/if}
 

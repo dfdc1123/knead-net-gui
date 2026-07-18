@@ -911,7 +911,7 @@
           <div class="flex shrink-0 items-center justify-between gap-3 px-1">
             <div class="flex items-center gap-2">
               <h2 class="card-title text-base">{ui.step4.breadboard}</h2>
-              <span class="badge badge-primary badge-sm">{ui.step4.boards(frame.board_count)}</span>
+              <span class="badge badge-ghost badge-sm">{ui.step4.boards(frame.board_count)}</span>
               <span class="badge badge-ghost badge-sm">{ui.step4.columns(frame.total_cols)}</span>
             </div>
             <div class="flex items-center gap-3 text-xs">
@@ -980,7 +980,7 @@
         <div class="shrink-0 px-1">
           <div class="flex items-center justify-between gap-2">
             <h2 class="card-title text-base">{ui.step4.assemblyList}</h2>
-            <span class="badge {completedTaskCount === taskCount && taskCount > 0 ? 'badge-success' : 'badge-primary'} badge-sm">
+            <span class="badge {completedTaskCount === taskCount && taskCount > 0 ? 'badge-success' : 'badge-outline'} badge-sm">
               {completedTaskCount} / {taskCount}
             </span>
           </div>
@@ -1094,7 +1094,7 @@
             <input type="checkbox" bind:checked={partListOpen} aria-label={ui.step4.toggleComponents} />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               {ui.step4.components}
-              <span class="badge {completedPartCount === frame.parts.length && frame.parts.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
+              <span class="badge {completedPartCount === frame.parts.length && frame.parts.length > 0 ? 'badge-success' : 'badge-outline'} badge-sm">
                 {completedPartCount} / {frame.parts.length}
               </span>
             </div>
@@ -1143,7 +1143,7 @@
             <input type="checkbox" bind:checked={wireListOpen} aria-label={ui.step4.toggleWires} />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               {ui.step4.wires}
-              <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
+              <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-outline'} badge-sm">
                 {completedWireCount} / {wires.length}
               </span>
             </div>
