@@ -621,9 +621,12 @@
   function selectionFromElement(element: Element | null): CircuitSelection | null {
     const selectable = element?.closest<SVGElement>("[data-component], [data-net]");
     if (!selectable || !schematicHost?.contains(selectable)) return null;
+    const net = selectable.dataset.net;
+    if (selectable.dataset.powerSymbol === "yes" && net) {
+      return { type: "net", id: net, label: net };
+    }
     const component = selectable.dataset.component;
     if (component) return { type: "component", id: component, label: component };
-    const net = selectable.dataset.net;
     if (net) return { type: "net", id: net, label: net };
     return null;
   }
@@ -639,7 +642,7 @@
       element.classList.toggle("is-selected", active);
       element.classList.toggle("is-muted", selected?.type === "component" && !active);
     }
-    for (const element of schematicHost.querySelectorAll<SVGElement>(".sch-net-line")) {
+    for (const element of schematicHost.querySelectorAll<SVGElement>("[data-net]")) {
       const selectedNet = selected?.type === "net" ? selected.id : selected?.type === "wire" ? selected.netId : undefined;
       const active = selectedNet !== undefined && element.dataset.net === selectedNet;
       element.classList.toggle("is-selected", active);

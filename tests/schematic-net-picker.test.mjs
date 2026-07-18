@@ -22,4 +22,5 @@ test("schematic picker uses the recommended dialog modal and selects only networ
   assert.match(pickerSource, /<dialog[^>]*class="modal"/);
   assert.match(pickerSource, /closest<SVGElement>\("\[data-net\]"\)/);
   assert.match(pickerSource, /allowedNetNames\.includes\(net\)/);
+  assert.match(pickerSource, /querySelectorAll<SVGElement>\("\[data-net\]"\)/);
 });

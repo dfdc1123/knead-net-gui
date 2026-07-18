@@ -54,6 +54,11 @@ test("linked selections shrink either diagram when their bounds exceed the viewp
   assert.match(step4Source, /if \(source === "breadboard"\) await fitDiagramSelection\("schematic"\)/);
 });
 
+test("power symbols select and highlight their network instead of their virtual component", () => {
+  assert.match(step4Source, /selectable\.dataset\.powerSymbol === "yes"/);
+  assert.match(step4Source, /querySelectorAll<SVGElement>\("\[data-net\]"\)/);
+});
+
 test("interactive selections use the shared purple highlight while warnings keep warning semantics", () => {
   assert.match(appCssSource, /--color-highlight: oklch\(74\.229% 0\.133 311\.379\)/);
   assert.match(step4Source, /selected \? 'border border-accent\/40 bg-accent\/10'/);

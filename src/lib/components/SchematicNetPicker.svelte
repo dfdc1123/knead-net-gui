@@ -123,7 +123,7 @@
 
   function syncHighlight() {
     if (!schematicHost) return;
-    for (const element of schematicHost.querySelectorAll<SVGElement>(".sch-net-line")) {
+    for (const element of schematicHost.querySelectorAll<SVGElement>("[data-net]")) {
       const active = Boolean(selectedNet) && element.dataset.net === selectedNet;
       element.classList.toggle("is-selected", active);
       element.classList.toggle("is-muted", Boolean(selectedNet) && !active);
@@ -283,8 +283,20 @@
     transition: opacity 160ms ease, filter 160ms ease, stroke 160ms ease;
   }
 
-  :global(.schematic-host .sch-net-line.is-muted) {
+  :global(.schematic-host .is-muted) {
     opacity: 0.5;
+  }
+
+  :global(.schematic-host .sch-component.is-selected) {
+    filter: drop-shadow(0 0 5px var(--color-highlight)) drop-shadow(0 0 2px var(--color-highlight));
+  }
+
+  :global(.schematic-host .sch-component.is-selected .sch-component-hit) {
+    fill: var(--color-highlight);
+    fill-opacity: 0.12;
+    stroke: var(--color-highlight);
+    stroke-width: 3;
+    vector-effect: non-scaling-stroke;
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {

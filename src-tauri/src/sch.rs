@@ -486,6 +486,20 @@ fn extract_lib_symbols(root: &Value) -> Result<LibMap, RenderError> {
     Ok(libs)
 }
 
+/// KiCad marks power symbols explicitly in their embedded library definition.
+/// This is more precise than inferring them from a reference prefix, value, or
+/// missing footprint, all of which are also possible for non-power symbols.
+fn extract_power_symbol_ids(root: &Value) -> HashSet<String> {
+    let Some(lib_symbols) = child(root, "lib_symbols") else {
+        return HashSet::new();
+    };
+    children(lib_symbols, "symbol")
+        .into_iter()
+        .filter(|symbol| child(symbol, "power").is_some())
+        .filter_map(|symbol| list_items(symbol).nth(1).and_then(as_str))
+        .collect()
+}
+
 fn extract_body(v: &Value, pin_text_settings: PinTextSettings) -> (Vec<Graphic>, Vec<Pin>) {
     let mut graphics = Vec::new();
     let mut pins = Vec::new();
@@ -1961,6 +1975,7 @@ pub(crate) fn render_with_pcb_and_metadata(
     let root = lexpr::from_str(&text).map_err(|error| RenderError::Parse(error.to_string()))?;
 
     let libs = extract_lib_symbols(&root)?;
+    let power_symbol_ids = extract_power_symbol_ids(&root);
     let component_metadata = extract_component_metadata(&root, &libs);
     let wires = extract_wires(&root);
     let buses = extract_stroke_paths(&root, "bus");
@@ -2088,6 +2103,14 @@ pub(crate) fn render_with_pcb_and_metadata(
                 r#" class="sch-component" data-component="{}""#,
                 escape_xml_text(reference)
             );
+            if power_symbol_ids.contains(&inst.lib_id) {
+                if let Some(net_name) = non_empty(property_value(inst, "Value")) {
+                    attributes.push_str(&format!(
+                        r#" data-power-symbol="yes" data-net="{}""#,
+                        escape_xml_text(&net_name)
+                    ));
+                }
+            }
             for (name, value) in [
                 ("data-dnp", inst.dnp),
                 ("data-in-bom", inst.in_bom),
@@ -2159,6 +2182,46 @@ mod tests {
         let pin = &libs["Test:Part"][&1][&1].pins[0];
 
         assert!((pin.name_offset - 0.508).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn power_symbols_select_their_value_net_without_guessing_from_missing_footprints() {
+        let svg = render_fixture(
+            "power-symbol-selection",
+            r##"(kicad_sch
+                (lib_symbols
+                    (symbol "power:custom_supply"
+                        (power global)
+                        (property "Reference" "#PWR" (at 0 0 0) (hide yes))
+                        (property "Value" "CUSTOM_SUPPLY" (at 0 0 0))
+                        (property "Footprint" "" (at 0 0 0) (hide yes))
+                        (symbol "custom_supply_1_1"
+                            (pin power_in line (at 0 0 90) (length 2.54)
+                                (name "CUSTOM_SUPPLY" (effects (font (size 1.27 1.27))))
+                                (number "1" (effects (font (size 1.27 1.27)))))))
+                    (symbol "Test:NoFootprint"
+                        (property "Reference" "U" (at 0 0 0))
+                        (property "Value" "VIRTUAL_PART" (at 0 0 0))
+                        (property "Footprint" "" (at 0 0 0) (hide yes))
+                        (symbol "NoFootprint_1_1"
+                            (rectangle (start -1 -1) (end 1 1)
+                                (stroke (width 0) (type default)) (fill (type none))))))
+                (symbol (lib_id "power:custom_supply") (at 10 10 0) (unit 1)
+                    (property "Reference" "#PWR01" (at 10 10 0) (hide yes))
+                    (property "Value" "CUSTOM_SUPPLY" (at 10 10 0))
+                    (property "Footprint" "" (at 10 10 0) (hide yes)))
+                (symbol (lib_id "Test:NoFootprint") (at 20 10 0) (unit 1)
+                    (property "Reference" "U1" (at 20 10 0))
+                    (property "Value" "VIRTUAL_PART" (at 20 10 0))
+                    (property "Footprint" "" (at 20 10 0) (hide yes))))"##,
+        );
+
+        assert!(svg.contains(
+            r##"class="sch-component" data-component="#PWR01" data-power-symbol="yes" data-net="CUSTOM_SUPPLY""##
+        ));
+        assert!(svg.contains(r#"class="sch-component" data-component="U1""#));
+        assert!(!svg.contains(r#"data-component="U1" data-power-symbol="yes""#));
+        assert!(!svg.contains(r#"data-component="U1" data-net="VIRTUAL_PART""#));
     }
 
     #[test]
