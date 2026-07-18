@@ -12,6 +12,7 @@
     LayoutFrame,
   } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import Panel from "./Panel.svelte";
 
   let {
     preset = "hole400",
@@ -307,7 +308,7 @@
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[23rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+    <Panel as="aside" class="overflow-y-auto">
       <div class="card-body min-h-0 gap-4 p-4">
         <fieldset class="fieldset shrink-0" disabled={busy}>
           <legend class="fieldset-legend">{ui.step3.strength}</legend>
@@ -346,9 +347,9 @@
           <div class="alert alert-error text-sm" role="alert"><span>{error}</span></div>
         {/if}
       </div>
-    </aside>
+    </Panel>
 
-    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+    <Panel>
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex items-center justify-between gap-2">
           <div class="flex min-w-0 items-center gap-2">
@@ -399,6 +400,6 @@
           {/if}
         </div>
       </div>
-    </section>
+    </Panel>
   </div>
 </div>

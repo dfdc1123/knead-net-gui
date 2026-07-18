@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import { locale, ui } from "$lib/i18n";
+  import Panel from "./Panel.svelte";
 
   type FolderEntry = { name: string; path: string; ext: string; bytes: number };
   type Project = { name: string; sch?: FolderEntry; pcb?: FolderEntry };
@@ -134,7 +135,7 @@
   {/if}
 
   <div class="grid min-h-0 flex-1 grid-cols-[20rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 min-w-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+    <Panel as="aside" class="min-w-0 overflow-y-auto">
       <div class="card-body min-h-0 min-w-0 gap-3 p-4">
         <fieldset class="fieldset min-w-0 shrink-0">
           <legend class="fieldset-legend">{ui.step1.projectFolder}</legend>
@@ -203,9 +204,9 @@
           </div>
         {/if}
       </div>
-    </aside>
+    </Panel>
 
-    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+    <Panel>
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
           <h2 class="card-title text-sm">{ui.common.schematic}</h2>
@@ -223,6 +224,6 @@
           </div>
         {/if}
       </div>
-    </section>
+    </Panel>
   </div>
 </div>

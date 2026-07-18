@@ -8,6 +8,7 @@
   import { locale, ui } from "$lib/i18n";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import Panel from "./Panel.svelte";
   import SchematicNetPicker from "./SchematicNetPicker.svelte";
 
   let {
@@ -199,7 +200,7 @@
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[22rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+    <Panel as="aside" class="overflow-y-auto">
       <div class="card-body gap-4 p-4">
         <fieldset class="fieldset" disabled={busy}>
           <legend class="fieldset-legend">{ui.step2.boardType}</legend>
@@ -340,9 +341,9 @@
           <div class="alert alert-error text-sm" role="alert"><span>{error}</span></div>
         {/if}
       </div>
-    </aside>
+    </Panel>
 
-    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+    <Panel>
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
           <h2 class="card-title text-sm">{ui.common.preview}</h2>
@@ -373,7 +374,7 @@
           {/if}
         </div>
       </div>
-    </section>
+    </Panel>
   </div>
 </div>
 

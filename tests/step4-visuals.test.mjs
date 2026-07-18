@@ -26,6 +26,10 @@ const step3Source = readFileSync(
   new URL("../src/lib/components/Step3Compute.svelte", import.meta.url),
   "utf8",
 );
+const panelSource = readFileSync(
+  new URL("../src/lib/components/Panel.svelte", import.meta.url),
+  "utf8",
+);
 
 test("schematic canvases keep the KiCad palette on a light theme", () => {
   for (const source of [step1Source, step4Source, pickerSource]) {
@@ -72,4 +76,15 @@ test("badges use stable metadata, summary, selection, and state semantics", () =
   assert.match(step2Source, /badge badge-ghost">\{ui\.step2\.holes/);
   assert.match(pickerSource, /badge badge-accent max-w-full/);
   assert.equal(step4Source.match(/\? 'badge-success' : 'badge-outline'/g)?.length, 3);
+});
+
+test("workflow cards share the DaisyUI panel wrapper", () => {
+  assert.match(panelSource, /card min-h-0 border border-base-300 bg-base-100 shadow-sm/);
+  for (const source of [step1Source, step2Source, step3Source, step4Source]) {
+    assert.match(source, /import Panel from "\.\/Panel\.svelte"/);
+    assert.doesNotMatch(
+      source,
+      /card min-h-0[^"\n]*border border-base-300 bg-base-100 shadow-sm/,
+    );
+  }
 });

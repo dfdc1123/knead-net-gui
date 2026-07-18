@@ -3,6 +3,7 @@
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import { ui } from "$lib/i18n";
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import Panel from "./Panel.svelte";
   import ZoomControls from "./ZoomControls.svelte";
   import type {
     BreadboardHole,
@@ -830,7 +831,7 @@
       bind:this={visualPanelsHost}
       style:grid-template-rows={schematicPanelHeight === null ? undefined : `${schematicPanelHeight}px 0.75rem minmax(0, 1fr)`}
     >
-      <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
+      <Panel class="overflow-hidden">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between px-1">
             <h2 class="card-title text-base">{ui.common.schematic}</h2>
@@ -889,7 +890,7 @@
             </div>
           {/if}
         </div>
-      </section>
+      </Panel>
 
       <button
         type="button"
@@ -906,7 +907,7 @@
         <div class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-base-300 group-hover:bg-primary"></div>
       </button>
 
-      <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
+      <Panel class="overflow-hidden">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between gap-3 px-1">
             <div class="flex items-center gap-2">
@@ -957,7 +958,7 @@
             />
           </div>
         </div>
-      </section>
+      </Panel>
     </div>
 
     <button
@@ -975,7 +976,7 @@
       <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-base-300 group-hover:bg-primary"></div>
     </button>
 
-    <aside class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm" aria-label={ui.step4.assemblyList}>
+    <Panel as="aside" class="overflow-hidden" aria-label={ui.step4.assemblyList}>
       <div class="card-body min-h-0 gap-0 p-3" bind:this={assemblyBodyHost} use:observeAssemblyBody>
         <div class="shrink-0 px-1">
           <div class="flex items-center justify-between gap-2">
@@ -1205,7 +1206,7 @@
           </div>
         {/if}
       </div>
-    </aside>
+    </Panel>
   </div>
 </div>
 
