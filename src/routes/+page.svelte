@@ -63,6 +63,7 @@
     {#if resultReady && board && resultFrame}
       <div class:hidden={step !== 3} class="h-full">
         <Step4Result
+          active={step === 3}
           preset={board.preset}
           useUpperHalf={board.useUpperHalf}
           useLowerHalf={board.useLowerHalf}

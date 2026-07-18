@@ -6,6 +6,12 @@
     createWheelGestureClassifier,
     zoomFactorForWheelGesture,
   } from "$lib/wheelGestures.js";
+  import {
+    assemblyNavigationOffset,
+    hasShortcutModifier,
+    isAssemblyCompletionKey,
+    isTextEditingTarget,
+  } from "$lib/keyboardShortcuts.js";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import Panel from "./Panel.svelte";
   import ZoomControls from "./ZoomControls.svelte";
@@ -21,12 +27,14 @@
   import { parseKiCadTextMarkup } from "$lib/layout";
 
   let {
+    active = true,
     preset,
     useUpperHalf = true,
     useLowerHalf = true,
     frame,
     schematicSvg = "",
   }: {
+    active?: boolean;
     preset: BreadboardPreset;
     useUpperHalf?: boolean;
     useLowerHalf?: boolean;
@@ -549,6 +557,76 @@
     });
   }
 
+  function assemblyTasks() {
+    return [
+      ...assemblyParts.map((part) => ({
+        type: "component" as const,
+        id: part.reference,
+        label: part.reference,
+      })),
+      ...assemblyWires.map((wire) => ({
+        type: "wire" as const,
+        id: wire.id,
+        label: wire.net_name || wire.net_id || wire.id,
+        netId: wire.net_id,
+      })),
+    ];
+  }
+
+  function navigateAssembly(offset: number) {
+    const tasks = assemblyTasks();
+    if (tasks.length === 0) return;
+    const currentIndex = tasks.findIndex(
+      (task) => selected?.type === task.type && selected.id === task.id,
+    );
+    const nextIndex = currentIndex < 0
+      ? offset > 0 ? 0 : tasks.length - 1
+      : (currentIndex + offset + tasks.length) % tasks.length;
+    selected = tasks[nextIndex];
+    selectionSource = "assembly";
+  }
+
+  function completeSelectedAssemblyTask() {
+    if (selected?.type === "component") {
+      const part = parts.find((part) => part.reference === selected?.id);
+      if (!part || completedPartIds.includes(part.id)) return false;
+      setPartCompleted(part.id, true);
+      return true;
+    }
+    if (selected?.type === "wire") {
+      const wire = wires.find((wire) => wire.id === selected?.id);
+      if (!wire || completedWireIds.includes(wire.id)) return false;
+      setWireCompleted(wire.id, true);
+      return true;
+    }
+    return false;
+  }
+
+  function handleAssemblyShortcut(event: KeyboardEvent) {
+    if (
+      !active ||
+      event.defaultPrevented ||
+      hasShortcutModifier(event) ||
+      isTextEditingTarget(event.target)
+    ) return;
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("button") && !target.closest(".assembly-row-hit")) return;
+
+    const offset = assemblyNavigationOffset(event.key);
+    if (offset !== 0) {
+      event.preventDefault();
+      navigateAssembly(offset);
+      return;
+    }
+
+    if (
+      !event.repeat &&
+      isAssemblyCompletionKey(event.key) &&
+      completeSelectedAssemblyTask()
+    ) event.preventDefault();
+  }
+
   function nextPendingItem<T>(
     items: T[],
     currentId: string,
@@ -791,6 +869,8 @@
     }
   });
 </script>
+
+<svelte:window onkeydown={handleAssemblyShortcut} />
 
 <div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="flex shrink-0 items-center justify-between gap-3">
