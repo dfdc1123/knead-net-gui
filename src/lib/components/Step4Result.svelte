@@ -777,7 +777,6 @@
   <header class="flex shrink-0 items-center justify-between gap-3">
     <div>
       <h1 class="text-2xl font-bold">{ui.step4.title}</h1>
-      <p class="text-sm text-base-content/60">{ui.step4.subtitle}</p>
     </div>
 
     <div class="flex items-center gap-2">
@@ -912,8 +911,6 @@
           <div class="flex shrink-0 items-center justify-between gap-3 px-1">
             <div class="flex items-center gap-2">
               <h2 class="card-title text-base">{ui.step4.breadboard}</h2>
-              <span class="badge badge-ghost badge-sm">{ui.step4.boards(frame.board_count)}</span>
-              <span class="badge badge-ghost badge-sm">{ui.step4.columns(frame.total_cols)}</span>
             </div>
             <div class="flex items-center gap-3 text-xs">
               <span class="flex items-center gap-1.5"><span class="status status-success"></span>{ui.step4.completedSolid}</span>

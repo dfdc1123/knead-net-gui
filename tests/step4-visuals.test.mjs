@@ -82,7 +82,7 @@ test("badges use stable metadata, summary, selection, and state semantics", () =
     assert.doesNotMatch(source, /badge-(?:neutral|secondary)/);
   }
   assert.match(step1Source, /badge badge-outline badge-sm">\{projects\.length\}/);
-  assert.match(step2Source, /badge badge-ghost">\{ui\.step2\.holes/);
+  assert.match(step2Source, /badge badge-ghost badge-sm">\{ui\.step2\.columns/);
   assert.match(pickerSource, /badge badge-accent max-w-full/);
   assert.equal(step4Source.match(/\? 'badge-success' : 'badge-outline'/g)?.length, 3);
 });
@@ -96,4 +96,10 @@ test("workflow cards share the DaisyUI panel wrapper", () => {
       /card min-h-0[^"\n]*border border-base-300 bg-base-100 shadow-sm/,
     );
   }
+});
+
+test("workflow pages omit redundant helper copy and board metadata", () => {
+  assert.doesNotMatch(step1Source, /ui\.step1\.subtitle/);
+  assert.doesNotMatch(step2Source, /autoBoardHint|powerRailHint|withRails|withoutRails/);
+  assert.doesNotMatch(step4Source, /ui\.step4\.subtitle|ui\.step4\.(?:boards|columns)/);
 });

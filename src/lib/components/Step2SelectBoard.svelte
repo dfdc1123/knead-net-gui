@@ -256,8 +256,6 @@
           <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.previewHalfHint}</p>
         </fieldset>
 
-        <p class="text-xs leading-relaxed text-base-content/60">{ui.step2.autoBoardHint}</p>
-
         {#if hasPowerRails}
           <fieldset class="fieldset" disabled={busy || !powerOptionsReady}>
             <legend class="fieldset-legend">{ui.step2.powerRailBinding}</legend>
@@ -324,17 +322,7 @@
                 </label>
               </div>
             {/if}
-            {#if useUpperHalf && useLowerHalf}
-              <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.powerRailHint}</p>
-            {/if}
           </fieldset>
-        {/if}
-
-        {#if info}
-          <div class="flex flex-wrap gap-2">
-            <span class="badge badge-ghost">{ui.step2.holes(info.holes)}</span>
-            <span class="badge badge-ghost">{info.has_power_rails ? ui.step2.withRails : ui.step2.withoutRails}</span>
-          </div>
         {/if}
 
         {#if error}
