@@ -514,8 +514,7 @@ mod tests {
 
     #[test]
     fn power_net_options_keep_the_existing_alias_priority() {
-        let text =
-            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let text = std::fs::read_to_string("../examples/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
         let circuit = knead_net::input::pcb::parse_pcb(&text).unwrap();
         let options = power_net_options_for(&circuit, &Preset::Hole400.make(30));
 
@@ -526,8 +525,7 @@ mod tests {
 
     #[test]
     fn board_without_rails_has_no_default_power_net_selection() {
-        let text =
-            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let text = std::fs::read_to_string("../examples/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
         let circuit = knead_net::input::pcb::parse_pcb(&text).unwrap();
         let options = power_net_options_for(&circuit, &Preset::Hole170.make(17));
 

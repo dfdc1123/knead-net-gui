@@ -461,11 +461,11 @@ GUI 三档在 `compute.rs:42` 共用 `.99999`。假设每次尝试都有效：
 
 ### R12. 加真实 PCB 全链路连通图回归
 
-- [x] **已完成**（2026-07-15）。新增 root integration test `real_pcb_parse_prepare_sa_route_connectivity`，直接读取真实 `examples/inputs/h-bridge.kicad_pcb`，固定算法契约 `state-aware-attempt-v1` 与 seed，连续执行 parse → automatic prepare/power binding → spectral SA → PathFinder route → validate。测试不复用 occupancy validator 判断连通性，而是从 physical/effective islands、RailTie 和 wire contacts 独立构造并查集，断言每个 net 的真实 pins、绑定 anchors 与 wire endpoints 同分量且不同 nets 不共享分量；同时明确覆盖 OnBoard、Bridged、power binding、wire，并双跑比较 placement/wire 可复现性。
+- [x] **已完成**（2026-07-15）。新增 root integration test `real_pcb_parse_prepare_sa_route_connectivity`，直接读取真实 `examples/h-bridge/h-bridge.kicad_pcb`，固定算法契约 `state-aware-attempt-v1` 与 seed，连续执行 parse → automatic prepare/power binding → spectral SA → PathFinder route → validate。测试不复用 occupancy validator 判断连通性，而是从 physical/effective islands、RailTie 和 wire contacts 独立构造并查集，断言每个 net 的真实 pins、绑定 anchors 与 wire endpoints 同分量且不同 nets 不共享分量；同时明确覆盖 OnBoard、Bridged、power binding、wire，并双跑比较 placement/wire 可复现性。
 - 对应：审查报告“最优先补的测试”的最终一项，用来封住所有任务组合后的系统行为。
 - 依赖：R1-R11 全部完成。
 - 最小失败测试：`T14_real_pcb_parse_prepare_sa_route_connectivity`，使用仓库真实 PCB fixture，固定算法版本/seed，执行 parse -> prepare -> SA -> route -> validate，再构造 effective connectivity graph；每个 net 的所有真实 pin 和绑定 anchor 必须在该 net 的同一连通分量，且不同 net 不得共享 conductive island。
-- 允许修改范围：优先只新增 root 或 `src-tauri/tests` integration test，并复用 `examples/inputs` fixture；本步默认不允许生产改动。若测试暴露新缺陷，必须另开有最小范围和失败原因的修复项，不能放宽图断言。
+- 允许修改范围：优先只新增 root 或 `src-tauri/tests` integration test，并复用 `examples/` fixture；本步默认不允许生产改动。若测试暴露新缺陷，必须另开有最小范围和失败原因的修复项，不能放宽图断言。
 - 完成条件：真实 fixture 在固定 seed 下稳定通过；同时至少覆盖 OnBoard、Bridged、power binding、wire、固定算法版本的 seed 可复现定义；全 workspace test、fmt、clippy 全过。
 
 ### R13. 最后做 benchmark-gated 的质量与性能重构

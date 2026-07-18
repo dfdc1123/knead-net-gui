@@ -35,7 +35,7 @@ struct QualityEnvelope {
 const FIXTURES: [Fixture; 3] = [
     Fixture {
         name: "h-bridge",
-        source: include_str!("../examples/inputs/h-bridge.kicad_pcb"),
+        source: include_str!("../examples/h-bridge/h-bridge.kicad_pcb"),
         spectral_envelope: QualityEnvelope {
             initial_cost_median: 1_020.0,
             final_cost_median: 750.0,
@@ -45,7 +45,7 @@ const FIXTURES: [Fixture; 3] = [
     },
     Fixture {
         name: "lm741",
-        source: include_str!("../examples/inputs/lm741.kicad_pcb"),
+        source: include_str!("../examples/lm741/lm741.kicad_pcb"),
         spectral_envelope: QualityEnvelope {
             initial_cost_median: 700.0,
             final_cost_median: 350.0,
@@ -55,7 +55,7 @@ const FIXTURES: [Fixture; 3] = [
     },
     Fixture {
         name: "SNx4HC00",
-        source: include_str!("../examples/inputs/SNx4HC00.kicad_pcb"),
+        source: include_str!("../examples/SNx4HC00/SNx4HC00.kicad_pcb"),
         spectral_envelope: QualityEnvelope {
             initial_cost_median: 750.0,
             final_cost_median: 550.0,

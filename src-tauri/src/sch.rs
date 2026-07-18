@@ -2144,10 +2144,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn example_schematic(relative_path: &str) -> Value {
-        let path = format!(
-            "{}/../examples/folders/{relative_path}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        let path = format!("{}/../examples/{relative_path}", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(path).unwrap();
         lexpr::from_str(&text).unwrap()
     }
@@ -2273,7 +2270,7 @@ mod tests {
     fn renders_no_connect_markers_from_existing_ne555_example() {
         let svg = render(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../examples/folders/NE555+CD4017/NE555+CD4017.kicad_sch"
+            "/../examples/NE555+CD4017/NE555+CD4017.kicad_sch"
         ))
         .unwrap();
 
@@ -2315,7 +2312,7 @@ mod tests {
     fn renders_library_no_connect_pin_at_its_connection_point() {
         let svg = render(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../examples/folders/lm741/lm741.kicad_sch"
+            "/../examples/lm741/lm741.kicad_sch"
         ))
         .unwrap();
 
@@ -2681,7 +2678,7 @@ mod tests {
     fn extracts_meaningful_multi_unit_pin_metadata_from_sn4hc00() {
         let text = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../examples/folders/SNx4HC00/SNx4HC00.kicad_sch"
+            "/../examples/SNx4HC00/SNx4HC00.kicad_sch"
         ))
         .unwrap();
         let root = lexpr::from_str(&text).unwrap();

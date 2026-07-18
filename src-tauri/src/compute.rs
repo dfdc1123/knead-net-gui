@@ -1671,7 +1671,7 @@ mod layout_metadata_tests {
     fn example_files_expose_the_pin_definitions_used_by_the_assembly_view() {
         let h_bridge = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../examples/inputs/h-bridge.kicad_pcb"
+            "/../examples/h-bridge/h-bridge.kicad_pcb"
         ))
         .unwrap();
         let circuit = parse_pcb(&h_bridge).unwrap();
@@ -1715,7 +1715,7 @@ mod layout_metadata_tests {
 
         let lm741 = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../examples/inputs/lm741.kicad_pcb"
+            "/../examples/lm741/lm741.kicad_pcb"
         ))
         .unwrap();
         let circuit = parse_pcb(&lm741).unwrap();
@@ -1854,8 +1854,7 @@ mod tests {
     fn wires_use_the_color_of_their_bound_power_rail_polarity() {
         use knead_net::{PowerRailBinding, PowerRailBindings};
 
-        let text =
-            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let text = std::fs::read_to_string("../examples/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
         let circuit = parse_pcb(&text).unwrap();
         let positive_net = circuit.nets()[2].id();
         let negative_net = circuit.nets()[3].id();
@@ -1944,8 +1943,7 @@ mod tests {
     fn only_board_or_routing_capacity_errors_request_another_board() {
         use knead_net::LayoutError;
 
-        let text =
-            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let text = std::fs::read_to_string("../examples/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
         let circuit = parse_pcb(&text).unwrap();
         let first = circuit.components()[0].id();
         let second = circuit.components()[1].id();
@@ -2112,8 +2110,7 @@ mod tests {
     fn final_frame_materializes_bound_power_rails_between_adjacent_boards() {
         use knead_net::{PowerRailBinding, PowerRailBindings};
 
-        let text =
-            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let text = std::fs::read_to_string("../examples/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
         let circuit = parse_pcb(&text).unwrap();
         let net = circuit.nets()[0].id();
         let board = Preset::Hole400
@@ -2185,8 +2182,7 @@ mod tests {
             find_free_power_hole(&wide_board, -3, 66, 63, false, &HashSet::new()).unwrap();
         assert_eq!((wide_left.col, wide_right.col), (60, 68));
 
-        let text =
-            std::fs::read_to_string("../examples/folders/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let text = std::fs::read_to_string("../examples/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
         let circuit = parse_pcb(&text).unwrap();
         let net = circuit.nets()[0].id();
         let binding = PowerRailBinding {

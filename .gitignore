@@ -12,6 +12,7 @@ vite.config.ts.timestamp-*
 
 # KiCad / editor local history
 .history/
+*.kicad_prl
 
 # Rust / knead-net
 /target

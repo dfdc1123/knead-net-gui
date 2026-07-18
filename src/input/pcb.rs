@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn parse_and_bridge_h_bridge_pcb() {
-        let text = std::fs::read_to_string("examples/inputs/h-bridge.kicad_pcb").unwrap();
+        let text = std::fs::read_to_string("examples/h-bridge/h-bridge.kicad_pcb").unwrap();
         let mut circuit = parse_pcb(&text).unwrap();
 
         assert_eq!(circuit.components.len(), 18);

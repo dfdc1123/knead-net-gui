@@ -54,7 +54,7 @@ impl DisjointSet {
 }
 
 fn run_real_fixture() -> FixtureResult {
-    let mut circuit = parse_pcb(include_str!("../examples/inputs/h-bridge.kicad_pcb"))
+    let mut circuit = parse_pcb(include_str!("../examples/h-bridge/h-bridge.kicad_pcb"))
         .expect("real h-bridge PCB fixture should parse");
     let prepared = prepare_for_layout(&mut circuit, Preset::Hole830.make(63));
     let board = prepared.board;
@@ -208,7 +208,7 @@ fn real_pcb_parse_prepare_sa_route_connectivity() {
 
 fn different_order_circuit() -> knead_net::Circuit {
     parse_pcb(include_str!(
-        "../examples/folders/h-bridge_different_order/h-bridge.kicad_pcb"
+        "../examples/h-bridge_different_order/h-bridge.kicad_pcb"
     ))
     .expect("different-order h-bridge PCB fixture should parse")
 }
@@ -435,9 +435,9 @@ fn normalized_order_result(source: &str) -> NormalizedResult {
 
 #[test]
 fn reordered_kicad_footprints_keep_fixed_seed_result() {
-    let original = normalized_order_result(include_str!("../examples/inputs/h-bridge.kicad_pcb"));
+    let original = normalized_order_result(include_str!("../examples/h-bridge/h-bridge.kicad_pcb"));
     let reordered = normalized_order_result(include_str!(
-        "../examples/folders/h-bridge_different_order/h-bridge.kicad_pcb"
+        "../examples/h-bridge_different_order/h-bridge.kicad_pcb"
     ));
     assert_eq!(original, reordered);
 }

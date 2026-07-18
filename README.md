@@ -75,7 +75,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-仓库的 `examples/folders/` 中包含可用于体验的 KiCad 示例工程。
+仓库的 `examples/` 中包含可用于体验的 KiCad 示例工程。
 
 ## 本地检查
 
@@ -110,7 +110,7 @@ knead-net-gui/
 │   ├── input/              # KiCad PCB 解析
 │   └── layout/             # 摆位、成本计算与布线算法
 ├── src-tauri/              # Tauri 桌面应用及原理图解析
-├── examples/folders/       # 示例 KiCad 工程
+├── examples/               # 示例 KiCad 工程
 ├── package.json
 └── Cargo.toml
 ```

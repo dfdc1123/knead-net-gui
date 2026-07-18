@@ -8,7 +8,7 @@ This repository combines a SvelteKit frontend, a Tauri desktop shell, and a Rust
 - `src/input/`, `src/circuit.rs`, and `src/layout/` implement KiCad parsing, circuit models, placement, cost calculation, and routing.
 - `src-tauri/src/` exposes desktop commands and schematic processing; `src-tauri/tests/` contains integration tests.
 - `static/` holds web assets, while `src-tauri/icons/` holds packaged application icons.
-- `examples/folders/` provides complete KiCad projects for manual testing; `docs/screenshots/` contains README imagery.
+- `examples/` provides complete KiCad projects for manual testing; `docs/screenshots/` contains README imagery.
 
 Keep UI-only changes under the Svelte tree and reusable algorithmic logic in the root Rust crate.
 
