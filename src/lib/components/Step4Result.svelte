@@ -1109,7 +1109,7 @@
                   {#each assemblyParts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-accent ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'selection-ring' : ''}"
                       data-component-id={part.reference}
                     >
                       <button
@@ -1159,7 +1159,7 @@
                     {@const completed = completedWireIds.includes(wire.id)}
                     {@const wireNumber = wireNumbers.get(wire.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-accent ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'selection-ring' : ''}"
                       data-wire-id={wire.id}
                     >
                       <button
@@ -1247,12 +1247,20 @@
   }
 
   :global(.schematic-host .sch-component.is-selected) {
-    filter: drop-shadow(0 0 5px var(--color-accent)) drop-shadow(0 0 2px var(--color-accent));
+    filter: drop-shadow(0 0 5px var(--color-highlight)) drop-shadow(0 0 2px var(--color-highlight));
+  }
+
+  :global(.schematic-host .sch-component.is-selected .sch-component-hit) {
+    fill: var(--color-highlight);
+    fill-opacity: 0.12;
+    stroke: var(--color-highlight);
+    stroke-width: 3;
+    vector-effect: non-scaling-stroke;
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {
-    stroke: var(--color-accent);
+    stroke: var(--color-highlight);
     stroke-width: 4;
-    filter: drop-shadow(0 0 2px var(--color-accent));
+    filter: drop-shadow(0 0 2px var(--color-highlight));
   }
 </style>

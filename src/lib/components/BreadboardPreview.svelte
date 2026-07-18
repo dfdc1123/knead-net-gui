@@ -1008,7 +1008,7 @@
               data-net={selected?.type === "net" ? selected.id : undefined}
               d={`M ${connection.from.x} ${connection.from.y} L ${connection.to.x} ${connection.to.y}`}
               fill="none"
-              stroke="var(--color-accent)"
+              stroke="var(--color-highlight)"
               stroke-width="3"
               stroke-linecap="round"
               opacity="0.72"
@@ -1136,7 +1136,7 @@
                   height="4.2"
                   rx="0.55"
                   fill="var(--color-base-100)"
-                  stroke={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? "var(--color-accent)" : "var(--color-warning-content)"}
+                  stroke={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? "var(--color-highlight)" : "var(--color-warning-content)"}
                   stroke-width={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? 1.6 : 0.8}
                 />
               {:else}
@@ -1145,7 +1145,7 @@
                   cy={point.y}
                   r={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? 3.7 : 2.4}
                   fill="var(--color-base-100)"
-                  stroke={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? "var(--color-accent)" : "var(--color-neutral)"}
+                  stroke={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? "var(--color-highlight)" : "var(--color-neutral)"}
                   stroke-width={highlightedConnectionKeys.has(internalConnectionKey(pin.hole)) ? 1.6 : 0.8}
                 />
               {/if}
@@ -1206,7 +1206,7 @@
             <path
               d={wirePath(planned)}
               fill="none"
-              stroke="var(--color-accent)"
+              stroke="var(--color-highlight)"
               stroke-width="4.4"
               stroke-linecap="round"
               opacity="0.9"

@@ -30,6 +30,10 @@ const panelSource = readFileSync(
   new URL("../src/lib/components/Panel.svelte", import.meta.url),
   "utf8",
 );
+const appCssSource = readFileSync(
+  new URL("../src/app.css", import.meta.url),
+  "utf8",
+);
 
 test("schematic canvases keep the KiCad palette on a light theme", () => {
   for (const source of [step1Source, step4Source, pickerSource]) {
@@ -50,12 +54,17 @@ test("linked selections shrink either diagram when their bounds exceed the viewp
   assert.match(step4Source, /if \(source === "breadboard"\) await fitDiagramSelection\("schematic"\)/);
 });
 
-test("interactive selections use accent while warnings keep warning semantics", () => {
+test("interactive selections use the shared purple highlight while warnings keep warning semantics", () => {
+  assert.match(appCssSource, /--color-highlight: oklch\(74\.229% 0\.133 311\.379\)/);
   assert.match(step4Source, /selected \? 'border border-accent\/40 bg-accent\/10'/);
-  assert.equal(step4Source.match(/ring-accent/g)?.length, 2);
-  assert.match(step4Source, /drop-shadow\(0 0 5px var\(--color-accent\)\)/);
-  assert.match(pickerSource, /\.sch-net-line\.is-selected[\s\S]*stroke: var\(--color-accent\)/);
-  assert.match(breadboardSource, /internalConnectionHighlights[\s\S]*stroke="var\(--color-accent\)"/);
+  assert.equal(step4Source.match(/selection-ring/g)?.length, 2);
+  assert.match(step4Source, /drop-shadow\(0 0 5px var\(--color-highlight\)\)/);
+  assert.match(
+    step4Source,
+    /\.sch-component\.is-selected \.sch-component-hit[\s\S]*fill: var\(--color-highlight\)[\s\S]*stroke: var\(--color-highlight\)/,
+  );
+  assert.match(pickerSource, /\.sch-net-line\.is-selected[\s\S]*stroke: var\(--color-highlight\)/);
+  assert.match(breadboardSource, /internalConnectionHighlights[\s\S]*stroke="var\(--color-highlight\)"/);
   assert.match(pickerSource, /alert alert-warning/);
 });
 

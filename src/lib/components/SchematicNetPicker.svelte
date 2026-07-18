@@ -288,8 +288,8 @@
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {
-    stroke: var(--color-accent);
+    stroke: var(--color-highlight);
     stroke-width: 4;
-    filter: drop-shadow(0 0 2px var(--color-accent));
+    filter: drop-shadow(0 0 2px var(--color-highlight));
   }
 </style>
