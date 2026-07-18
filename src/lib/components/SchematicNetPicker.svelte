@@ -2,6 +2,10 @@
   import { tick } from "svelte";
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import { ui } from "$lib/i18n";
+  import {
+    createWheelGestureClassifier,
+    zoomFactorForWheelGesture,
+  } from "$lib/wheelGestures.js";
   import ZoomControls from "./ZoomControls.svelte";
 
   let {
@@ -36,6 +40,7 @@
   };
 
   let panGesture: PanGesture | null = null;
+  const classifyWheel = createWheelGestureClassifier();
 
   function clampZoom(nextZoom: number) {
     return Math.min(3, Math.max(0.5, Math.round(nextZoom * 100) / 100));
@@ -74,10 +79,17 @@
   async function handleZoomWheel(event: WheelEvent) {
     event.preventDefault();
     const viewport = event.currentTarget as HTMLDivElement;
+    const gesture = classifyWheel(event);
+    if (gesture === "pan") {
+      viewport.scrollLeft += event.deltaX;
+      viewport.scrollTop += event.deltaY;
+      return;
+    }
+
     const diagram = viewport.querySelector("svg");
     if (!diagram) return;
 
-    const nextZoom = clampZoom(zoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
+    const nextZoom = clampZoom(zoom * zoomFactorForWheelGesture(gesture, event.deltaY));
     if (nextZoom === zoom) return;
 
     const before = diagram.getBoundingClientRect();

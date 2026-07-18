@@ -1,7 +1,10 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { onMount } from "svelte";
   import { locale, ui } from "$lib/i18n";
+  import { projectTargetFromDrop } from "$lib/projectDrop.js";
   import Panel from "./Panel.svelte";
 
   type FolderEntry = { name: string; path: string; ext: string; bytes: number };
@@ -10,9 +13,11 @@
   let {
     onStatusChange = () => {},
     onSchematicChange = () => {},
+    onDropStart = () => {},
   }: {
     onStatusChange?: (ready: boolean) => void;
     onSchematicChange?: (svg: string) => void;
+    onDropStart?: () => void;
   } = $props();
 
   let folder = $state<string | null>(null);
@@ -23,6 +28,42 @@
   let svg = $state<string>("");
   let error = $state<string>("");
   let busy = $state(false);
+  let dragActive = $state(false);
+
+  onMount(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    try {
+      void getCurrentWebview().onDragDropEvent((event) => {
+        if (event.payload.type === "enter") {
+          dragActive = true;
+          onDropStart();
+          return;
+        }
+        if (event.payload.type === "over") {
+          dragActive = true;
+          return;
+        }
+        dragActive = false;
+        if (event.payload.type === "drop") {
+          void importDroppedPaths(event.payload.paths);
+        }
+      }).then((removeListener) => {
+        if (disposed) removeListener();
+        else unlisten = removeListener;
+      }).catch(() => {
+        // Native file paths are only available inside the Tauri webview.
+      });
+    } catch {
+      // Keep the browser-only Vite preview usable.
+    }
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
 
   async function pickFolder() {
     try {
@@ -36,7 +77,18 @@
     }
   }
 
-  async function loadFolder(path: string) {
+  async function importDroppedPaths(paths: string[]) {
+    if (busy) return;
+    const target = projectTargetFromDrop(paths);
+    if (!target) {
+      error = ui.step1.invalidDrop;
+      return;
+    }
+    onDropStart();
+    await loadFolder(target.folder, target.preferredProject);
+  }
+
+  async function loadFolder(path: string, preferredProject: string | null = null) {
     busy = true;
     error = "";
     folder = path;
@@ -65,7 +117,11 @@
       projects = nextProjects;
 
       if (nextProjects.length > 0) {
-        await selectProject(nextProjects.find((project) => project.pcb) ?? nextProjects[0]);
+        await selectProject(
+          nextProjects.find((project) => project.name === preferredProject) ??
+          nextProjects.find((project) => project.pcb) ??
+          nextProjects[0],
+        );
       }
     } catch (e) {
       error = String(e);
@@ -125,6 +181,14 @@
 </script>
 
 <div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
+  {#if dragActive}
+    <div class="pointer-events-none fixed inset-3 bottom-20 z-50 flex items-center justify-center rounded-box border-2 border-dashed border-primary bg-primary/15 backdrop-blur-sm" role="status">
+      <div class="rounded-box bg-base-100 px-6 py-4 text-center shadow-lg">
+        <p class="font-semibold text-primary">{ui.step1.dropHere}</p>
+        <p class="mt-1 text-xs text-base-content/60">{ui.step1.dropHint}</p>
+      </div>
+    </div>
+  {/if}
   <header class="shrink-0">
     <h1 class="text-2xl font-bold">{ui.step1.title}</h1>
   </header>

@@ -2,6 +2,18 @@
   import { tick } from "svelte";
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import { ui } from "$lib/i18n";
+  import {
+    createWheelGestureClassifier,
+    zoomFactorForWheelGesture,
+  } from "$lib/wheelGestures.js";
+  import {
+    assemblyDirectJumpCommand,
+    assemblyNavigationOffset,
+    createVimStartSequence,
+    hasShortcutModifier,
+    isAssemblyCompletionKey,
+    isTextEditingTarget,
+  } from "$lib/keyboardShortcuts.js";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import Panel from "./Panel.svelte";
   import ZoomControls from "./ZoomControls.svelte";
@@ -17,12 +29,14 @@
   import { parseKiCadTextMarkup } from "$lib/layout";
 
   let {
+    active = true,
     preset,
     useUpperHalf = true,
     useLowerHalf = true,
     frame,
     schematicSvg = "",
   }: {
+    active?: boolean;
     preset: BreadboardPreset;
     useUpperHalf?: boolean;
     useLowerHalf?: boolean;
@@ -55,6 +69,7 @@
   type SelectionSource = "schematic" | "breadboard" | "assembly";
   let selectionSource = $state<SelectionSource | null>(null);
   let selectionRevealRequest = 0;
+  const recognizeVimStart = createVimStartSequence();
 
   type PanGesture = {
     pointerId: number;
@@ -97,6 +112,8 @@
   let selectedDetailsResizeGesture: SelectedDetailsResizeGesture | null = null;
 
   type DiagramTarget = "schematic" | "breadboard";
+  const classifySchematicWheel = createWheelGestureClassifier();
+  const classifyBreadboardWheel = createWheelGestureClassifier();
   type PendingViewportSize = {
     viewport: HTMLDivElement;
     width: number;
@@ -460,11 +477,21 @@
   async function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
     event.preventDefault();
     const viewport = event.currentTarget as HTMLDivElement;
+    const classifyWheel = target === "schematic" ? classifySchematicWheel : classifyBreadboardWheel;
+    const gesture = classifyWheel(event);
+    if (gesture === "pan") {
+      viewport.scrollLeft += event.deltaX;
+      viewport.scrollTop += event.deltaY;
+      return;
+    }
+
     const diagram = viewport.querySelector("svg");
     if (!diagram) return;
 
     const currentZoom = target === "schematic" ? schematicZoom : breadboardZoom;
-    const nextZoom = clampZoom(currentZoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
+    const nextZoom = clampZoom(
+      currentZoom * zoomFactorForWheelGesture(gesture, event.deltaY),
+    );
     if (nextZoom === currentZoom) return;
 
     // 记录鼠标在图中的相对位置，更新尺寸后把同一点移回鼠标下方。
@@ -531,6 +558,111 @@
       label: wire.net_name || wire.net_id || wire.id,
       netId: wire.net_id,
     });
+  }
+
+  function assemblyTasks() {
+    return [
+      ...assemblyParts.map((part) => ({
+        type: "component" as const,
+        id: part.reference,
+        label: part.reference,
+      })),
+      ...assemblyWires.map((wire) => ({
+        type: "wire" as const,
+        id: wire.id,
+        label: wire.net_name || wire.net_id || wire.id,
+        netId: wire.net_id,
+      })),
+    ];
+  }
+
+  function selectAssemblyTask(task: CircuitSelection) {
+    selected = task;
+    selectionSource = "assembly";
+  }
+
+  function jumpToAssembly(command: "first" | "last" | "components" | "wires") {
+    const tasks = assemblyTasks();
+    const task = command === "first"
+      ? tasks[0]
+      : command === "last"
+        ? tasks.at(-1)
+        : tasks.find((task) =>
+          task.type === (command === "components" ? "component" : "wire")
+        );
+    if (!task) return;
+    selectAssemblyTask(task);
+  }
+
+  function navigateAssembly(offset: number) {
+    const tasks = assemblyTasks();
+    if (tasks.length === 0) return;
+    const currentIndex = tasks.findIndex(
+      (task) => selected?.type === task.type && selected.id === task.id,
+    );
+    const nextIndex = currentIndex < 0
+      ? offset > 0 ? 0 : tasks.length - 1
+      : (currentIndex + offset + tasks.length) % tasks.length;
+    selectAssemblyTask(tasks[nextIndex]);
+  }
+
+  function completeSelectedAssemblyTask() {
+    if (selected?.type === "component") {
+      const part = parts.find((part) => part.reference === selected?.id);
+      if (!part || completedPartIds.includes(part.id)) return false;
+      setPartCompleted(part.id, true);
+      return true;
+    }
+    if (selected?.type === "wire") {
+      const wire = wires.find((wire) => wire.id === selected?.id);
+      if (!wire || completedWireIds.includes(wire.id)) return false;
+      setWireCompleted(wire.id, true);
+      return true;
+    }
+    return false;
+  }
+
+  function handleAssemblyShortcut(event: KeyboardEvent) {
+    if (
+      !active ||
+      event.defaultPrevented ||
+      isTextEditingTarget(event.target)
+    ) return;
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("button") && !target.closest(".assembly-row-hit")) return;
+
+    const directJump = assemblyDirectJumpCommand(event);
+    if (event.repeat && (event.key === "g" || directJump || isAssemblyCompletionKey(event.key))) {
+      event.preventDefault();
+      return;
+    }
+
+    const vimStart = recognizeVimStart(event.key, event.timeStamp);
+    if (directJump) {
+      event.preventDefault();
+      jumpToAssembly(directJump);
+      return;
+    }
+    if (hasShortcutModifier(event)) return;
+
+    if (vimStart) {
+      event.preventDefault();
+      if (vimStart === "trigger") jumpToAssembly("first");
+      return;
+    }
+
+    const offset = assemblyNavigationOffset(event.key);
+    if (offset !== 0) {
+      event.preventDefault();
+      navigateAssembly(offset);
+      return;
+    }
+
+    if (isAssemblyCompletionKey(event.key)) {
+      event.preventDefault();
+      completeSelectedAssemblyTask();
+    }
   }
 
   function nextPendingItem<T>(
@@ -775,6 +907,8 @@
     }
   });
 </script>
+
+<svelte:window onkeydown={handleAssemblyShortcut} />
 
 <div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="flex shrink-0 items-center justify-between gap-3">
