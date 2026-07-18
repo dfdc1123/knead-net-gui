@@ -799,13 +799,13 @@
   </header>
 
   <div
-    class="alert h-10 shrink-0 overflow-hidden py-2 text-sm {selected ? 'alert-warning' : 'border border-base-300 bg-base-100 text-base-content/60'}"
+    class="alert h-10 shrink-0 overflow-hidden py-2 text-sm {selected ? 'border border-accent/40 bg-accent/10' : 'border border-base-300 bg-base-100 text-base-content/60'}"
     aria-live="polite"
   >
-    <span class="status {selected ? 'status-warning' : 'status-neutral'}" aria-hidden="true"></span>
+    <span class="status {selected ? 'status-accent' : 'status-neutral'}" aria-hidden="true"></span>
     {#if selected}
       <span>
-        <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : selected.type === 'wire' ? 'badge-accent' : 'badge-secondary'}">
+        <span class="badge badge-accent badge-sm">
           {selected.type === "component" ? ui.step4.component : selected.type === "wire" ? ui.step4.wire : ui.step4.net}
         </span>
         <strong class="ml-1 font-mono">{selected.label}</strong>
@@ -993,14 +993,14 @@
 
         {#if selectedPart}
           <section
-            class="mt-3 flex shrink-0 flex-col overflow-hidden rounded-box border border-warning/50 bg-warning/5"
+            class="mt-3 flex shrink-0 flex-col overflow-hidden rounded-box border border-accent/40 bg-accent/5"
             style:height={`${Math.min(selectedDetailsHeight, selectedDetailsMaxHeight)}px`}
             aria-label={ui.step4.selectedDetails}
           >
-            <div class="flex shrink-0 items-start justify-between gap-2 border-b border-warning/30 px-3 py-2">
+            <div class="flex shrink-0 items-start justify-between gap-2 border-b border-accent/30 px-3 py-2">
               <div class="min-w-0">
                 <div class="flex items-center gap-2">
-                  <span class="badge badge-warning badge-sm font-mono">{selectedPart.reference}</span>
+                  <span class="badge badge-accent badge-sm font-mono">{selectedPart.reference}</span>
                   <strong class="truncate text-sm">{selectedPart.value || ui.common.placeholder}</strong>
                 </div>
                 {#if selectedPart.description}
@@ -1051,7 +1051,7 @@
                 </table>
               </div>
               {#if selectedPart.properties?.length}
-                <details class="border-t border-warning/30 px-3 py-2 text-xs">
+                <details class="border-t border-accent/30 px-3 py-2 text-xs">
                   <summary class="cursor-pointer font-medium">{ui.step4.properties} ({selectedPart.properties.length})</summary>
                   <dl class="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-1">
                     {#each selectedPart.properties as property}
@@ -1066,7 +1066,7 @@
                   </dl>
                 </details>
               {/if}
-              <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-warning/30 px-3 py-2 text-[0.68rem] text-base-content/55">
+              <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-accent/30 px-3 py-2 text-[0.68rem] text-base-content/55">
                 <span class="truncate" title={selectedPart.footprint}>{ui.step4.footprint}: {selectedPart.footprint}</span>
                 {#if selectedPart.datasheet}<span class="truncate" title={selectedPart.datasheet}>{ui.step4.datasheet}: {selectedPart.datasheet}</span>{/if}
               </div>
@@ -1108,7 +1108,7 @@
                   {#each assemblyParts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-accent ring-inset' : ''}"
                       data-component-id={part.reference}
                     >
                       <button
@@ -1158,7 +1158,7 @@
                     {@const completed = completedWireIds.includes(wire.id)}
                     {@const wireNumber = wireNumbers.get(wire.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-accent ring-inset' : ''}"
                       data-wire-id={wire.id}
                     >
                       <button
@@ -1246,12 +1246,12 @@
   }
 
   :global(.schematic-host .sch-component.is-selected) {
-    filter: drop-shadow(0 0 5px var(--color-warning)) drop-shadow(0 0 2px var(--color-warning));
+    filter: drop-shadow(0 0 5px var(--color-accent)) drop-shadow(0 0 2px var(--color-accent));
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {
-    stroke: var(--color-warning);
+    stroke: var(--color-accent);
     stroke-width: 4;
-    filter: drop-shadow(0 0 2px var(--color-warning));
+    filter: drop-shadow(0 0 2px var(--color-accent));
   }
 </style>
