@@ -380,6 +380,8 @@
               {useLowerHalf}
               panCanvas={false}
               solidWires={phase === "done"}
+              tieNegativeRails={false}
+              tiePositiveRails={false}
             />
           </div>
           {#if !frame}
