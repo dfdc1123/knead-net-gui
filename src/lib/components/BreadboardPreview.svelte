@@ -1023,7 +1023,7 @@
           {@const path = wirePath(planned)}
           {@const completed = completedWireIds.includes(wire.id)}
           <g
-            class="cursor-pointer"
+            class="breadboard-focus-target breadboard-selectable cursor-pointer"
             data-wire={wire.id}
             data-net={wire.net_id}
             role="button"
@@ -1063,7 +1063,7 @@
           {@const bounds = partBounds(part)}
           {@const label = plannedPartLabels.get(part.id) ?? { x: bounds.cx, y: bounds.cy }}
           <g
-            class="cursor-pointer transition-opacity"
+            class="breadboard-focus-target breadboard-selectable cursor-pointer transition-opacity"
             data-component={part.reference}
             role="button"
             tabindex="0"
@@ -1284,7 +1284,7 @@
       {@const halfHeight = boardHeight / 2}
       <g aria-label={ui.step2.boardArea}>
         <g
-          class="half-selection-hit cursor-pointer"
+          class="breadboard-focus-target half-selection-hit cursor-pointer"
           role="button"
           tabindex="0"
           aria-label={ui.step2.selectUpperHalf}
@@ -1298,7 +1298,7 @@
           <rect class="half-selection-hover" width={boardWidth} height={halfHeight} rx="7" />
         </g>
         <g
-          class="half-selection-hit cursor-pointer"
+          class="breadboard-focus-target half-selection-hit cursor-pointer"
           role="button"
           tabindex="0"
           aria-label={ui.step2.selectLowerHalf}
@@ -1318,6 +1318,14 @@
 </div>
 
 <style>
+  .breadboard-focus-target {
+    outline: none;
+  }
+
+  .breadboard-selectable:focus-visible {
+    filter: drop-shadow(0 0 2px var(--color-highlight));
+  }
+
   .half-selection-hover {
     fill: var(--color-primary);
     fill-opacity: 0;

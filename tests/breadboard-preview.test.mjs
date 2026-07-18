@@ -33,6 +33,16 @@ test("breadboard canvas prevents native text selection on double click", () => {
   assert.match(source, /class="[^"]*select-none[^"]*"[\s\S]*role="presentation"/);
 });
 
+test("focusable breadboard items replace the Windows native focus rectangle", () => {
+  assert.equal(source.match(/class="breadboard-focus-target breadboard-selectable /g)?.length, 2);
+  assert.equal(source.match(/class="breadboard-focus-target half-selection-hit /g)?.length, 2);
+  assert.match(source, /\.breadboard-focus-target\s*\{\s*outline: none;/);
+  assert.match(
+    source,
+    /\.breadboard-selectable:focus-visible[\s\S]*drop-shadow\(0 0 2px var\(--color-highlight\)\)/,
+  );
+});
+
 test("selected pin callout text centers without relying on dominant-baseline", () => {
   assert.match(
     source,
