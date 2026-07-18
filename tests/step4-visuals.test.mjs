@@ -18,6 +18,14 @@ const breadboardSource = readFileSync(
   new URL("../src/lib/components/BreadboardPreview.svelte", import.meta.url),
   "utf8",
 );
+const step2Source = readFileSync(
+  new URL("../src/lib/components/Step2SelectBoard.svelte", import.meta.url),
+  "utf8",
+);
+const step3Source = readFileSync(
+  new URL("../src/lib/components/Step3Compute.svelte", import.meta.url),
+  "utf8",
+);
 
 test("schematic canvases keep the KiCad palette on a light theme", () => {
   for (const source of [step1Source, step4Source, pickerSource]) {
@@ -45,4 +53,12 @@ test("interactive selections use accent while warnings keep warning semantics", 
   assert.match(pickerSource, /\.sch-net-line\.is-selected[\s\S]*stroke: var\(--color-accent\)/);
   assert.match(breadboardSource, /internalConnectionHighlights[\s\S]*stroke="var\(--color-accent\)"/);
   assert.match(pickerSource, /alert alert-warning/);
+});
+
+test("workflow pages share the same outer spacing", () => {
+  const pageClass =
+    'class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6"';
+  for (const source of [step1Source, step2Source, step3Source, step4Source]) {
+    assert.ok(source.includes(pageClass));
+  }
 });

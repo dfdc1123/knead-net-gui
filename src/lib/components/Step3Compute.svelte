@@ -282,7 +282,7 @@
   }
 </script>
 
-<div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="flex shrink-0 items-center justify-between gap-3">
     <h1 class="text-2xl font-bold">{ui.step3.title}</h1>
     {#if phase === "annealing"}

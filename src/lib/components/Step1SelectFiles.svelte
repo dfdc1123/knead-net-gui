@@ -123,7 +123,7 @@
   }
 </script>
 
-<div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="shrink-0">
     <h1 class="text-2xl font-bold">{ui.step1.title}</h1>
     <p class="text-sm text-base-content/60">{ui.step1.subtitle}</p>
