@@ -57,7 +57,7 @@
     {/if}
     {#if sourceReady && boardReady && board}
       <div class:hidden={step !== 2} class="h-full">
-        <Step3Compute preset={board.preset} boardCols={board.boardCols} useUpperHalf={board.useUpperHalf} useLowerHalf={board.useLowerHalf} onComplete={handleComputeComplete} />
+        <Step3Compute active={step === 2} preset={board.preset} boardCols={board.boardCols} useUpperHalf={board.useUpperHalf} useLowerHalf={board.useLowerHalf} onComplete={handleComputeComplete} />
       </div>
     {/if}
     {#if resultReady && board && resultFrame}

@@ -15,12 +15,14 @@
   import Panel from "./Panel.svelte";
 
   let {
+    active = false,
     preset = "hole400",
     boardCols = 30,
     useUpperHalf = true,
     useLowerHalf = true,
     onComplete = () => {},
   }: {
+    active?: boolean;
     preset?: BreadboardPreset;
     boardCols?: number;
     useUpperHalf?: boolean;
@@ -28,14 +30,6 @@
     onComplete?: (frame: LayoutFrame) => void;
   } = $props();
 
-  type ProfileId = "quick" | "standard" | "full";
-  type ComputeProfile = { id: ProfileId; name: string; description: string };
-
-  const profiles: ComputeProfile[] = [
-    { id: "quick", name: ui.step3.profiles.quick, description: ui.step3.profileDescriptions.quick },
-    { id: "standard", name: ui.step3.profiles.standard, description: ui.step3.profileDescriptions.standard },
-    { id: "full", name: ui.step3.profiles.full, description: ui.step3.profileDescriptions.full },
-  ];
   const phases: { id: Exclude<ComputePhase, "idle" | "error">; label: string }[] = [
     { id: "spectral", label: ui.step3.phaseInitial },
     { id: "annealing", label: ui.step3.phaseLayout },
@@ -43,7 +37,6 @@
     { id: "done", label: ui.step3.done },
   ];
 
-  let profileId = $state<ProfileId>(import.meta.env.DEV ? "quick" : "standard");
   let phase = $state<ComputePhase>("idle");
   let progress = $state(0);
   let frame = $state<LayoutFrame | null>(null);
@@ -67,7 +60,6 @@
   let busy = $derived(phase !== "idle" && phase !== "done" && phase !== "error");
   let safeProgress = $derived(Math.max(0, Math.min(100, Number(progress) || 0)));
   let activeIndex = $derived(phases.findIndex((item) => item.id === phase));
-  let selectedProfile = $derived(profiles.find((item) => item.id === profileId) ?? profiles[0]);
   let previewBoardCols = $derived(frame?.board_cols ?? boardCols);
   let previewBoardCount = $derived(frame?.board_count ?? 1);
   let remainingSeeds = $derived(Math.max(0, totalSeeds - completedSeeds));
@@ -249,10 +241,10 @@
     resetSeedPreview();
     progress = 0;
     phase = "spectral";
-    message = ui.step3.starting(selectedProfile.name);
+    message = ui.step3.starting(ui.step3.profiles.full);
 
     const request: ComputeRequest = {
-      profile: selectedProfile.id,
+      profile: "full",
       locale,
     };
     try {
@@ -264,6 +256,10 @@
       message = ui.step3.computeFailed;
     }
   }
+
+  $effect(() => {
+    if (active && listenerReady && phase === "idle") void start();
+  });
 
   async function interruptAndRoute() {
     if (phase !== "annealing" || interrupting) return;
@@ -292,37 +288,16 @@
         {interrupting ? ui.step3.interrupting : ui.step3.interruptAndRoute}
       </button>
     {:else}
-      {#if phase === "idle" && listenerReady}
-        <span class="aura aura-sm workflow-next-step text-primary">
-          <button class="btn btn-sm btn-primary" onclick={start}>
-            {ui.step3.start}
-          </button>
-        </span>
-      {:else}
-        <button class="btn btn-sm btn-primary" onclick={start} disabled={busy || !listenerReady}>
-          {#if busy}<span class="loading loading-spinner loading-xs"></span>{/if}
-          {phase === "done" || phase === "error" ? ui.step3.recompute : busy ? ui.step3.computing : ui.step3.start}
-        </button>
-      {/if}
+      <button class="btn btn-sm btn-primary" onclick={start} disabled={busy || !listenerReady || phase === "idle"}>
+        {#if busy || phase === "idle"}<span class="loading loading-spinner loading-xs"></span>{/if}
+        {phase === "done" || phase === "error" ? ui.step3.recompute : phase === "idle" ? ui.step3.waiting : ui.step3.computing}
+      </button>
     {/if}
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[23rem_minmax(0,1fr)] gap-4">
     <Panel as="aside" class="overflow-y-auto">
       <div class="card-body min-h-0 gap-4 p-4">
-        <fieldset class="fieldset shrink-0" disabled={busy}>
-          <legend class="fieldset-legend">{ui.step3.strength}</legend>
-          <div class="join join-vertical w-full">
-            {#each profiles as item}
-              <label class="join-item flex cursor-pointer items-center gap-3 border border-base-300 px-4 py-3 hover:bg-base-200" class:bg-base-200={profileId === item.id}>
-                <input class="radio radio-primary radio-sm" type="radio" name="compute-profile" value={item.id} bind:group={profileId} />
-                <span class="flex-1 font-semibold">{item.name}</span>
-                <span class="text-xs text-base-content/60">{item.description}</span>
-              </label>
-            {/each}
-          </div>
-        </fieldset>
-
         <ul class="steps steps-vertical text-sm" aria-label={ui.step3.phases}>
           {#each phases as item, index}
             <li class={stepClass(index)} data-content={phase === item.id && busy ? "●" : undefined}>{item.label}</li>

@@ -7,6 +7,10 @@ const source = readFileSync(
   new URL("../src/lib/components/Step3Compute.svelte", import.meta.url),
   "utf8",
 );
+const pageSource = readFileSync(
+  new URL("../src/routes/+page.svelte", import.meta.url),
+  "utf8",
+);
 
 test("completed seeds replace the preview only when their cost improves", () => {
   assert.equal(isBetterSeedCost(null, 120), true);
@@ -25,4 +29,12 @@ test("Step 3 shows that remaining seeds are still searching", () => {
 test("Step 3 idle preview omits synthetic top-to-bottom power-rail ties", () => {
   assert.match(source, /tieNegativeRails=\{false\}/);
   assert.match(source, /tiePositiveRails=\{false\}/);
+});
+
+test("Step 3 starts the full profile only after the user enters it", () => {
+  assert.match(pageSource, /<Step3Compute[^>]*active=\{step === 2\}/s);
+  assert.match(source, /active && listenerReady && phase === "idle"/);
+  assert.match(source, /profile: "full"/);
+  assert.doesNotMatch(source, /ui\.step3\.profiles\.(?:quick|standard)/);
+  assert.doesNotMatch(source, /bind:group=\{profileId\}/);
 });
