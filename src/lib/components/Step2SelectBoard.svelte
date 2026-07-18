@@ -8,6 +8,7 @@
   import { locale, ui } from "$lib/i18n";
   import type { BreadboardPreset, BreadboardSelection } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import Panel from "./Panel.svelte";
   import SchematicNetPicker from "./SchematicNetPicker.svelte";
 
   let {
@@ -193,13 +194,13 @@
   }
 </script>
 
-<div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="shrink-0">
     <h1 class="text-2xl font-bold">{ui.step2.title}</h1>
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[22rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+    <Panel as="aside" class="overflow-y-auto">
       <div class="card-body gap-4 p-4">
         <fieldset class="fieldset" disabled={busy}>
           <legend class="fieldset-legend">{ui.step2.boardType}</legend>
@@ -254,8 +255,6 @@
           </div>
           <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.previewHalfHint}</p>
         </fieldset>
-
-        <p class="text-xs leading-relaxed text-base-content/60">{ui.step2.autoBoardHint}</p>
 
         {#if hasPowerRails}
           <fieldset class="fieldset" disabled={busy || !powerOptionsReady}>
@@ -323,26 +322,16 @@
                 </label>
               </div>
             {/if}
-            {#if useUpperHalf && useLowerHalf}
-              <p class="label whitespace-normal text-xs text-base-content/60">{ui.step2.powerRailHint}</p>
-            {/if}
           </fieldset>
-        {/if}
-
-        {#if info}
-          <div class="flex flex-wrap gap-2">
-            <span class="badge badge-primary">{ui.step2.holes(info.holes)}</span>
-            <span class="badge badge-outline">{info.has_power_rails ? ui.step2.withRails : ui.step2.withoutRails}</span>
-          </div>
         {/if}
 
         {#if error}
           <div class="alert alert-error text-sm" role="alert"><span>{error}</span></div>
         {/if}
       </div>
-    </aside>
+    </Panel>
 
-    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+    <Panel>
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
           <h2 class="card-title text-sm">{ui.common.preview}</h2>
@@ -373,7 +362,7 @@
           {/if}
         </div>
       </div>
-    </section>
+    </Panel>
   </div>
 </div>
 

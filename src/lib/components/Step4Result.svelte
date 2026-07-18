@@ -3,6 +3,7 @@
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import { ui } from "$lib/i18n";
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import Panel from "./Panel.svelte";
   import ZoomControls from "./ZoomControls.svelte";
   import type {
     BreadboardHole,
@@ -772,11 +773,10 @@
   });
 </script>
 
-<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-3 overflow-hidden p-4">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="flex shrink-0 items-center justify-between gap-3">
     <div>
       <h1 class="text-2xl font-bold">{ui.step4.title}</h1>
-      <p class="text-sm text-base-content/60">{ui.step4.subtitle}</p>
     </div>
 
     <div class="flex items-center gap-2">
@@ -799,13 +799,13 @@
   </header>
 
   <div
-    class="alert h-10 shrink-0 overflow-hidden py-2 text-sm {selected ? 'alert-warning' : 'border border-base-300 bg-base-100 text-base-content/60'}"
+    class="alert h-10 shrink-0 overflow-hidden py-2 text-sm {selected ? 'border border-accent/40 bg-accent/10' : 'border border-base-300 bg-base-100 text-base-content/60'}"
     aria-live="polite"
   >
-    <span class="status {selected ? 'status-warning' : 'status-neutral'}" aria-hidden="true"></span>
+    <span class="status {selected ? 'status-accent' : 'status-neutral'}" aria-hidden="true"></span>
     {#if selected}
       <span>
-        <span class="badge badge-sm {selected.type === 'component' ? 'badge-primary' : selected.type === 'wire' ? 'badge-accent' : 'badge-secondary'}">
+        <span class="badge badge-accent badge-sm">
           {selected.type === "component" ? ui.step4.component : selected.type === "wire" ? ui.step4.wire : ui.step4.net}
         </span>
         <strong class="ml-1 font-mono">{selected.label}</strong>
@@ -830,7 +830,7 @@
       bind:this={visualPanelsHost}
       style:grid-template-rows={schematicPanelHeight === null ? undefined : `${schematicPanelHeight}px 0.75rem minmax(0, 1fr)`}
     >
-      <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
+      <Panel class="overflow-hidden">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between px-1">
             <h2 class="card-title text-base">{ui.common.schematic}</h2>
@@ -889,7 +889,7 @@
             </div>
           {/if}
         </div>
-      </section>
+      </Panel>
 
       <button
         type="button"
@@ -906,13 +906,11 @@
         <div class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-base-300 group-hover:bg-primary"></div>
       </button>
 
-      <section class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm">
+      <Panel class="overflow-hidden">
         <div class="card-body min-h-0 gap-2 p-3">
           <div class="flex shrink-0 items-center justify-between gap-3 px-1">
             <div class="flex items-center gap-2">
               <h2 class="card-title text-base">{ui.step4.breadboard}</h2>
-              <span class="badge badge-primary badge-sm">{ui.step4.boards(frame.board_count)}</span>
-              <span class="badge badge-ghost badge-sm">{ui.step4.columns(frame.total_cols)}</span>
             </div>
             <div class="flex items-center gap-3 text-xs">
               <span class="flex items-center gap-1.5"><span class="status status-success"></span>{ui.step4.completedSolid}</span>
@@ -957,7 +955,7 @@
             />
           </div>
         </div>
-      </section>
+      </Panel>
     </div>
 
     <button
@@ -975,12 +973,12 @@
       <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-base-300 group-hover:bg-primary"></div>
     </button>
 
-    <aside class="card min-h-0 overflow-hidden border border-base-300 bg-base-100 shadow-sm" aria-label={ui.step4.assemblyList}>
+    <Panel as="aside" class="overflow-hidden" aria-label={ui.step4.assemblyList}>
       <div class="card-body min-h-0 gap-0 p-3" bind:this={assemblyBodyHost} use:observeAssemblyBody>
         <div class="shrink-0 px-1">
           <div class="flex items-center justify-between gap-2">
             <h2 class="card-title text-base">{ui.step4.assemblyList}</h2>
-            <span class="badge {completedTaskCount === taskCount && taskCount > 0 ? 'badge-success' : 'badge-primary'} badge-sm">
+            <span class="badge {completedTaskCount === taskCount && taskCount > 0 ? 'badge-success' : 'badge-outline'} badge-sm">
               {completedTaskCount} / {taskCount}
             </span>
           </div>
@@ -993,14 +991,14 @@
 
         {#if selectedPart}
           <section
-            class="mt-3 flex shrink-0 flex-col overflow-hidden rounded-box border border-warning/50 bg-warning/5"
+            class="mt-3 flex shrink-0 flex-col overflow-hidden rounded-box border border-accent/40 bg-accent/5"
             style:height={`${Math.min(selectedDetailsHeight, selectedDetailsMaxHeight)}px`}
             aria-label={ui.step4.selectedDetails}
           >
-            <div class="flex shrink-0 items-start justify-between gap-2 border-b border-warning/30 px-3 py-2">
+            <div class="flex shrink-0 items-start justify-between gap-2 border-b border-accent/30 px-3 py-2">
               <div class="min-w-0">
                 <div class="flex items-center gap-2">
-                  <span class="badge badge-warning badge-sm font-mono">{selectedPart.reference}</span>
+                  <span class="badge badge-accent badge-sm font-mono">{selectedPart.reference}</span>
                   <strong class="truncate text-sm">{selectedPart.value || ui.common.placeholder}</strong>
                 </div>
                 {#if selectedPart.description}
@@ -1051,7 +1049,7 @@
                 </table>
               </div>
               {#if selectedPart.properties?.length}
-                <details class="border-t border-warning/30 px-3 py-2 text-xs">
+                <details class="border-t border-accent/30 px-3 py-2 text-xs">
                   <summary class="cursor-pointer font-medium">{ui.step4.properties} ({selectedPart.properties.length})</summary>
                   <dl class="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-2 gap-y-1">
                     {#each selectedPart.properties as property}
@@ -1066,7 +1064,7 @@
                   </dl>
                 </details>
               {/if}
-              <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-warning/30 px-3 py-2 text-[0.68rem] text-base-content/55">
+              <div class="flex flex-wrap gap-x-3 gap-y-1 border-t border-accent/30 px-3 py-2 text-[0.68rem] text-base-content/55">
                 <span class="truncate" title={selectedPart.footprint}>{ui.step4.footprint}: {selectedPart.footprint}</span>
                 {#if selectedPart.datasheet}<span class="truncate" title={selectedPart.datasheet}>{ui.step4.datasheet}: {selectedPart.datasheet}</span>{/if}
               </div>
@@ -1094,7 +1092,7 @@
             <input type="checkbox" bind:checked={partListOpen} aria-label={ui.step4.toggleComponents} />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               {ui.step4.components}
-              <span class="badge {completedPartCount === frame.parts.length && frame.parts.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
+              <span class="badge {completedPartCount === frame.parts.length && frame.parts.length > 0 ? 'badge-success' : 'badge-outline'} badge-sm">
                 {completedPartCount} / {frame.parts.length}
               </span>
             </div>
@@ -1108,7 +1106,7 @@
                   {#each assemblyParts as part (part.id)}
                     {@const completed = completedPartIds.includes(part.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'ring-1 ring-warning ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'component' && selected.id === part.reference ? 'selection-ring' : ''}"
                       data-component-id={part.reference}
                     >
                       <button
@@ -1143,7 +1141,7 @@
             <input type="checkbox" bind:checked={wireListOpen} aria-label={ui.step4.toggleWires} />
             <div class="collapse-title flex min-h-12 items-center gap-2 py-3 font-semibold">
               {ui.step4.wires}
-              <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-neutral'} badge-sm">
+              <span class="badge {completedWireCount === wires.length && wires.length > 0 ? 'badge-success' : 'badge-outline'} badge-sm">
                 {completedWireCount} / {wires.length}
               </span>
             </div>
@@ -1158,7 +1156,7 @@
                     {@const completed = completedWireIds.includes(wire.id)}
                     {@const wireNumber = wireNumbers.get(wire.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'ring-1 ring-warning ring-inset' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'selection-ring' : ''}"
                       data-wire-id={wire.id}
                     >
                       <button
@@ -1205,7 +1203,7 @@
           </div>
         {/if}
       </div>
-    </aside>
+    </Panel>
   </div>
 </div>
 
@@ -1246,12 +1244,20 @@
   }
 
   :global(.schematic-host .sch-component.is-selected) {
-    filter: drop-shadow(0 0 5px var(--color-warning)) drop-shadow(0 0 2px var(--color-warning));
+    filter: drop-shadow(0 0 5px var(--color-highlight)) drop-shadow(0 0 2px var(--color-highlight));
+  }
+
+  :global(.schematic-host .sch-component.is-selected .sch-component-hit) {
+    fill: var(--color-highlight);
+    fill-opacity: 0.12;
+    stroke: var(--color-highlight);
+    stroke-width: 3;
+    vector-effect: non-scaling-stroke;
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {
-    stroke: var(--color-warning);
+    stroke: var(--color-highlight);
     stroke-width: 4;
-    filter: drop-shadow(0 0 2px var(--color-warning));
+    filter: drop-shadow(0 0 2px var(--color-highlight));
   }
 </style>

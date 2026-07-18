@@ -12,6 +12,7 @@
     LayoutFrame,
   } from "$lib/layout";
   import BreadboardPreview from "./BreadboardPreview.svelte";
+  import Panel from "./Panel.svelte";
 
   let {
     preset = "hole400",
@@ -282,7 +283,7 @@
   }
 </script>
 
-<div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="flex shrink-0 items-center justify-between gap-3">
     <h1 class="text-2xl font-bold">{ui.step3.title}</h1>
     {#if phase === "annealing"}
@@ -307,7 +308,7 @@
   </header>
 
   <div class="grid min-h-0 flex-1 grid-cols-[23rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+    <Panel as="aside" class="overflow-y-auto">
       <div class="card-body min-h-0 gap-4 p-4">
         <fieldset class="fieldset shrink-0" disabled={busy}>
           <legend class="fieldset-legend">{ui.step3.strength}</legend>
@@ -346,9 +347,9 @@
           <div class="alert alert-error text-sm" role="alert"><span>{error}</span></div>
         {/if}
       </div>
-    </aside>
+    </Panel>
 
-    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+    <Panel>
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex items-center justify-between gap-2">
           <div class="flex min-w-0 items-center gap-2">
@@ -363,7 +364,7 @@
           </div>
           <div class="flex gap-2">
             {#if previewMode === "observing" && frame?.iteration !== undefined}<span class="badge badge-ghost badge-sm">#{frame.iteration}</span>{/if}
-            {#if frame?.cost !== undefined}<span class="badge badge-secondary badge-sm">{frame.cost.toFixed(2)}</span>{/if}
+            {#if frame?.cost !== undefined}<span class="badge badge-outline badge-sm">{frame.cost.toFixed(2)}</span>{/if}
           </div>
         </div>
 
@@ -379,6 +380,8 @@
               {useLowerHalf}
               panCanvas={false}
               solidWires={phase === "done"}
+              tieNegativeRails={false}
+              tiePositiveRails={false}
             />
           </div>
           {#if !frame}
@@ -399,6 +402,6 @@
           {/if}
         </div>
       </div>
-    </section>
+    </Panel>
   </div>
 </div>

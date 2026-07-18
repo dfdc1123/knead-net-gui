@@ -21,3 +21,8 @@ test("Step 3 shows that remaining seeds are still searching", () => {
   assert.match(source, /ui\.step3\.remainingSeeds/);
   assert.match(source, /seed_result/);
 });
+
+test("Step 3 idle preview omits synthetic top-to-bottom power-rail ties", () => {
+  assert.match(source, /tieNegativeRails=\{false\}/);
+  assert.match(source, /tiePositiveRails=\{false\}/);
+});

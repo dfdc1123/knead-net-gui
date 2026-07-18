@@ -192,7 +192,7 @@
     {#if selectedNet}
       <div class="flex shrink-0 items-center gap-2 text-sm">
         <span class="text-base-content/60">{ui.step2.currentBinding}</span>
-        <span class="badge badge-primary max-w-full truncate font-mono">{selectedNet}</span>
+        <span class="badge badge-accent max-w-full truncate font-mono">{selectedNet}</span>
       </div>
     {/if}
 
@@ -288,8 +288,8 @@
   }
 
   :global(.schematic-host .sch-net-line.is-selected) {
-    stroke: var(--color-warning);
+    stroke: var(--color-highlight);
     stroke-width: 4;
-    filter: drop-shadow(0 0 2px var(--color-warning));
+    filter: drop-shadow(0 0 2px var(--color-highlight));
   }
 </style>

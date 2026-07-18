@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import { locale, ui } from "$lib/i18n";
+  import Panel from "./Panel.svelte";
 
   type FolderEntry = { name: string; path: string; ext: string; bytes: number };
   type Project = { name: string; sch?: FolderEntry; pcb?: FolderEntry };
@@ -123,10 +124,9 @@
   }
 </script>
 
-<div class="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-[1920px] flex-col gap-4 overflow-hidden p-6">
   <header class="shrink-0">
     <h1 class="text-2xl font-bold">{ui.step1.title}</h1>
-    <p class="text-sm text-base-content/60">{ui.step1.subtitle}</p>
   </header>
 
   {#if error}
@@ -134,7 +134,7 @@
   {/if}
 
   <div class="grid min-h-0 flex-1 grid-cols-[20rem_minmax(0,1fr)] gap-4">
-    <aside class="card min-h-0 min-w-0 overflow-y-auto border border-base-300 bg-base-100 shadow-sm">
+    <Panel as="aside" class="min-w-0 overflow-y-auto">
       <div class="card-body min-h-0 min-w-0 gap-3 p-4">
         <fieldset class="fieldset min-w-0 shrink-0">
           <legend class="fieldset-legend">{ui.step1.projectFolder}</legend>
@@ -146,15 +146,17 @@
           >
             {folder ? ui.step1.changeFolder : ui.step1.chooseFolder}
           </button>
-          {#if busy}
-            <p class="label"><span class="loading loading-spinner loading-xs"></span>{ui.step1.scanning}</p>
-          {:else if folder}
-            <div class="alert alert-success alert-soft mt-1 min-w-0 overflow-hidden px-3 py-2" role="status">
-              <span class="block min-w-0 max-w-full truncate font-mono text-xs" title={folder}>{folder}</span>
-            </div>
-          {:else}
-            <p class="label text-base-content/50">{ui.step1.noFolder}</p>
-          {/if}
+          <div class="translate-y-1">
+            {#if busy}
+              <p class="label"><span class="loading loading-spinner loading-xs"></span>{ui.step1.scanning}</p>
+            {:else if folder}
+              <div class="alert alert-success alert-soft min-w-0 overflow-hidden px-3 py-2" role="status">
+                <span class="block min-w-0 max-w-full truncate font-mono text-xs" title={folder}>{folder}</span>
+              </div>
+            {:else}
+              <p class="label text-base-content/50">{ui.step1.noFolder}</p>
+            {/if}
+          </div>
         </fieldset>
 
         <div class="divider my-0"></div>
@@ -162,7 +164,7 @@
         <div class="flex min-h-0 flex-1 flex-col gap-2">
           <div class="flex items-center justify-between">
             <h2 class="card-title text-sm">{ui.step1.projects}</h2>
-            {#if projects.length}<span class="badge badge-neutral badge-sm">{projects.length}</span>{/if}
+            {#if projects.length}<span class="badge badge-ghost badge-sm">{projects.length}</span>{/if}
           </div>
           {#if projects.length > 0}
             <ul class="menu menu-sm min-h-0 w-full flex-1 overflow-auto rounded-box bg-base-200 p-2">
@@ -203,9 +205,9 @@
           </div>
         {/if}
       </div>
-    </aside>
+    </Panel>
 
-    <section class="card min-h-0 border border-base-300 bg-base-100 shadow-sm">
+    <Panel>
       <div class="card-body min-h-0 gap-3 p-4">
         <div class="flex shrink-0 items-center justify-between">
           <h2 class="card-title text-sm">{ui.common.schematic}</h2>
@@ -223,6 +225,6 @@
           </div>
         {/if}
       </div>
-    </section>
+    </Panel>
   </div>
 </div>
