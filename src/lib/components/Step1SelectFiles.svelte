@@ -162,7 +162,7 @@
         <div class="flex min-h-0 flex-1 flex-col gap-2">
           <div class="flex items-center justify-between">
             <h2 class="card-title text-sm">{ui.step1.projects}</h2>
-            {#if projects.length}<span class="badge badge-outline badge-sm">{projects.length}</span>{/if}
+            {#if projects.length}<span class="badge badge-ghost badge-sm">{projects.length}</span>{/if}
           </div>
           {#if projects.length > 0}
             <ul class="menu menu-sm min-h-0 w-full flex-1 overflow-auto rounded-box bg-base-200 p-2">
