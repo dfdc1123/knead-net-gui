@@ -7,7 +7,9 @@
     zoomFactorForWheelGesture,
   } from "$lib/wheelGestures.js";
   import {
+    assemblyDirectJumpCommand,
     assemblyNavigationOffset,
+    createVimStartSequence,
     hasShortcutModifier,
     isAssemblyCompletionKey,
     isTextEditingTarget,
@@ -67,6 +69,7 @@
   type SelectionSource = "schematic" | "breadboard" | "assembly";
   let selectionSource = $state<SelectionSource | null>(null);
   let selectionRevealRequest = 0;
+  const recognizeVimStart = createVimStartSequence();
 
   type PanGesture = {
     pointerId: number;
@@ -573,6 +576,24 @@
     ];
   }
 
+  function selectAssemblyTask(task: CircuitSelection) {
+    selected = task;
+    selectionSource = "assembly";
+  }
+
+  function jumpToAssembly(command: "first" | "last" | "components" | "wires") {
+    const tasks = assemblyTasks();
+    const task = command === "first"
+      ? tasks[0]
+      : command === "last"
+        ? tasks.at(-1)
+        : tasks.find((task) =>
+          task.type === (command === "components" ? "component" : "wire")
+        );
+    if (!task) return;
+    selectAssemblyTask(task);
+  }
+
   function navigateAssembly(offset: number) {
     const tasks = assemblyTasks();
     if (tasks.length === 0) return;
@@ -582,8 +603,7 @@
     const nextIndex = currentIndex < 0
       ? offset > 0 ? 0 : tasks.length - 1
       : (currentIndex + offset + tasks.length) % tasks.length;
-    selected = tasks[nextIndex];
-    selectionSource = "assembly";
+    selectAssemblyTask(tasks[nextIndex]);
   }
 
   function completeSelectedAssemblyTask() {
@@ -606,12 +626,31 @@
     if (
       !active ||
       event.defaultPrevented ||
-      hasShortcutModifier(event) ||
       isTextEditingTarget(event.target)
     ) return;
 
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("button") && !target.closest(".assembly-row-hit")) return;
+
+    const directJump = assemblyDirectJumpCommand(event);
+    if (event.repeat && (event.key === "g" || directJump || isAssemblyCompletionKey(event.key))) {
+      event.preventDefault();
+      return;
+    }
+
+    const vimStart = recognizeVimStart(event.key, event.timeStamp);
+    if (directJump) {
+      event.preventDefault();
+      jumpToAssembly(directJump);
+      return;
+    }
+    if (hasShortcutModifier(event)) return;
+
+    if (vimStart) {
+      event.preventDefault();
+      if (vimStart === "trigger") jumpToAssembly("first");
+      return;
+    }
 
     const offset = assemblyNavigationOffset(event.key);
     if (offset !== 0) {
@@ -620,11 +659,10 @@
       return;
     }
 
-    if (
-      !event.repeat &&
-      isAssemblyCompletionKey(event.key) &&
-      completeSelectedAssemblyTask()
-    ) event.preventDefault();
+    if (isAssemblyCompletionKey(event.key)) {
+      event.preventDefault();
+      completeSelectedAssemblyTask();
+    }
   }
 
   function nextPendingItem<T>(
