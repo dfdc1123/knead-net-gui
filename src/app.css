@@ -22,6 +22,12 @@ body {
   margin: 0;
 }
 
+.workflow-next-step {
+  /* Keep the animated outline concentric with field/button corners. */
+  --aura-radius: var(--radius-field);
+  isolation: isolate;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .workflow-next-step,
   .workflow-next-step::before,

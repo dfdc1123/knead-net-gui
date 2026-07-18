@@ -138,14 +138,21 @@
       <div class="card-body min-h-0 min-w-0 gap-3 p-4">
         <fieldset class="fieldset min-w-0 shrink-0">
           <legend class="fieldset-legend">{ui.step1.projectFolder}</legend>
-          <button
-            type="button"
-            class="btn btn-primary btn-sm btn-block"
-            disabled={busy}
-            onclick={() => void pickFolder()}
+          <span
+            class="inline-block w-full text-primary"
+            class:aura={!folder}
+            class:aura-sm={!folder}
+            class:workflow-next-step={!folder}
           >
-            {folder ? ui.step1.changeFolder : ui.step1.chooseFolder}
-          </button>
+            <button
+              type="button"
+              class="btn btn-primary btn-sm btn-block"
+              disabled={busy}
+              onclick={() => void pickFolder()}
+            >
+              {folder ? ui.step1.changeFolder : ui.step1.chooseFolder}
+            </button>
+          </span>
           <div class="translate-y-1">
             {#if busy}
               <p class="label"><span class="loading loading-spinner loading-xs"></span>{ui.step1.scanning}</p>
