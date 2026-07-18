@@ -2,6 +2,10 @@
   import { tick } from "svelte";
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import { ui } from "$lib/i18n";
+  import {
+    createWheelGestureClassifier,
+    zoomFactorForWheelGesture,
+  } from "$lib/wheelGestures.js";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import Panel from "./Panel.svelte";
   import ZoomControls from "./ZoomControls.svelte";
@@ -97,6 +101,8 @@
   let selectedDetailsResizeGesture: SelectedDetailsResizeGesture | null = null;
 
   type DiagramTarget = "schematic" | "breadboard";
+  const classifySchematicWheel = createWheelGestureClassifier();
+  const classifyBreadboardWheel = createWheelGestureClassifier();
   type PendingViewportSize = {
     viewport: HTMLDivElement;
     width: number;
@@ -460,11 +466,21 @@
   async function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
     event.preventDefault();
     const viewport = event.currentTarget as HTMLDivElement;
+    const classifyWheel = target === "schematic" ? classifySchematicWheel : classifyBreadboardWheel;
+    const gesture = classifyWheel(event);
+    if (gesture === "pan") {
+      viewport.scrollLeft += event.deltaX;
+      viewport.scrollTop += event.deltaY;
+      return;
+    }
+
     const diagram = viewport.querySelector("svg");
     if (!diagram) return;
 
     const currentZoom = target === "schematic" ? schematicZoom : breadboardZoom;
-    const nextZoom = clampZoom(currentZoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
+    const nextZoom = clampZoom(
+      currentZoom * zoomFactorForWheelGesture(gesture, event.deltaY),
+    );
     if (nextZoom === currentZoom) return;
 
     // 记录鼠标在图中的相对位置，更新尺寸后把同一点移回鼠标下方。
