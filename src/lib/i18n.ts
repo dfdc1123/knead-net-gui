@@ -52,6 +52,9 @@ const dictionaries = {
       files: (count: number) => `文件 · ${count}`,
       loadFailed: "加载失败",
       noPreview: "暂无预览",
+      dropHere: "松开以导入工程",
+      dropHint: "支持项目文件夹、.kicad_sch 和 .kicad_pcb 文件",
+      invalidDrop: "请拖入一个项目文件夹或 KiCad 原理图/PCB 文件",
       matchingPcbMissing: (name: string) =>
         `找不到与 ${name}.kicad_sch 同名的 .kicad_pcb 文件`,
     },
@@ -235,6 +238,9 @@ const dictionaries = {
       files: (count: number) => `Files · ${count}`,
       loadFailed: "Load failed",
       noPreview: "No preview",
+      dropHere: "Drop to import project",
+      dropHint: "Project folders, .kicad_sch, and .kicad_pcb files are supported",
+      invalidDrop: "Drop one project folder or a KiCad schematic/PCB file",
       matchingPcbMissing: (name: string) =>
         `No ${name}.kicad_pcb file matches ${name}.kicad_sch`,
     },

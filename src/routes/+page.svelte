@@ -48,7 +48,7 @@
 <div class="flex h-screen flex-col bg-base-200">
   <main class="min-h-0 flex-1 pb-16">
     <div class:hidden={step !== 0} class="h-full">
-      <Step1SelectFiles onStatusChange={handleSourceStatus} onSchematicChange={(svg) => (schematicSvg = svg)} />
+      <Step1SelectFiles onStatusChange={handleSourceStatus} onSchematicChange={(svg) => (schematicSvg = svg)} onDropStart={() => (step = 0)} />
     </div>
     {#if sourceReady}
       <div class:hidden={step !== 1} class="h-full">
