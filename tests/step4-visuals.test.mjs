@@ -103,3 +103,9 @@ test("workflow pages omit redundant helper copy and board metadata", () => {
   assert.doesNotMatch(step2Source, /autoBoardHint|powerRailHint|withRails|withoutRails/);
   assert.doesNotMatch(step4Source, /ui\.step4\.subtitle|ui\.step4\.(?:boards|columns)/);
 });
+
+test("project folder states share a visual baseline adjustment without extra height", () => {
+  assert.match(step1Source, /<div class="translate-y-1">[\s\S]*ui\.step1\.noFolder/);
+  assert.doesNotMatch(step1Source, /flex h-12 items-center/);
+  assert.doesNotMatch(step1Source, /alert-success alert-soft mt-1/);
+});

@@ -146,15 +146,17 @@
           >
             {folder ? ui.step1.changeFolder : ui.step1.chooseFolder}
           </button>
-          {#if busy}
-            <p class="label"><span class="loading loading-spinner loading-xs"></span>{ui.step1.scanning}</p>
-          {:else if folder}
-            <div class="alert alert-success alert-soft mt-1 min-w-0 overflow-hidden px-3 py-2" role="status">
-              <span class="block min-w-0 max-w-full truncate font-mono text-xs" title={folder}>{folder}</span>
-            </div>
-          {:else}
-            <p class="label text-base-content/50">{ui.step1.noFolder}</p>
-          {/if}
+          <div class="translate-y-1">
+            {#if busy}
+              <p class="label"><span class="loading loading-spinner loading-xs"></span>{ui.step1.scanning}</p>
+            {:else if folder}
+              <div class="alert alert-success alert-soft min-w-0 overflow-hidden px-3 py-2" role="status">
+                <span class="block min-w-0 max-w-full truncate font-mono text-xs" title={folder}>{folder}</span>
+              </div>
+            {:else}
+              <p class="label text-base-content/50">{ui.step1.noFolder}</p>
+            {/if}
+          </div>
         </fieldset>
 
         <div class="divider my-0"></div>
