@@ -53,7 +53,7 @@ const MAX_ZOOM = 3;
 /**
  * @typedef {object} PendingWheelZoom
  * @property {Exclude<WheelGesture, "pan">} gesture
- * @property {number} deltaY
+ * @property {number} zoomFactor
  * @property {number} clientX
  * @property {number} clientY
  * @property {HTMLDivElement} viewport
@@ -231,7 +231,7 @@ export function createWheelZoomController(options) {
 
     const currentZoom = getZoom();
     const nextZoom = clampDiagramZoom(
-      currentZoom * zoomFactorForWheelGesture(batch.gesture, batch.deltaY),
+      currentZoom * batch.zoomFactor,
     );
     if (nextZoom !== currentZoom && batch.diagram.isConnected) {
       const before = batch.diagram.getBoundingClientRect();
@@ -267,11 +267,13 @@ export function createWheelZoomController(options) {
      */
     queue(event, gesture, viewport, diagram) {
       if (event.deltaY === 0 || destroyed) return;
+      const zoomFactor = zoomFactorForWheelGesture(gesture, event.deltaY);
       if (pending && pending.gesture === gesture) {
-        // Pinch deltas are continuous and must accumulate. A discrete mouse
-        // wheel remains one step per rendered frame regardless of report rate.
-        if (gesture === "pinch-zoom") pending.deltaY += event.deltaY;
-        else pending.deltaY = event.deltaY;
+        // Bound each pinch sample before combining its factor so a busy frame
+        // preserves continuous input without making Ctrl + wheel too abrupt.
+        // A discrete mouse wheel remains one step per rendered frame.
+        if (gesture === "pinch-zoom") pending.zoomFactor *= zoomFactor;
+        else pending.zoomFactor = zoomFactor;
         pending.clientX = event.clientX;
         pending.clientY = event.clientY;
         pending.viewport = viewport;
@@ -279,7 +281,7 @@ export function createWheelZoomController(options) {
       } else {
         pending = {
           gesture,
-          deltaY: event.deltaY,
+          zoomFactor,
           clientX: event.clientX,
           clientY: event.clientY,
           viewport,

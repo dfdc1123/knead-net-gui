@@ -150,3 +150,36 @@ test("pinch zoom batches reports and keeps the focal point stable once per frame
   assert.equal(scrolls.length, 1);
   controller.destroy();
 });
+
+test("pinch batching preserves separately bounded samples", async () => {
+  const frames = [];
+  let zoom = 1;
+  const viewport = {
+    scrollLeft: 0,
+    scrollTop: 0,
+    scrollTo() {},
+  };
+  const diagram = {
+    isConnected: true,
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: 100 * zoom, height: 100 * zoom };
+    },
+  };
+  const controller = createWheelZoomController({
+    getZoom: () => zoom,
+    setZoom: (nextZoom) => (zoom = nextZoom),
+    afterRender: async () => {},
+    requestFrame(callback) {
+      frames.push(callback);
+      return frames.length;
+    },
+    cancelFrame() {},
+  });
+
+  controller.queue({ deltaY: -20, clientX: 50, clientY: 50 }, "pinch-zoom", viewport, diagram);
+  controller.queue({ deltaY: -20, clientX: 50, clientY: 50 }, "pinch-zoom", viewport, diagram);
+  await frames.shift()();
+
+  assert.ok(Math.abs(zoom - Math.exp(0.4)) < 1e-12);
+  controller.destroy();
+});
