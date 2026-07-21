@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src-tauri/icons/icon.png" width="512" height="512" alt="KneadNet icon">
+</p>
+
 # KneadNet
 
 [English](README.md) | [简体中文](README.zh-CN.md)
