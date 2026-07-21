@@ -20,13 +20,12 @@ test("Linux replaces WebKitGTK page magnification with diagram wheel events", ()
   assert.match(tauriSource, /cfg\(target_os = "linux"\)[\s\S]*linux_pinch_zoom_plugin/);
 });
 
-test("Linux coalesces native pinch samples before crossing into the webview", () => {
-  assert.match(tauriSource, /add_tick_callback/);
-  assert.match(tauriSource, /LinuxPinchBatch/);
-
+test("Linux forwards every native pinch sample directly to the webview", () => {
   const scaleChangedHandler = tauriSource.match(
     /gesture\.connect_scale_changed[\s\S]*?\n\s*\}\);/,
   );
   assert.ok(scaleChangedHandler);
-  assert.doesNotMatch(scaleChangedHandler[0], /script_webview\.eval/);
+  assert.match(scaleChangedHandler[0], /script_webview\.eval/);
+  assert.doesNotMatch(tauriSource, /add_tick_callback/);
+  assert.doesNotMatch(tauriSource, /LinuxPinchBatch/);
 });

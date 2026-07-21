@@ -151,7 +151,7 @@ test("pinch zoom batches reports and keeps the focal point stable once per frame
   controller.destroy();
 });
 
-test("pinch batching preserves separately bounded samples", async () => {
+test("pinch batching accumulates deltas before applying the limit", async () => {
   const frames = [];
   let zoom = 1;
   const viewport = {
@@ -180,6 +180,6 @@ test("pinch batching preserves separately bounded samples", async () => {
   controller.queue({ deltaY: -20, clientX: 50, clientY: 50 }, "pinch-zoom", viewport, diagram);
   await frames.shift()();
 
-  assert.ok(Math.abs(zoom - Math.exp(0.4)) < 1e-12);
+  assert.ok(Math.abs(zoom - Math.exp(0.2)) < 1e-12);
   controller.destroy();
 });

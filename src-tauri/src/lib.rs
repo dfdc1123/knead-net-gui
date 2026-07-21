@@ -414,38 +414,6 @@ fn linux_pinch_wheel_script(scale_ratio: f64, x: f64, y: f64) -> Option<String> 
     ))
 }
 
-#[cfg(target_os = "linux")]
-#[derive(Default)]
-struct LinuxPinchBatch {
-    log_scale_ratio: f64,
-    x: f64,
-    y: f64,
-    pending: bool,
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxPinchBatch {
-    fn push(&mut self, scale_ratio: f64, x: f64, y: f64) {
-        if !scale_ratio.is_finite() || scale_ratio <= 0.0 || !x.is_finite() || !y.is_finite() {
-            return;
-        }
-        self.log_scale_ratio += scale_ratio.ln();
-        self.x = x;
-        self.y = y;
-        self.pending = true;
-    }
-
-    fn take(&mut self) -> Option<(f64, f64, f64)> {
-        if !self.pending {
-            return None;
-        }
-        let batch = (self.log_scale_ratio.exp(), self.x, self.y);
-        self.log_scale_ratio = 0.0;
-        self.pending = false;
-        Some(batch)
-    }
-}
-
 /// WebKitGTK owns a private GtkGestureZoom that directly magnifies the whole
 /// web view instead of publishing continuous DOM wheel deltas. Disable that
 /// controller and replace it with a gesture that forwards incremental scale
@@ -458,7 +426,7 @@ fn linux_pinch_zoom_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R>
             let _ = webview.with_webview(move |platform_webview| {
                 use gtk::glib::translate::from_glib_none;
                 use gtk::prelude::*;
-                use std::cell::{Cell, RefCell};
+                use std::cell::Cell;
                 use std::rc::Rc;
 
                 let native_webview = platform_webview.inner();
@@ -480,46 +448,29 @@ fn linux_pinch_zoom_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R>
                 let gesture = gtk::GestureZoom::new(&native_webview);
                 gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
 
-                // GTK can publish several scale samples inside one display
-                // frame. Cross the WebView boundary at most once per frame so
-                // eval calls cannot queue up behind SVG layout and painting.
-                let pinch_batch = Rc::new(RefCell::new(LinuxPinchBatch::default()));
-                let tick_batch = Rc::clone(&pinch_batch);
-                let tick_webview = script_webview.clone();
-                let tick_callback = native_webview.add_tick_callback(move |_, _| {
-                    if let Some((scale_ratio, x, y)) = tick_batch.borrow_mut().take() {
-                        if let Some(script) = linux_pinch_wheel_script(scale_ratio, x, y) {
-                            let _ = tick_webview.eval(script);
-                        }
-                    }
-                    gtk::glib::ControlFlow::Continue
-                });
-
                 let previous_scale = Rc::new(Cell::new(1.0));
                 let begin_scale = Rc::clone(&previous_scale);
-                let begin_batch = Rc::clone(&pinch_batch);
                 gesture.connect_begin(move |gesture, _| {
                     begin_scale.set(1.0);
-                    *begin_batch.borrow_mut() = LinuxPinchBatch::default();
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                 });
 
                 let changed_scale = Rc::clone(&previous_scale);
-                let changed_batch = Rc::clone(&pinch_batch);
                 gesture.connect_scale_changed(move |gesture, scale| {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
                     let prior_scale = changed_scale.replace(scale);
                     let Some((x, y)) = gesture.bounding_box_center() else {
                         return;
                     };
-                    changed_batch.borrow_mut().push(scale / prior_scale, x, y);
+                    let Some(script) = linux_pinch_wheel_script(scale / prior_scale, x, y) else {
+                        return;
+                    };
+                    let _ = script_webview.eval(script);
                 });
 
-                // Retain our controller and frame callback for exactly as long
-                // as the WebView.
+                // Retain our controller for exactly as long as the WebView.
                 unsafe {
                     native_webview.set_data("kneadnet-linux-pinch-gesture", gesture);
-                    native_webview.set_data("kneadnet-linux-pinch-tick", tick_callback);
                 }
             });
         })
@@ -571,19 +522,6 @@ mod tests {
 
         assert!(linux_pinch_wheel_script(f64::NAN, 0.0, 0.0).is_none());
         assert!(linux_pinch_wheel_script(0.0, 0.0, 0.0).is_none());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_native_pinch_samples_are_coalesced_without_losing_scale() {
-        let mut batch = LinuxPinchBatch::default();
-        batch.push(1.1, 10.0, 20.0);
-        batch.push(1.2, 30.0, 40.0);
-
-        let (scale_ratio, x, y) = batch.take().unwrap();
-        assert!((scale_ratio - 1.32).abs() < f64::EPSILON * 4.0);
-        assert_eq!((x, y), (30.0, 40.0));
-        assert!(batch.take().is_none());
     }
 
     #[test]
