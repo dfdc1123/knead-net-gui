@@ -28,6 +28,9 @@ lexpr = "0.2"
 # 引用根目录的 knead-net crate (Cargo workspace 兄弟 member)
 knead-net = { path = ".." }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18.2", features = ["v3_24"] }
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"
 windows-core = "0.61.2"

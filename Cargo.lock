@@ -1627,6 +1627,7 @@ dependencies = [
 name = "kneadnet"
 version = "0.2.0"
 dependencies = [
+ "gtk",
  "knead-net",
  "lexpr",
  "serde",

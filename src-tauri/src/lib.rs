@@ -400,6 +400,83 @@ fn windows_pinch_zoom_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<
         .build()
 }
 
+#[cfg(target_os = "linux")]
+fn linux_pinch_wheel_script(scale_ratio: f64, x: f64, y: f64) -> Option<String> {
+    if !scale_ratio.is_finite() || scale_ratio <= 0.0 || !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+
+    // Keep this conversion inverse to the frontend's exp(-deltaY * 0.01)
+    // pinch curve so a native GTK scale ratio produces the same diagram zoom.
+    let delta_y = -scale_ratio.ln() * 100.0;
+    Some(format!(
+        "document.elementFromPoint({x},{y})?.dispatchEvent(new WheelEvent('wheel',{{deltaY:{delta_y},clientX:{x},clientY:{y},deltaMode:0,ctrlKey:true,bubbles:true,cancelable:true}}));"
+    ))
+}
+
+/// WebKitGTK owns a private GtkGestureZoom that directly magnifies the whole
+/// web view instead of publishing continuous DOM wheel deltas. Disable that
+/// controller and replace it with a gesture that forwards incremental scale
+/// ratios to the existing diagram wheel handlers at the gesture focal point.
+#[cfg(target_os = "linux")]
+fn linux_pinch_zoom_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("linux-pinch-zoom")
+        .on_webview_ready(|webview| {
+            let script_webview = webview.clone();
+            let _ = webview.with_webview(move |platform_webview| {
+                use gtk::glib::translate::from_glib_none;
+                use gtk::prelude::*;
+                use std::cell::Cell;
+                use std::rc::Rc;
+
+                let native_webview = platform_webview.inner();
+
+                // WebKitGTK 2.52 stores its page-magnification controller on
+                // the WebView under this stable internal data key.
+                let webkit_zoom_pointer = unsafe {
+                    gtk::glib::gobject_ffi::g_object_get_data(
+                        native_webview.as_ptr().cast(),
+                        c"wk-view-zoom-gesture".as_ptr(),
+                    )
+                };
+                if !webkit_zoom_pointer.is_null() {
+                    let webkit_zoom: gtk::GestureZoom =
+                        unsafe { from_glib_none(webkit_zoom_pointer.cast()) };
+                    webkit_zoom.set_propagation_phase(gtk::PropagationPhase::None);
+                }
+
+                let gesture = gtk::GestureZoom::new(&native_webview);
+                gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+
+                let previous_scale = Rc::new(Cell::new(1.0));
+                let begin_scale = Rc::clone(&previous_scale);
+                gesture.connect_begin(move |gesture, _| {
+                    begin_scale.set(1.0);
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                });
+
+                let changed_scale = Rc::clone(&previous_scale);
+                gesture.connect_scale_changed(move |gesture, scale| {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    let prior_scale = changed_scale.replace(scale);
+                    let Some((x, y)) = gesture.bounding_box_center() else {
+                        return;
+                    };
+                    let Some(script) = linux_pinch_wheel_script(scale / prior_scale, x, y) else {
+                        return;
+                    };
+                    let _ = script_webview.eval(script);
+                });
+
+                // Retain our controller for exactly as long as the WebView.
+                unsafe {
+                    native_webview.set_data("kneadnet-linux-pinch-gesture", gesture);
+                }
+            });
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -421,6 +498,9 @@ pub fn run() {
     #[cfg(windows)]
     let builder = builder.plugin(windows_pinch_zoom_plugin());
 
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(linux_pinch_zoom_plugin());
+
     builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -430,6 +510,19 @@ pub fn run() {
 mod tests {
     use super::*;
     use knead_net::layout::Preset;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_native_pinch_is_forwarded_as_a_focal_wheel_event() {
+        let script = linux_pinch_wheel_script(1.25, 120.5, 80.25).unwrap();
+        assert!(script.contains("document.elementFromPoint(120.5,80.25)"));
+        assert!(script.contains("new WheelEvent('wheel'"));
+        assert!(script.contains("ctrlKey:true"));
+        assert!(script.contains("clientX:120.5,clientY:80.25"));
+
+        assert!(linux_pinch_wheel_script(f64::NAN, 0.0, 0.0).is_none());
+        assert!(linux_pinch_wheel_script(0.0, 0.0, 0.0).is_none());
+    }
 
     #[test]
     fn valid_breadboard_dimensions_are_still_accepted() {
