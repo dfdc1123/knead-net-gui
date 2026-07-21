@@ -1,6 +1,6 @@
 {
   "name": "kneadnet",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Convert electronic schematics into breadboard layouts and routing suggestions.",
   "private": true,
   "type": "module",

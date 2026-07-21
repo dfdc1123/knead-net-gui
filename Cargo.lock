@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "knead-net"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "fastrand",
  "lexpr",
@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "kneadnet"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gtk",
  "knead-net",

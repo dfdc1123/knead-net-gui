@@ -3,7 +3,7 @@ members = ["src-tauri"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 authors = ["dfdc1123"]
 license = "GPL-3.0-only"
 homepage = "https://github.com/dfdc1123/knead-net-gui"
