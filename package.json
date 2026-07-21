@@ -37,17 +37,17 @@
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",
-    "@sveltejs/kit": "^2.9.0",
-    "@sveltejs/vite-plugin-svelte": "^5.0.0",
-    "@tailwindcss/vite": "^4.3.2",
+    "@sveltejs/kit": "^2.70.1",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
-    "autoprefixer": "^10.5.2",
-    "daisyui": "^5.6.17",
-    "postcss": "^8.5.16",
-    "svelte": "^5.0.0",
-    "svelte-check": "^4.0.0",
-    "tailwindcss": "^4.3.2",
-    "typescript": "~5.6.2",
-    "vite": "^6.0.3"
+    "autoprefixer": "^10.5.4",
+    "daisyui": "^5.7.0",
+    "postcss": "^8.5.20",
+    "svelte": "^5.56.7",
+    "svelte-check": "^4.7.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~7.0.2",
+    "vite": "^8.1.5"
   }
 }
