@@ -50,7 +50,7 @@ Download published builds from [GitHub Releases](https://github.com/dfdc1123/kne
 | Debian / Ubuntu x86-64 | `kneadnet_<version>_amd64.deb` | Debian package |
 | Fedora / RPM x86-64 | `kneadnet-<version>-1.x86_64.rpm` | RPM package |
 
-Releases also include `SHA256SUMS` for verifying downloads and the [`KneadNet-examples-0.2.3.zip` example archive](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.3/KneadNet-examples-0.2.3.zip) for trying the application.
+Releases also include `SHA256SUMS` for verifying downloads and the [`KneadNet-examples-0.2.4.zip` example archive](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.4/KneadNet-examples-0.2.4.zip) for trying the application.
 
 Current builds are not code-signed, so Windows SmartScreen or macOS Gatekeeper may show a warning. Only run files downloaded from this repository, and verify their SHA-256 checksum whenever possible.
 
@@ -71,7 +71,7 @@ The former `knead-net-gui` package belongs to the naming scheme used before v0.2
 
 ## Example projects
 
-The easiest option is to download the [`KneadNet-examples-0.2.3.zip` example archive](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.3/KneadNet-examples-0.2.3.zip) from GitHub. Extract it, then open one of its project folders in KneadNet.
+The easiest option is to download the [`KneadNet-examples-0.2.4.zip` example archive](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.4/KneadNet-examples-0.2.4.zip) from GitHub. Extract it, then open one of its project folders in KneadNet.
 
 You can also browse the repository's [`examples/` directory](examples/). See [`examples/README.md`](examples/README.md) for the purpose of each example.
 

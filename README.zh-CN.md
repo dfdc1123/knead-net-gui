@@ -50,7 +50,7 @@
 | Debian / Ubuntu x86-64 | `kneadnet_<version>_amd64.deb` | Debian 软件包 |
 | Fedora / RPM x86-64 | `kneadnet-<version>-1.x86_64.rpm` | RPM 软件包 |
 
-Release 中还包含用于核对下载文件的 `SHA256SUMS`，以及可以直接体验的 [`KneadNet-examples-0.2.3.zip` 示例压缩包](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.3/KneadNet-examples-0.2.3.zip)。
+Release 中还包含用于核对下载文件的 `SHA256SUMS`，以及可以直接体验的 [`KneadNet-examples-0.2.4.zip` 示例压缩包](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.4/KneadNet-examples-0.2.4.zip)。
 
 当前构建尚未进行代码签名，因此 Windows SmartScreen 或 macOS Gatekeeper 可能显示警告。请只运行从本仓库下载的文件，并尽可能核对 SHA-256 校验值。
 
@@ -71,7 +71,7 @@ paru -S kneadnet-bin
 
 ## 示例工程
 
-最简单的方式是从 GitHub 直接下载 [`KneadNet-examples-0.2.3.zip` 示例压缩包](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.3/KneadNet-examples-0.2.3.zip)。解压后，在 KneadNet 中打开其中一个具体工程文件夹即可。
+最简单的方式是从 GitHub 直接下载 [`KneadNet-examples-0.2.4.zip` 示例压缩包](https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.4/KneadNet-examples-0.2.4.zip)。解压后，在 KneadNet 中打开其中一个具体工程文件夹即可。
 
 也可以直接浏览仓库中的 [`examples/` 目录](examples/)。各示例的用途参见 [`examples/README.md`](examples/README.md)。
 
