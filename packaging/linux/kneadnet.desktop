@@ -1,0 +1,16 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=KneadNet
+GenericName=Breadboard Layout Tool
+GenericName[zh_CN]=面包板布局工具
+Comment=Convert electronic schematics into breadboard layouts and routing suggestions
+Comment[zh_CN]=将电子原理图转换为面包板布局和布线建议
+TryExec=kneadnet
+Exec=kneadnet
+Icon=kneadnet
+Terminal=false
+Categories=Development;Electronics;Engineering;
+Keywords=electronics;schematic;breadboard;KiCad;routing;
+Keywords[zh_CN]=电子;原理图;面包板;KiCad;布线;
+StartupWMClass=kneadnet

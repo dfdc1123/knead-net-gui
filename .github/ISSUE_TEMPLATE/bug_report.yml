@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a reproducible KneadNet problem
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. KiCad projects can contain private designs and local paths; attach only files you have permission to share.
+
+  - type: input
+    id: version
+    attributes:
+      label: KneadNet version
+      description: Include the release tag and asset filename, or the commit hash for a source build.
+      placeholder: v0.2.0 / kneadnet_0.2.0_amd64.deb
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: System and KiCad details
+      description: Include OS version, CPU architecture, package format, and the KiCad version that created the project.
+      placeholder: Ubuntu 24.04, x86-64, AppImage, KiCad 9.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide a minimal, deterministic sequence from application launch to the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the complete error text and relevant logs. Remove secrets and private paths.
+    validations:
+      required: true
+
+  - type: textarea
+    id: project
+    attributes:
+      label: Minimal project or screenshots
+      description: Drag files here only when licensing and privacy allow. Explain when the issue reproduces with a repository example instead.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I checked that this problem is not already reported.
+          required: true
+        - label: I have permission to share every attached design and file.
+          required: false

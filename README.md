@@ -1,126 +1,241 @@
-# Knead Net
+# KneadNet
 
-Knead Net 是一个实验性的桌面工具，用来把 KiCad 电路工程转换为可操作的面包板布局与装配指引。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-它会读取 KiCad 的 PCB 连接与封装信息，自动选择元件摆位并生成跳线方案；如果工程中包含同名原理图，还可以在原理图、面包板和装配清单之间联动查看元件与网络。
+> Knead what your nets need.
 
-> 项目仍处于早期预览阶段。Windows 用户可从 [GitHub Releases](https://github.com/dfdc1123/knead-net-gui/releases) 下载并安装最新版。
+KneadNet is a cross-platform desktop application that converts electronic schematics into breadboard layouts and routing suggestions. It reads KiCad PCB connectivity and through-hole footprint geometry, searches for a usable component placement, routes jumper wires, and presents the result alongside the schematic and an assembly checklist.
 
-## 软件截图
+KneadNet is an early preview. It is useful for experimenting with small through-hole circuits, but it is not yet a substitute for checking the circuit and every proposed connection yourself.
 
-### 1. 导入 KiCad 工程
+## Screenshots
 
-![导入 KiCad 工程并预览原理图](docs/screenshots/tab1.png)
+The interface follows a four-step workflow and automatically uses simplified Chinese or English based on the system language.
 
-### 2. 选择面包板
+### Import a KiCad project
 
-![选择面包板规格并预览](docs/screenshots/tab2.png)
+![Import a KiCad project and preview its schematic](docs/screenshots/tab1.png)
 
-### 3. 计算布局
+### Choose a breadboard
 
-![计算元件布局与跳线](docs/screenshots/tab3.png)
+![Choose and preview a breadboard](docs/screenshots/tab2.png)
 
-### 4. 装配视图
+### Compute a layout
 
-![原理图、面包板与装配清单联动](docs/screenshots/tab4.png)
+![Compute component placement and jumper-wire routing](docs/screenshots/tab3.png)
 
-## 当前功能
+### Follow the assembly view
 
-- 从文件夹中识别并配对同名的 `.kicad_sch` 与 `.kicad_pcb` 文件
-- 在应用内预览 KiCad 原理图
-- 提供 170、400 和 830 孔面包板预设，并支持调整列数
-- 使用 Spectral 初始布局、并行模拟退火和 routing 自动计算元件位置与跳线
-- 提供快速、标准、完整三档计算强度，并实时显示计算过程
-- 允许提前中断模拟退火，使用当前最佳结果继续布线
-- 在原理图、面包板和清单之间同步高亮元件与网络
-- 生成按孔位排列的元件与跳线装配清单，并可勾选记录装配进度
-- 根据系统语言显示简体中文或英文界面
+![Linked schematic, breadboard, and assembly checklist](docs/screenshots/tab4.png)
 
-## 使用流程
+## Features
 
-1. 选择包含 KiCad 工程文件的文件夹。
-2. 选择工程，并确认原理图预览与 PCB 文件已正确载入。
-3. 选择面包板规格和列数。
-4. 选择计算强度并开始计算。
-5. 在装配视图中对照原理图、面包板和清单完成搭建。
+- Finds `.kicad_pcb` and same-name `.kicad_sch` files in a selected folder.
+- Uses KiCad PCB nets and through-hole pad geometry as layout input.
+- Previews the schematic when a matching schematic file is available.
+- Provides 170-, 400-, and 830-tie-point breadboard presets with adjustable length.
+- Generates placements with a spectral initializer and parallel simulated annealing.
+- Suggests jumper-wire routes after placement.
+- Offers quick, standard, and full computation profiles with live progress.
+- Links selected components and nets across the schematic, breadboard, and assembly list.
+- Tracks component and jumper completion locally during the current session.
+- Supports folder and KiCad-file drag and drop in the desktop application.
+- Provides simplified Chinese and English UI text.
 
-`.kicad_pcb` 是进行布局计算的必要输入；同名的 `.kicad_sch` 用于原理图预览和联动，但不是必需的。两个文件需要直接位于所选文件夹中。
+## How it works
 
-## 下载与安装
-
-Windows 用户请在 [GitHub Releases](https://github.com/dfdc1123/knead-net-gui/releases) 的 Assets 中下载 `*-setup.exe` 并运行安装程序。
-
-首次运行时，Windows 可能显示 SmartScreen 提示，因为应用尚未进行代码签名；请确认发布者和下载来源为本项目后继续。
-
-Arch Linux 用户可在 AUR 中安装：
-
-```bash
-yay -S knead-net-gui
+```text
+KiCad PCB connectivity and footprint geometry
+                    |
+                    v
+          Circuit and net model
+                    |
+                    v
+       Spectral initial placement
+                    |
+                    v
+     Multi-seed simulated annealing
+                    |
+                    v
+       PathFinder / MST wire routing
+                    |
+                    v
+ Breadboard preview and assembly checklist
 ```
 
-## 从源码运行
+The `.kicad_pcb` file is required. A same-name `.kicad_sch` file adds the schematic preview and cross-selection, but layout can run without it. Both files must be direct children of the folder selected in KneadNet.
 
-目前只提供 Tauri 桌面 GUI，不提供命令行界面。
+## Download
 
-开始前请先安装：
+Published builds are available from [GitHub Releases](https://github.com/dfdc1123/knead-net-gui/releases). Release assets vary for older versions; the cross-platform asset convention below starts with v0.2.0.
 
-- Node.js 与 pnpm
-- Rust stable toolchain
-- Tauri 2 对应平台的系统依赖
+| Platform | Choose | Notes |
+| --- | --- | --- |
+| Windows x64 | `KneadNet_<version>_windows_x64-setup.exe` | NSIS installer for most users |
+| Windows x64 | `KneadNet_<version>_windows_x64_en-US.msi` | MSI installer for managed environments |
+| macOS Intel / Apple silicon | `KneadNet_<version>_macos_universal.dmg` | Universal application bundle |
+| Linux x86-64 | `KneadNet_<version>_linux_amd64.AppImage` | Portable single-file application |
+| Debian / Ubuntu x86-64 | `kneadnet_<version>_amd64.deb` | Debian package |
+| Fedora / RPM x86-64 | `kneadnet-<version>-1.x86_64.rpm` | RPM package |
 
-安装前端依赖并启动开发版：
+Every cross-platform release also contains `SHA256SUMS` and `KneadNet-examples-<version>.zip`. Architecture labels follow platform conventions: `x64` on Windows, `amd64` in Debian/AppImage names, `x86_64` for RPM, and `universal` for a macOS bundle containing Intel and Apple-silicon binaries.
+
+Builds are not currently code-signed. Windows SmartScreen and macOS Gatekeeper may therefore warn before first launch. Confirm that the file came from this repository and verify its SHA-256 value before proceeding. Signing status is recorded in the release notes; do not bypass a warning for a file obtained elsewhere.
+
+To check one downloaded file on Linux:
 
 ```bash
-pnpm install
+grep 'kneadnet_0.2.0_amd64.deb' SHA256SUMS | sha256sum --check
+```
+
+Replace the example filename with the asset you downloaded.
+
+AppImage files downloaded from a browser are not necessarily marked executable. Enable and launch one with:
+
+```bash
+chmod +x KneadNet_0.2.0_linux_amd64.AppImage
+./KneadNet_0.2.0_linux_amd64.AppImage
+```
+
+### Arch Linux and AUR
+
+The repository contains a review-ready binary package definition for `kneadnet-bin`. It is intentionally not submitted or updated automatically. After the package is manually published to the AUR, it can be installed with an AUR helper:
+
+```bash
+yay -S kneadnet-bin
+```
+
+Until then, use a GitHub Release package or build the local [`PKGBUILD`](packaging/aur/PKGBUILD) after replacing its explicit checksum placeholders. The old `knead-net-gui` AUR package belongs to the pre-v0.2.0 naming scheme.
+
+## Quick start
+
+1. Install and launch KneadNet.
+2. Select or drop a folder containing a KiCad project.
+3. Select a project that has a `.kicad_pcb` file.
+4. Choose a breadboard preset, length, active half, and any desired power-rail net bindings.
+5. Choose a computation profile and wait for placement and routing to finish. You can interrupt annealing and route the best placement found so far.
+6. Use the schematic, breadboard, and checklist together while assembling the circuit.
+
+Treat generated layouts as suggestions. Check component orientation, pin numbering, power rails, and every connection before applying power.
+
+## Example projects
+
+Public examples are described in [`examples/README.md`](examples/README.md).
+
+### Method 1: download the release bundle
+
+Open [GitHub Releases](https://github.com/dfdc1123/knead-net-gui/releases), expand the selected release's assets, and download `KneadNet-examples-<version>.zip`. Extract it, then select one of its individual project folders in KneadNet.
+
+### Method 2: obtain examples from the repository
+
+- Browse the [`examples/` directory on GitHub](https://github.com/dfdc1123/knead-net-gui/tree/main/examples).
+- Use GitHub's **Code → Download ZIP** command to download the whole repository. GitHub does not provide a built-in arbitrary-folder ZIP download.
+- Clone the repository:
+
+  ```bash
+  git clone https://github.com/dfdc1123/knead-net-gui.git
+  cd knead-net-gui/examples
+  ```
+
+- Or use sparse checkout when only examples are wanted:
+
+  ```bash
+  git clone --filter=blob:none --no-checkout https://github.com/dfdc1123/knead-net-gui.git
+  cd knead-net-gui
+  git sparse-checkout set examples
+  git checkout main
+  ```
+
+`examples/h-bridge_different_order` is a developer regression fixture and is deliberately excluded from the release examples archive.
+
+## Build from source
+
+Install the following first:
+
+- Node.js 22 or later.
+- pnpm 11 or later.
+- A stable Rust toolchain with Cargo.
+- The [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for the target operating system.
+
+Then install dependencies and run the desktop application:
+
+```bash
+pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-仓库的 `examples/` 中包含可用于体验的 KiCad 示例工程。
+Build the frontend or platform-native application bundles with:
 
-## 本地检查
+```bash
+pnpm build
+pnpm tauri build
+```
+
+Tauri can only create native installers for the host platform. The release workflow builds each platform on its corresponding GitHub-hosted runner.
+
+## Platform notes
+
+- **Windows:** the installer uses the WebView2 download bootstrapper when a suitable runtime is missing, so first installation may require internet access.
+- **Linux:** AppImage compatibility depends on the distribution baseline. Official release AppImages are built on Ubuntu 22.04 rather than a rolling distribution.
+- **macOS:** the DMG is universal, but unsigned builds can require an explicit approval in macOS privacy and security settings.
+
+## Repository structure
+
+```text
+src/routes/                 SvelteKit application pages
+src/lib/components/         Reusable workflow and breadboard UI
+src/input/                  KiCad PCB S-expression parser
+src/circuit.rs              Circuit domain model
+src/layout/                 Placement, cost, legality, and routing engine
+src-tauri/src/              Tauri commands and schematic rendering
+src-tauri/tests/            Desktop integration tests
+examples/                   Public examples and developer fixtures
+docs/screenshots/           README screenshots
+packaging/linux/            Linux desktop and AppStream metadata
+packaging/aur/              AUR package definition and maintenance notes
+scripts/                    Version and release-asset checks
+.github/workflows/          CI and draft-release automation
+```
+
+## Development and testing
+
+Run the narrowest relevant test while developing. Before opening a pull request, run:
 
 ```bash
 pnpm check
+pnpm test:ui
+pnpm build
+pnpm check:version
+cargo fmt --check
 cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-## 工作原理
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for code organization, test expectations, and pull-request guidance.
 
-```text
-KiCad PCB
-   ↓
-电路、封装与网络解析
-   ↓
-Spectral 初始布局
-   ↓
-多 seed 模拟退火摆位
-   ↓
-PathFinder / MST 跳线生成
-   ↓
-面包板与装配视图
-```
+## Packaging and releases
 
-## 项目结构
+- [`docs/PACKAGING.md`](docs/PACKAGING.md) documents product IDs, package formats, and platform details.
+- [`docs/RELEASING.md`](docs/RELEASING.md) contains the release checklist and signing placeholders.
+- [`packaging/aur/README.md`](packaging/aur/README.md) explains manual AUR maintenance.
 
-```text
-knead-net-gui/
-├── src/                    # SvelteKit 前端与 Rust 布局核心
-│   ├── lib/components/     # 四步工作流与面包板组件
-│   ├── routes/             # 应用页面
-│   ├── input/              # KiCad PCB 解析
-│   └── layout/             # 摆位、成本计算与布线算法
-├── src-tauri/              # Tauri 桌面应用及原理图解析
-├── examples/               # 示例 KiCad 工程
-├── package.json
-└── Cargo.toml
-```
+Stable tags must exactly match the version in `package.json` and Cargo metadata. A successful tag workflow creates a draft release; a maintainer inspects and smoke-tests it before publication.
 
-## 许可证
+## Known limitations
 
-本项目采用 [GNU General Public License v3.0](LICENSE)（GPL-3.0-only）发布。
+- Only through-hole pads and footprints are supported. SMD or mixed-footprint projects can fail to import.
+- Project discovery scans only the selected folder, not nested directories.
+- Schematic and PCB cross-selection requires matching basenames.
+- Complex circuits or unusual footprints may not produce a legal or practical layout.
+- Generated placements and routes are not electrical verification.
+- Results cannot yet be exported as a standalone project or report.
+- There is no command-line interface, automatic updater, deep-link handler, or registered KiCad file association.
+- Release builds are currently unsigned.
 
-## 当前限制
+## Contributing
 
-- 项目仍在开发中，复杂电路和少见封装可能无法得到理想布局。
-- 结果导出功能尚未完成。
-- Windows 安装包通过 GitHub Releases 提供；Arch Linux 源码包通过 AUR 提供。
+Bug reports and focused pull requests are welcome. Include the KneadNet version, operating system, package format, KiCad version, reproduction steps, and a minimal project when licensing and privacy permit. Never upload a private schematic without permission.
+
+## License
+
+KneadNet is released under the [GNU General Public License v3.0](LICENSE), identified as `GPL-3.0-only`. Repository icons, screenshots, and public examples are distributed with the project under the same license unless a file states otherwise.

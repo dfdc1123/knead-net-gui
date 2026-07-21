@@ -2,10 +2,21 @@
 members = ["src-tauri"]
 resolver = "2"
 
+[workspace.package]
+version = "0.2.0"
+authors = ["dfdc1123"]
+license = "GPL-3.0-only"
+homepage = "https://github.com/dfdc1123/knead-net-gui"
+repository = "https://github.com/dfdc1123/knead-net-gui"
+
 [package]
 name = "knead-net"
-version = "0.1.0"
-license = "GPL-3.0-only"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Rust library for converting electronic schematics into breadboard layouts and routing suggestions"
 edition = "2024"
 
 [dependencies]

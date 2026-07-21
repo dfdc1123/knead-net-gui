@@ -22,7 +22,7 @@ export const locale = detectSystemLocale();
 const dictionaries = {
   "zh-CN": {
     app: {
-      title: "Knead Net · 面包板布局",
+      title: "KneadNet · 面包板布局",
     },
     dock: {
       aria: "布局流程",
@@ -208,7 +208,7 @@ const dictionaries = {
   },
   en: {
     app: {
-      title: "Knead Net · Breadboard Layout",
+      title: "KneadNet · Breadboard Layout",
     },
     dock: {
       aria: "Layout workflow",

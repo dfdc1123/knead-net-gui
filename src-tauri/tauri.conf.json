@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "knead-net-gui",
-  "version": "0.1.0",
-  "identifier": "com.dfdc.knead-net-gui",
+  "productName": "KneadNet",
+  "mainBinaryName": "kneadnet",
+  "version": "../package.json",
+  "identifier": "io.github.dfdc1123.kneadnet",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "knead-net-gui",
+        "title": "KneadNet",
         "width": 1000,
         "height": 800,
         "minWidth": 1000,
@@ -27,12 +28,65 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "homepage": "https://github.com/dfdc1123/knead-net-gui",
+    "license": "GPL-3.0-only",
+    "licenseFile": "../LICENSE",
+    "category": "DeveloperTool",
+    "shortDescription": "Convert electronic schematics into breadboard layouts and routing suggestions.",
+    "longDescription": "KneadNet converts KiCad schematic and PCB project data into breadboard component placements, routing suggestions, and assembly guidance.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "wix": {
+        "language": "en-US",
+        "upgradeCode": "8b95db28-d2be-5b20-ae7f-ca73ffa91da9"
+      },
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "languages": ["English"]
+      }
+    },
+    "linux": {
+      "appimage": {
+        "files": {
+          "/usr/share/applications/kneadnet.desktop": "../packaging/linux/kneadnet.desktop",
+          "/usr/share/metainfo/io.github.dfdc1123.kneadnet.metainfo.xml": "../packaging/linux/io.github.dfdc1123.kneadnet.metainfo.xml",
+          "/usr/share/licenses/kneadnet/LICENSE": "../LICENSE"
+        }
+      },
+      "deb": {
+        "section": "electronics",
+        "priority": "optional",
+        "desktopTemplate": "../packaging/linux/kneadnet.desktop",
+        "files": {
+          "/usr/share/metainfo/io.github.dfdc1123.kneadnet.metainfo.xml": "../packaging/linux/io.github.dfdc1123.kneadnet.metainfo.xml",
+          "/usr/share/doc/kneadnet/copyright": "../LICENSE"
+        }
+      },
+      "rpm": {
+        "release": "1",
+        "desktopTemplate": "../packaging/linux/kneadnet.desktop",
+        "files": {
+          "/usr/share/metainfo/io.github.dfdc1123.kneadnet.metainfo.xml": "../packaging/linux/io.github.dfdc1123.kneadnet.metainfo.xml",
+          "/usr/share/licenses/kneadnet/LICENSE": "../LICENSE"
+        }
+      }
+    },
+    "macOS": {
+      "bundleName": "KneadNet",
+      "minimumSystemVersion": "10.13"
+    }
   }
 }

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.dfdc1123.kneadnet</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>KneadNet</name>
+  <summary>Convert electronic schematics into breadboard layouts and routing suggestions</summary>
+  <summary xml:lang="zh-CN">将电子原理图转换为面包板布局和布线建议</summary>
+  <description>
+    <p>KneadNet reads KiCad project data and suggests component placements and jumper-wire routes for solderless breadboards.</p>
+    <p>Its assembly view links schematic nets, breadboard positions, components, and routing steps to help users build the resulting circuit.</p>
+    <p xml:lang="zh-CN">KneadNet 读取 KiCad 工程数据，为免焊面包板生成元件摆位和跳线布线建议。</p>
+    <p xml:lang="zh-CN">装配视图会关联原理图网络、面包板孔位、元件和布线步骤，帮助用户搭建生成的电路。</p>
+  </description>
+  <developer id="io.github.dfdc1123">
+    <name>dfdc1123</name>
+  </developer>
+  <launchable type="desktop-id">kneadnet.desktop</launchable>
+  <provides>
+    <binary>kneadnet</binary>
+  </provides>
+  <url type="homepage">https://github.com/dfdc1123/knead-net-gui</url>
+  <url type="bugtracker">https://github.com/dfdc1123/knead-net-gui/issues</url>
+  <categories>
+    <category>Development</category>
+    <category>Electronics</category>
+    <category>Engineering</category>
+  </categories>
+  <keywords>
+    <keyword>breadboard</keyword>
+    <keyword>electronics</keyword>
+    <keyword>KiCad</keyword>
+    <keyword>routing</keyword>
+    <keyword>schematic</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+</component>

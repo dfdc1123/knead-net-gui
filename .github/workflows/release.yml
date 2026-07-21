@@ -3,103 +3,194 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build-windows:
-    name: Build Windows installer
-    runs-on: windows-latest
+  verify:
+    name: Verify release source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
-          version: 10
+          version: 11.3.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential libssl-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build and upload release assets
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Knead Net ${{ github.ref_name }}
-          releaseBody: |
-            Windows 安装包请见下方 Assets。
-          releaseDraft: true
-          prerelease: false
+      - name: Verify tag and version metadata
+        run: node scripts/check-version.mjs --tag "${GITHUB_REF_NAME}"
 
-  publish-aur:
-    name: Publish AUR source package
-    needs: build-windows
-    runs-on: ubuntu-latest
+      - name: Check Svelte and TypeScript
+        run: pnpm check
+
+      - name: Run frontend tests
+        run: pnpm test:ui
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  package:
+    name: Package ${{ matrix.platform }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows x64
+            platform_id: windows
+            os: windows-2022
+            build_command: pnpm tauri build --ci --no-sign --bundles nsis,msi
+            bundle_dir: target/release/bundle
+            artifact_name: kneadnet-windows-x64
+          - platform: Linux x64
+            platform_id: linux
+            os: ubuntu-22.04
+            build_command: pnpm tauri build --ci --no-sign --bundles appimage,deb,rpm
+            bundle_dir: target/release/bundle
+            artifact_name: kneadnet-linux-x64
+          - platform: macOS universal
+            platform_id: macos
+            os: macos-14
+            build_command: pnpm tauri build --ci --no-sign --target universal-apple-darwin --bundles dmg
+            bundle_dir: target/universal-apple-darwin/release/bundle
+            artifact_name: kneadnet-macos-universal
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Prepare the AUR package files
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Add macOS universal targets
+        if: matrix.platform_id == 'macos'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install Linux packaging dependencies
+        if: matrix.platform_id == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential libssl-dev libwebkit2gtk-4.1-dev librsvg2-dev patchelf rpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build platform bundles
+        run: ${{ matrix.build_command }}
+
+      - name: Collect stable release assets
+        run: node scripts/collect-release-assets.mjs --platform ${{ matrix.platform_id }} --bundle-dir ${{ matrix.bundle_dir }} --out release-assets
+
+      - name: Upload packaged assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Create draft release
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Download platform assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: kneadnet-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Package public examples
+        run: node scripts/package-examples.mjs --out release-assets
+
+      - name: Verify assets and generate checksums
+        run: node scripts/verify-release-assets.mjs --dir release-assets
+
+      - name: Create or update draft release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          pkgver="${RELEASE_TAG#v}"
-          source_url="https://github.com/dfdc1123/knead-net-gui/archive/refs/tags/v${pkgver}.tar.gz"
-          sha256sum="$(curl --fail --location --silent --show-error "$source_url" | sha256sum | awk '{print $1}')"
-
-          mkdir aur-package
-          cp packaging/aur/PKGBUILD packaging/aur/.SRCINFO packaging/aur/knead-net-gui.desktop aur-package/
-          sed -i "s/^pkgver=.*/pkgver=${pkgver}/" aur-package/PKGBUILD
-          sed -i "s/^sha256sums=.*/sha256sums=('${sha256sum}')/" aur-package/PKGBUILD
-          sed -i "s/^\\tpkgver = .*/\\tpkgver = ${pkgver}/" aur-package/.SRCINFO
-          sed -i "s|^\\tsource = .*|\\tsource = knead-net-gui-${pkgver}.tar.gz::${source_url}|" aur-package/.SRCINFO
-          sed -i "s/^\\tsha256sums = .*/\\tsha256sums = ${sha256sum}/" aur-package/.SRCINFO
-
-      - name: Configure the AUR SSH key
-        env:
-          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts
-
-      - name: Push package metadata to AUR
-        run: |
-          set -euo pipefail
-          # AUR has no Git repository until the first push, so initialize a
-          # local repository and fetch its history only when it already exists.
-          git init -b master aur-repo
-          git -C aur-repo remote add origin ssh://aur@aur.archlinux.org/knead-net-gui.git
-          git -C aur-repo fetch origin master || true
-          if git -C aur-repo show-ref --verify --quiet refs/remotes/origin/master; then
-            git -C aur-repo checkout -B master origin/master
+          if gh release view "${GITHUB_REF_NAME}" --json isDraft > release.json 2>/dev/null; then
+            if [[ "$(jq --raw-output .isDraft release.json)" != "true" ]]; then
+              echo "Refusing to replace assets on an already published release."
+              exit 1
+            fi
+          else
+            gh release create "${GITHUB_REF_NAME}" --verify-tag --draft --generate-notes --title "KneadNet ${GITHUB_REF_NAME}"
           fi
-          cp aur-package/PKGBUILD aur-package/.SRCINFO aur-package/knead-net-gui.desktop aur-repo/
-          cd aur-repo
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add PKGBUILD .SRCINFO knead-net-gui.desktop
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "Update to ${GITHUB_REF_NAME}"
-          git push origin HEAD:master
+          gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber

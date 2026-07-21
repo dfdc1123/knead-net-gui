@@ -1,30 +1,49 @@
-# Maintained automatically from GitHub release tags. Do not edit in the AUR clone.
-pkgname=knead-net-gui
-pkgver=0.1.0
+# Maintainer: <dfdc1123> <ch3fmt1g@outlook.com>
+pkgname=kneadnet-bin
+pkgver=0.2.0
 pkgrel=1
-pkgdesc='Desktop GUI for automatic breadboard layout from KiCad schematics'
+pkgdesc='Convert electronic schematics into breadboard layouts and routing suggestions'
 arch=('x86_64')
 url='https://github.com/dfdc1123/knead-net-gui'
 license=('GPL-3.0-only')
-depends=('gtk3' 'libayatana-appindicator' 'webkit2gtk-4.1')
-makedepends=('cargo' 'nodejs' 'pnpm' 'rust')
-source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
-# GitHub Actions replaces this with the release tag's verified checksum before
-# pushing the file to AUR.
-sha256sums=('SKIP')
-
-build() {
-  cd "${srcdir}/${pkgname}-${pkgver}"
-  pnpm install --frozen-lockfile
-  pnpm tauri build --no-bundle
-}
+depends=('gtk3' 'webkit2gtk-4.1')
+provides=('kneadnet')
+conflicts=('kneadnet' 'knead-net-gui')
+options=('!strip')
+_deb="kneadnet_${pkgver}_amd64.deb"
+_examples="KneadNet-examples-${pkgver}.zip"
+source_x86_64=(
+  "${_deb}::${url}/releases/download/v${pkgver}/${_deb}"
+  "${_examples}::${url}/releases/download/v${pkgver}/${_examples}"
+)
+noextract=("${_deb}" "${_examples}")
+# Replace both placeholders with hashes from the draft release's SHA256SUMS
+# before generating .SRCINFO or submitting this package to the AUR.
+sha256sums_x86_64=(
+  'REPLACE_WITH_DEB_SHA256'
+  'REPLACE_WITH_EXAMPLES_SHA256'
+)
 
 package() {
-  cd "${srcdir}/${pkgname}-${pkgver}"
-  install -Dm755 target/release/${pkgname} "${pkgdir}/usr/bin/${pkgname}"
-  install -Dm644 src-tauri/icons/128x128.png \
-    "${pkgdir}/usr/share/icons/hicolor/128x128/apps/${pkgname}.png"
-  install -Dm644 "${startdir}/${pkgname}.desktop" \
-    "${pkgdir}/usr/share/applications/${pkgname}.desktop"
-  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  local deb_dir="${srcdir}/deb"
+  local data_archive=
+
+  install -d "${deb_dir}" "${pkgdir}"
+  bsdtar --no-same-owner -xf "${srcdir}/${_deb}" -C "${deb_dir}"
+  for candidate in "${deb_dir}"/data.tar.*; do
+    if [[ -f "${candidate}" ]]; then
+      data_archive="${candidate}"
+      break
+    fi
+  done
+  [[ -n "${data_archive}" ]] || return 1
+  bsdtar --no-same-owner -xf "${data_archive}" -C "${pkgdir}"
+
+  install -Dm644 "${pkgdir}/usr/share/doc/kneadnet/copyright" \
+    "${pkgdir}/usr/share/licenses/kneadnet/LICENSE"
+
+  bsdtar --no-same-owner -xf "${srcdir}/${_examples}" -C "${srcdir}"
+  install -d "${pkgdir}/usr/share/doc/kneadnet"
+  cp -R "${srcdir}/KneadNet-examples-${pkgver}/examples" \
+    "${pkgdir}/usr/share/doc/kneadnet/examples"
 }

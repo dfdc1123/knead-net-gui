@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    knead_net_gui_lib::run()
+    kneadnet_lib::run()
 }
