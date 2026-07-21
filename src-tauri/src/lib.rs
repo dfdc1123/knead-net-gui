@@ -372,9 +372,37 @@ fn get_breadboard_info(state: tauri::State<AppState>) -> Option<BreadboardInfo> 
     })
 }
 
+/// Wry ties WebView2 pinch input to its general zoom-hotkey switch and disables
+/// both by default. Enable only the Windows page-scale gesture input here while
+/// keeping browser zoom controls off; the frontend consumes the resulting
+/// Ctrl+wheel stream inside diagram viewports.
+#[cfg(windows)]
+fn windows_pinch_zoom_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings5;
+    use windows_core::Interface;
+
+    tauri::plugin::Builder::new("windows-pinch-zoom")
+        .on_webview_ready(|webview| {
+            let _ = webview.with_webview(|platform_webview| unsafe {
+                let Ok(core_webview) = platform_webview.controller().CoreWebView2() else {
+                    return;
+                };
+                let Ok(settings) = core_webview.Settings() else {
+                    return;
+                };
+
+                let _ = settings.SetIsZoomControlEnabled(false);
+                if let Ok(pinch_settings) = settings.cast::<ICoreWebView2Settings5>() {
+                    let _ = pinch_settings.SetIsPinchZoomEnabled(true);
+                }
+            });
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
@@ -388,7 +416,12 @@ pub fn run() {
             get_breadboard_info,
             compute::start_compute,
             compute::cancel_compute
-        ])
+        ]);
+
+    #[cfg(windows)]
+    let builder = builder.plugin(windows_pinch_zoom_plugin());
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import { ui } from "$lib/i18n";
   import {
+    clampDiagramZoom,
+    createPointerPanController,
     createWheelGestureClassifier,
-    zoomFactorForWheelGesture,
+    createWheelZoomController,
   } from "$lib/wheelGestures.js";
   import {
     assemblyDirectJumpCommand,
@@ -71,16 +73,6 @@
   let selectionRevealRequest = 0;
   const recognizeVimStart = createVimStartSequence();
 
-  type PanGesture = {
-    pointerId: number;
-    startX: number;
-    startY: number;
-    startScrollLeft: number;
-    startScrollTop: number;
-  };
-
-  let panGesture: PanGesture | null = null;
-
   const MIN_ASSEMBLY_PANEL_WIDTH = 320;
   const MIN_CONTENT_WIDTH = 320;
   const MIN_VISUAL_PANEL_HEIGHT = 160;
@@ -114,6 +106,17 @@
   type DiagramTarget = "schematic" | "breadboard";
   const classifySchematicWheel = createWheelGestureClassifier();
   const classifyBreadboardWheel = createWheelGestureClassifier();
+  const pointerPan = createPointerPanController();
+  const schematicWheelZoom = createWheelZoomController({
+    getZoom: () => schematicZoom,
+    setZoom: (zoom: number) => setDiagramZoom(zoom, "schematic"),
+    afterRender: tick,
+  });
+  const breadboardWheelZoom = createWheelZoomController({
+    getZoom: () => breadboardZoom,
+    setZoom: (zoom: number) => setDiagramZoom(zoom, "breadboard"),
+    afterRender: tick,
+  });
   type PendingViewportSize = {
     viewport: HTMLDivElement;
     width: number;
@@ -214,7 +217,7 @@
   }
 
   function clampZoom(zoom: number) {
-    return Math.min(3, Math.max(0.5, Math.round(zoom * 100) / 100));
+    return clampDiagramZoom(zoom);
   }
 
   function syncViewportSize(target: DiagramTarget) {
@@ -474,37 +477,17 @@
     };
   }
 
-  async function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
-    event.preventDefault();
+  function handleZoomWheel(event: WheelEvent, target: "schematic" | "breadboard") {
     const viewport = event.currentTarget as HTMLDivElement;
     const classifyWheel = target === "schematic" ? classifySchematicWheel : classifyBreadboardWheel;
     const gesture = classifyWheel(event);
-    if (gesture === "pan") {
-      viewport.scrollLeft += event.deltaX;
-      viewport.scrollTop += event.deltaY;
-      return;
-    }
+    if (gesture === "pan") return;
+    event.preventDefault();
 
     const diagram = viewport.querySelector("svg");
     if (!diagram) return;
-
-    const currentZoom = target === "schematic" ? schematicZoom : breadboardZoom;
-    const nextZoom = clampZoom(
-      currentZoom * zoomFactorForWheelGesture(gesture, event.deltaY),
-    );
-    if (nextZoom === currentZoom) return;
-
-    // 记录鼠标在图中的相对位置，更新尺寸后把同一点移回鼠标下方。
-    const before = diagram.getBoundingClientRect();
-    const focusX = (event.clientX - before.left) / before.width;
-    const focusY = (event.clientY - before.top) / before.height;
-
-    setDiagramZoom(nextZoom, target);
-    await tick();
-
-    const after = diagram.getBoundingClientRect();
-    viewport.scrollLeft += after.left + focusX * after.width - event.clientX;
-    viewport.scrollTop += after.top + focusY * after.height - event.clientY;
+    const wheelZoom = target === "schematic" ? schematicWheelZoom : breadboardWheelZoom;
+    wheelZoom.queue(event, gesture, viewport, diagram);
   }
 
   async function resetDiagram(target: "schematic" | "breadboard") {
@@ -520,29 +503,21 @@
     if (event.button !== 2) return;
     event.preventDefault();
     const viewport = event.currentTarget as HTMLDivElement;
-    panGesture = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startScrollLeft: viewport.scrollLeft,
-      startScrollTop: viewport.scrollTop,
-    };
+    pointerPan.start(viewport, event.pointerId, event.clientX, event.clientY);
     viewport.setPointerCapture(event.pointerId);
     viewport.classList.add("is-panning");
   }
 
   function movePan(event: PointerEvent) {
-    if (!panGesture || event.pointerId !== panGesture.pointerId) return;
+    if (!pointerPan.isActive(event.pointerId)) return;
     event.preventDefault();
-    const viewport = event.currentTarget as HTMLDivElement;
-    viewport.scrollLeft = panGesture.startScrollLeft - (event.clientX - panGesture.startX);
-    viewport.scrollTop = panGesture.startScrollTop - (event.clientY - panGesture.startY);
+    pointerPan.move(event.pointerId, event.clientX, event.clientY);
   }
 
   function stopPan(event: PointerEvent) {
-    if (!panGesture || event.pointerId !== panGesture.pointerId) return;
+    if (!pointerPan.isActive(event.pointerId)) return;
     const viewport = event.currentTarget as HTMLDivElement;
-    panGesture = null;
+    pointerPan.stop(event.pointerId);
     viewport.classList.remove("is-panning");
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
   }
@@ -905,6 +880,12 @@
       selected = null;
       selectionSource = null;
     }
+  });
+
+  onDestroy(() => {
+    pointerPan.destroy();
+    schematicWheelZoom.destroy();
+    breadboardWheelZoom.destroy();
   });
 </script>
 
@@ -1345,10 +1326,19 @@
 </div>
 
 <style>
-  :global(.diagram-viewport.is-panning),
-  :global(.diagram-viewport.is-panning *) {
+  :global(.diagram-viewport) {
+    contain: paint;
+    overscroll-behavior: contain;
+  }
+
+  :global(.diagram-viewport.is-panning) {
     cursor: grabbing !important;
     user-select: none;
+    will-change: scroll-position;
+  }
+
+  :global(.diagram-viewport.is-panning > *) {
+    pointer-events: none;
   }
 
   .schematic-stage {

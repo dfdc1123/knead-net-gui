@@ -109,6 +109,15 @@ test("workflow pages omit redundant helper copy and board metadata", () => {
   assert.doesNotMatch(step4Source, /ui\.step4\.subtitle|ui\.step4\.(?:boards|columns)/);
 });
 
+test("trackpad pans stay native while custom zoom and pointer pans are frame-coalesced", () => {
+  for (const source of [step4Source, pickerSource]) {
+    assert.match(source, /if \(gesture === "pan"\) return;\s+event\.preventDefault\(\);/);
+    assert.doesNotMatch(source, /scrollLeft \+= event\.deltaX/);
+    assert.doesNotMatch(source, /scrollTop \+= event\.deltaY/);
+    assert.match(source, /createPointerPanController/);
+  }
+});
+
 test("project folder states share a visual baseline adjustment without extra height", () => {
   assert.match(step1Source, /<div class="translate-y-1">[\s\S]*ui\.step1\.noFolder/);
   assert.doesNotMatch(step1Source, /flex h-12 items-center/);

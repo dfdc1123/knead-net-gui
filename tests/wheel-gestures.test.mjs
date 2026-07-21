@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  clampDiagramZoom,
+  createPointerPanController,
   createWheelGestureClassifier,
+  createWheelZoomController,
   zoomFactorForWheelGesture,
 } from "../src/lib/wheelGestures.js";
 
@@ -62,4 +65,88 @@ test("mouse zoom stays stepped while trackpad pinch scales continuously", () => 
     zoomFactorForWheelGesture("pinch-zoom", -100),
     zoomFactorForWheelGesture("pinch-zoom", -20),
   );
+});
+
+test("sub-percent pinch deltas accumulate instead of being rounded away", () => {
+  let zoom = 1;
+  for (let index = 0; index < 8; index += 1) {
+    zoom = clampDiagramZoom(
+      zoom * zoomFactorForWheelGesture("pinch-zoom", -0.2),
+    );
+  }
+
+  assert.ok(zoom > 1.01);
+  assert.notEqual(zoom, Math.round(zoom * 100) / 100);
+});
+
+test("pointer pan coalesces diagonal movement into one scroll per frame", () => {
+  const frames = [];
+  const scrolls = [];
+  const viewport = {
+    scrollLeft: 100,
+    scrollTop: 200,
+    scrollTo({ left, top }) {
+      this.scrollLeft = left;
+      this.scrollTop = top;
+      scrolls.push({ left, top });
+    },
+  };
+  const pan = createPointerPanController({
+    requestFrame(callback) {
+      frames.push(callback);
+      return frames.length;
+    },
+    cancelFrame() {},
+  });
+
+  pan.start(viewport, 7, 10, 20);
+  pan.move(7, 13, 24);
+  pan.move(7, 18, 31);
+
+  assert.equal(scrolls.length, 0);
+  assert.equal(frames.length, 1);
+  frames.shift()();
+  assert.deepEqual(scrolls, [{ left: 92, top: 189 }]);
+  pan.stop(7);
+});
+
+test("pinch zoom batches reports and keeps the focal point stable once per frame", async () => {
+  const frames = [];
+  const scrolls = [];
+  let zoom = 1;
+  const viewport = {
+    scrollLeft: 50,
+    scrollTop: 75,
+    scrollTo(position) {
+      this.scrollLeft = position.left;
+      this.scrollTop = position.top;
+      scrolls.push(position);
+    },
+  };
+  const diagram = {
+    isConnected: true,
+    getBoundingClientRect() {
+      return { left: 10, top: 20, width: 200 * zoom, height: 100 * zoom };
+    },
+  };
+  const controller = createWheelZoomController({
+    getZoom: () => zoom,
+    setZoom: (nextZoom) => (zoom = nextZoom),
+    afterRender: async () => {},
+    requestFrame(callback) {
+      frames.push(callback);
+      return frames.length;
+    },
+    cancelFrame() {},
+  });
+
+  controller.queue({ deltaY: -0.2, clientX: 110, clientY: 70 }, "pinch-zoom", viewport, diagram);
+  controller.queue({ deltaY: -0.2, clientX: 110, clientY: 70 }, "pinch-zoom", viewport, diagram);
+
+  assert.equal(frames.length, 1);
+  assert.equal(scrolls.length, 0);
+  await frames.shift()();
+  assert.ok(zoom > 1);
+  assert.equal(scrolls.length, 1);
+  controller.destroy();
 });

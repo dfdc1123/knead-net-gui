@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { centerCanvas, centerCanvasNow } from "$lib/actions/centerCanvas";
   import { ui } from "$lib/i18n";
   import {
+    clampDiagramZoom,
+    createPointerPanController,
     createWheelGestureClassifier,
-    zoomFactorForWheelGesture,
+    createWheelZoomController,
   } from "$lib/wheelGestures.js";
   import ZoomControls from "./ZoomControls.svelte";
 
@@ -31,19 +33,16 @@
   let viewportHeight = $state(0);
   let unavailableNet = $state("");
 
-  type PanGesture = {
-    pointerId: number;
-    startX: number;
-    startY: number;
-    startScrollLeft: number;
-    startScrollTop: number;
-  };
-
-  let panGesture: PanGesture | null = null;
   const classifyWheel = createWheelGestureClassifier();
+  const pointerPan = createPointerPanController();
+  const wheelZoom = createWheelZoomController({
+    getZoom: () => zoom,
+    setZoom: (nextZoom: number) => (zoom = nextZoom),
+    afterRender: tick,
+  });
 
   function clampZoom(nextZoom: number) {
-    return Math.min(3, Math.max(0.5, Math.round(nextZoom * 100) / 100));
+    return clampDiagramZoom(nextZoom);
   }
 
   function syncViewportSize() {
@@ -76,59 +75,36 @@
     if (schematicHost) centerCanvasNow(schematicHost);
   }
 
-  async function handleZoomWheel(event: WheelEvent) {
-    event.preventDefault();
+  function handleZoomWheel(event: WheelEvent) {
     const viewport = event.currentTarget as HTMLDivElement;
     const gesture = classifyWheel(event);
-    if (gesture === "pan") {
-      viewport.scrollLeft += event.deltaX;
-      viewport.scrollTop += event.deltaY;
-      return;
-    }
+    if (gesture === "pan") return;
+    event.preventDefault();
 
     const diagram = viewport.querySelector("svg");
     if (!diagram) return;
-
-    const nextZoom = clampZoom(zoom * zoomFactorForWheelGesture(gesture, event.deltaY));
-    if (nextZoom === zoom) return;
-
-    const before = diagram.getBoundingClientRect();
-    const focusX = (event.clientX - before.left) / before.width;
-    const focusY = (event.clientY - before.top) / before.height;
-    await setZoom(nextZoom);
-
-    const after = diagram.getBoundingClientRect();
-    viewport.scrollLeft += after.left + focusX * after.width - event.clientX;
-    viewport.scrollTop += after.top + focusY * after.height - event.clientY;
+    wheelZoom.queue(event, gesture, viewport, diagram);
   }
 
   function startPan(event: PointerEvent) {
     if (event.button !== 2) return;
     event.preventDefault();
     const viewport = event.currentTarget as HTMLDivElement;
-    panGesture = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      startScrollLeft: viewport.scrollLeft,
-      startScrollTop: viewport.scrollTop,
-    };
+    pointerPan.start(viewport, event.pointerId, event.clientX, event.clientY);
     viewport.setPointerCapture(event.pointerId);
     viewport.classList.add("is-panning");
   }
 
   function movePan(event: PointerEvent) {
-    if (!panGesture || event.pointerId !== panGesture.pointerId) return;
+    if (!pointerPan.isActive(event.pointerId)) return;
     event.preventDefault();
-    const viewport = event.currentTarget as HTMLDivElement;
-    viewport.scrollLeft = panGesture.startScrollLeft - (event.clientX - panGesture.startX);
-    viewport.scrollTop = panGesture.startScrollTop - (event.clientY - panGesture.startY);
+    pointerPan.move(event.pointerId, event.clientX, event.clientY);
   }
 
   function stopPan(event: PointerEvent) {
-    if (!panGesture || event.pointerId !== panGesture.pointerId) return;
+    if (!pointerPan.isActive(event.pointerId)) return;
     const viewport = event.currentTarget as HTMLDivElement;
-    panGesture = null;
+    pointerPan.stop(event.pointerId);
     viewport.classList.remove("is-panning");
     if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
   }
@@ -185,6 +161,11 @@
     selectedNet;
     schematicSvg;
     queueMicrotask(syncHighlight);
+  });
+
+  onDestroy(() => {
+    pointerPan.destroy();
+    wheelZoom.destroy();
   });
 </script>
 
@@ -271,10 +252,19 @@
 </dialog>
 
 <style>
-  :global(.schematic-host.is-panning),
-  :global(.schematic-host.is-panning *) {
+  :global(.schematic-host) {
+    contain: paint;
+    overscroll-behavior: contain;
+  }
+
+  :global(.schematic-host.is-panning) {
     cursor: grabbing !important;
     user-select: none;
+    will-change: scroll-position;
+  }
+
+  :global(.schematic-host.is-panning > *) {
+    pointer-events: none;
   }
 
   .schematic-stage {

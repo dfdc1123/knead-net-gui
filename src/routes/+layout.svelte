@@ -11,6 +11,10 @@
     event.preventDefault();
   }
 
+  function preventBrowserPinchZoom(event: WheelEvent) {
+    if (event.ctrlKey) event.preventDefault();
+  }
+
   function auraActionButton() {
     for (const aura of document.querySelectorAll<HTMLElement>(".workflow-next-step")) {
       if (aura.getClientRects().length === 0) continue;
@@ -45,6 +49,10 @@
   }
 </script>
 
-<svelte:window oncontextmenu={preventContextMenu} onkeydown={triggerAuraAction} />
+<svelte:window
+  oncontextmenu={preventContextMenu}
+  onkeydown={triggerAuraAction}
+  onwheel={preventBrowserPinchZoom}
+/>
 
 {@render children()}
