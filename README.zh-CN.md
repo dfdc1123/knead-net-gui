@@ -74,7 +74,13 @@ chmod +x KneadNet_<version>_linux_amd64.AppImage
 ./KneadNet_<version>_linux_amd64.AppImage
 ```
 
-`kneadnet-bin` 目前尚未发布到 AUR。在正式上架前，Arch Linux 用户可以使用 GitHub Releases 中的 AppImage 或其他软件包。
+Arch Linux 用户可以从 [AUR](https://aur.archlinux.org/packages/kneadnet-bin) 安装二进制包：
+
+```bash
+paru -S kneadnet-bin
+```
+
+原 `knead-net-gui` 包属于 v0.2.0 之前的命名方案；当前版本请使用 `kneadnet-bin`。
 
 ## 示例工程
 

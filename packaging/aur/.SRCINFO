@@ -15,7 +15,7 @@ pkgbase = kneadnet-bin
 	options = !strip
 	source_x86_64 = kneadnet_0.2.0_amd64.deb::https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.0/kneadnet_0.2.0_amd64.deb
 	source_x86_64 = KneadNet-examples-0.2.0.zip::https://github.com/dfdc1123/knead-net-gui/releases/download/v0.2.0/KneadNet-examples-0.2.0.zip
-	sha256sums_x86_64 = REPLACE_WITH_DEB_SHA256
-	sha256sums_x86_64 = REPLACE_WITH_EXAMPLES_SHA256
+	sha256sums_x86_64 = a1f74910451b8a9b2e396c36e7543051ed2b185d2314aa3b3a4c59eb39e7fc3b
+	sha256sums_x86_64 = 02cc9ab32353c6c458b537b40b2336878dcf9c0d280190aa981baa1b4e7a73b7
 
 pkgname = kneadnet-bin

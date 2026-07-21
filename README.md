@@ -74,7 +74,13 @@ chmod +x KneadNet_<version>_linux_amd64.AppImage
 ./KneadNet_<version>_linux_amd64.AppImage
 ```
 
-`kneadnet-bin` is not currently published to the AUR. Arch Linux users should use the AppImage or another package from GitHub Releases until it becomes available.
+Arch Linux users can install the binary package from the [AUR](https://aur.archlinux.org/packages/kneadnet-bin):
+
+```bash
+paru -S kneadnet-bin
+```
+
+The former `knead-net-gui` package belongs to the pre-v0.2.0 naming scheme; use `kneadnet-bin` for current releases.
 
 ## Example projects
 

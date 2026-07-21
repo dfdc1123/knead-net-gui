@@ -59,7 +59,7 @@ No portable Windows archive is produced. It would bypass the installer, WebView2
 
 The canonical desktop entry is `packaging/linux/kneadnet.desktop`. It deliberately has no MIME declarations because KneadNet does not accept command-line file arguments or register KiCad file types.
 
-The AppStream component is `packaging/linux/io.github.dfdc1123.kneadnet.metainfo.xml`. Screenshot URLs and release entries are omitted until stable, immutable URLs and actual publication dates are available.
+The AppStream component is `packaging/linux/io.github.dfdc1123.kneadnet.metainfo.xml`. Screenshot URLs use immutable release-tag paths, and each published version records its actual publication date.
 
 Expected installed files include:
 
