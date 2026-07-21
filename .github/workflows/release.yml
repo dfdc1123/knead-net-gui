@@ -133,6 +133,10 @@ jobs:
       - name: Build platform bundles
         run: ${{ matrix.build_command }}
 
+      - name: Repack AppImage with system Wayland libraries
+        if: matrix.platform_id == 'linux'
+        run: node scripts/repack-appimage.mjs --bundle-dir target/release/bundle/appimage
+
       - name: Collect stable release assets
         run: node scripts/collect-release-assets.mjs --platform ${{ matrix.platform_id }} --bundle-dir ${{ matrix.bundle_dir }} --out release-assets
 

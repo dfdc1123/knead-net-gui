@@ -80,6 +80,7 @@ appstreamcli validate --no-net packaging/linux/io.github.dfdc1123.kneadnet.metai
 ```
 
 Official AppImages are built on Ubuntu 22.04 to avoid linking against a newer rolling-distribution baseline.
+The release workflow removes `libwayland-client`, `libwayland-cursor`, `libwayland-egl`, and `libwayland-server` from the AppImage before publishing. These host graphics-stack libraries must resolve from the target desktop instead of overriding its Wayland/EGL stack with the Ubuntu build-host copies. `scripts/repack-appimage.mjs` also extracts the final image and fails if any excluded library remains.
 
 ## Windows
 
