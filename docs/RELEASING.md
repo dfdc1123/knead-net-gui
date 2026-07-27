@@ -1,6 +1,6 @@
 # Releasing KneadNet
 
-KneadNet releases are built from stable SemVer tags. The workflow verifies the source, builds every supported platform, creates checksums and an examples archive, and then creates a **draft** GitHub Release. Publication is always a maintainer decision.
+KneadNet releases are built from stable SemVer tags. The release workflow verifies the source, builds every supported platform, creates checksums and an examples archive, and then creates a **draft** GitHub Release. Publication is always a maintainer decision. Publishing the inspected Release triggers a separate workflow that updates `kneadnet-bin` in the AUR.
 
 ## Before tagging
 
@@ -67,7 +67,7 @@ The release workflow:
 7. Writes SHA-256 values for every downloadable asset.
 8. Creates or refreshes a draft Release. It refuses to overwrite an already published Release.
 
-The workflow never publishes to the AUR and never publishes the GitHub Release automatically.
+The tag workflow never publishes the GitHub Release automatically. After a maintainer publishes the draft, `.github/workflows/publish-aur.yml` handles the downstream AUR update.
 
 ## Inspecting the draft
 
@@ -88,15 +88,15 @@ Before publication:
 
 Publish the draft only after these checks pass.
 
-## AUR follow-up
+## Automatic AUR publication
 
-After the GitHub Release is public:
+Before the first automatic publication, follow `packaging/aur/README.md` to give the maintaining AUR account a dedicated SSH public key and configure its private key as the `AUR_SSH_PRIVATE_KEY` GitHub Actions repository secret.
 
-1. Follow `packaging/aur/README.md` to update `pkgver`, `pkgrel`, checksums, and `.SRCINFO`.
-2. Test source verification and package installation in a clean Arch environment.
-3. Inspect the installed executable, desktop entry, icons, AppStream metadata, license, and examples.
-4. Submit or update `kneadnet-bin` manually.
-5. Retire or request an appropriate merge/deletion of the old `knead-net-gui` package only after checking AUR policy.
+Publishing a non-prerelease Release triggers the AUR workflow. It verifies the released assets, generates matching `PKGBUILD` and `.SRCINFO`, and pushes them to `kneadnet-bin`. It skips an already-published version and refuses to downgrade the AUR package. Check that workflow before considering the release complete.
+
+Periodically, and whenever packaging behavior changes, test source verification and installation in a clean Arch environment and inspect the installed executable, desktop entry, icons, AppStream metadata, license, and examples.
+
+Packaging-only `pkgrel` changes remain manual. Retire or request an appropriate merge/deletion of the old `knead-net-gui` package only after checking AUR policy.
 
 ## Post-release checks
 
@@ -104,12 +104,13 @@ After the GitHub Release is public:
 - Download one asset from the public page and verify its checksum.
 - Confirm README links and example instructions work without authentication.
 - Confirm the source tag points to the exact reviewed commit.
+- Confirm the AUR workflow succeeded and `kneadnet-bin` shows the released version.
 - Check the release workflow and CI logs for warnings hidden by successful steps.
 - Record any signing, installer, or package issue before beginning the next release.
 
 ## Optional signing inputs
 
-No signing secrets are currently configured.
+No application-signing secrets are currently configured. AUR publication separately requires `AUR_SSH_PRIVATE_KEY`.
 
 - Windows needs a code-signing certificate, secure certificate import, password secret, timestamp service, and a documented renewal process.
 - macOS needs a Developer ID Application identity, certificate/password, Apple account or App Store Connect credentials, Team ID, notarization, and stapling.
@@ -125,4 +126,4 @@ These are intentionally not changed by repository files:
 - Private vulnerability reporting or a security contact email.
 - Release environment protection rules.
 - Windows and Apple signing identities.
-- AUR maintainer name and email.
+- AUR maintainer/co-maintainer access and the `AUR_SSH_PRIVATE_KEY` repository secret.
