@@ -32,5 +32,5 @@ knead-net = { path = ".." }
 gtk = { version = "0.18.2", features = ["v3_24"] }
 
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38.2"
-windows-core = "0.61.2"
+webview2-com = "0.39.1"
+windows-core = "0.62.2"
