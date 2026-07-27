@@ -4,6 +4,11 @@
   import Step2SelectBoard from "$lib/components/Step2SelectBoard.svelte";
   import Step3Compute from "$lib/components/Step3Compute.svelte";
   import Step4Result from "$lib/components/Step4Result.svelte";
+  import {
+    hasShortcutModifier,
+    isTextEditingTarget,
+    workflowStepIndex,
+  } from "$lib/keyboardShortcuts.js";
   import type { BreadboardSelection, LayoutFrame } from "$lib/layout";
 
   let step = $state(0);
@@ -43,7 +48,23 @@
     resultFrame = frame;
     resultReady = true;
   }
+
+  function switchWorkflowStep(event: KeyboardEvent) {
+    if (
+      event.defaultPrevented ||
+      event.repeat ||
+      hasShortcutModifier(event) ||
+      isTextEditingTarget(event.target)
+    ) return;
+
+    const nextStep = workflowStepIndex(event.key);
+    if (nextStep === null || !enabledSteps[nextStep]) return;
+    event.preventDefault();
+    step = nextStep;
+  }
 </script>
+
+<svelte:window onkeydown={switchWorkflowStep} />
 
 <div class="flex h-screen flex-col bg-base-200">
   <main class="min-h-0 flex-1 pb-16">

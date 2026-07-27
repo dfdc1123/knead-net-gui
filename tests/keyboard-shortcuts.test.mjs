@@ -7,6 +7,7 @@ import {
   createVimStartSequence,
   isAssemblyCompletionKey,
   isAuraActivationKey,
+  workflowStepIndex,
 } from "../src/lib/keyboardShortcuts.js";
 
 const layoutSource = readFileSync(
@@ -17,6 +18,10 @@ const step4Source = readFileSync(
   new URL("../src/lib/components/Step4Result.svelte", import.meta.url),
   "utf8",
 );
+const pageSource = readFileSync(
+  new URL("../src/routes/+page.svelte", import.meta.url),
+  "utf8",
+);
 
 test("aura actions use only the two requested activation keys", () => {
   assert.equal(isAuraActivationKey("Enter"), true);
@@ -24,6 +29,25 @@ test("aura actions use only the two requested activation keys", () => {
   assert.equal(isAuraActivationKey("Spacebar"), false);
   assert.equal(isAuraActivationKey("d"), false);
   assert.match(layoutSource, /<svelte:window[\s\S]*onkeydown=\{triggerAuraAction\}/);
+});
+
+test("number keys map directly to the four unlocked workflow pages", () => {
+  assert.equal(workflowStepIndex("1"), 0);
+  assert.equal(workflowStepIndex("2"), 1);
+  assert.equal(workflowStepIndex("3"), 2);
+  assert.equal(workflowStepIndex("4"), 3);
+  assert.equal(workflowStepIndex("0"), null);
+  assert.equal(workflowStepIndex("5"), null);
+  assert.equal(workflowStepIndex("Numpad1"), null);
+  assert.match(pageSource, /<svelte:window onkeydown=\{switchWorkflowStep\}/);
+  assert.match(pageSource, /enabledSteps\[nextStep\]/);
+});
+
+test("Enter and space advance the guided workflow even when an old button retains focus", () => {
+  assert.doesNotMatch(
+    layoutSource,
+    /closest\("button, a, \[role='button'\]"\)/,
+  );
 });
 
 test("assembly navigation supports arrows and vim directions", () => {
@@ -44,6 +68,7 @@ test("assembly completion is intentionally one-way on Enter, space, or d", () =>
   assert.match(step4Source, /<svelte:window onkeydown=\{handleAssemblyShortcut\}/);
   assert.match(step4Source, /setPartCompleted\(part\.id, true\)/);
   assert.match(step4Source, /setWireCompleted\(wire\.id, true\)/);
+  assert.match(step4Source, /focusSelectedAssemblyTask/);
 });
 
 test("assembly direct jumps cover the requested groups and list end", () => {

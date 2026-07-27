@@ -48,6 +48,13 @@ test("assembly rows preserve the list radius when highlighted", () => {
   assert.equal(step4Source.match(/first:rounded-t-box last:rounded-b-box/g)?.length, 2);
 });
 
+test("assembly keyboard focus uses the same purple highlight as selection", () => {
+  assert.match(
+    step4Source,
+    /\.assembly-row:has\(> \.assembly-row-hit:focus-visible\)[\s\S]*outline: 2px solid var\(--color-highlight\)/,
+  );
+});
+
 test("linked selections shrink either diagram when their bounds exceed the viewport", () => {
   assert.match(step4Source, /async function fitDiagramSelection\(target: DiagramTarget\)/);
   assert.match(

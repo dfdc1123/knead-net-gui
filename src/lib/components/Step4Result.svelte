@@ -567,6 +567,25 @@
     selectionSource = "assembly";
   }
 
+  async function focusSelectedAssemblyTask() {
+    const selection = selected;
+    await tick();
+    if (!assemblyListHost) return;
+    if (!selection || (selection.type !== "component" && selection.type !== "wire")) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && focused.matches(".assembly-row-hit")) {
+        focused.blur();
+      }
+      return;
+    }
+    const selector = selection.type === "component"
+      ? `[data-component-id="${CSS.escape(selection.id)}"]`
+      : `[data-wire-id="${CSS.escape(selection.id)}"]`;
+    assemblyListHost
+      .querySelector<HTMLButtonElement>(`${selector} > .assembly-row-hit`)
+      ?.focus({ preventScroll: true });
+  }
+
   function jumpToAssembly(command: "first" | "last" | "components" | "wires") {
     const tasks = assemblyTasks();
     const task = command === "first"
@@ -578,6 +597,7 @@
         );
     if (!task) return;
     selectAssemblyTask(task);
+    void focusSelectedAssemblyTask();
   }
 
   function navigateAssembly(offset: number) {
@@ -590,6 +610,7 @@
       ? offset > 0 ? 0 : tasks.length - 1
       : (currentIndex + offset + tasks.length) % tasks.length;
     selectAssemblyTask(tasks[nextIndex]);
+    void focusSelectedAssemblyTask();
   }
 
   function completeSelectedAssemblyTask() {
@@ -648,6 +669,7 @@
     if (isAssemblyCompletionKey(event.key)) {
       event.preventDefault();
       completeSelectedAssemblyTask();
+      void focusSelectedAssemblyTask();
     }
   }
 
@@ -1383,7 +1405,7 @@
 
   .assembly-row:has(> .assembly-row-hit:focus-visible) {
     z-index: 1;
-    outline: 2px solid var(--color-primary);
+    outline: 2px solid var(--color-highlight);
     outline-offset: -2px;
   }
 

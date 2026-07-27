@@ -36,9 +36,6 @@
       isTextEditingTarget(event.target)
     ) return;
 
-    const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest("button, a, [role='button']")) return;
-
     const button = auraActionButton();
     if (!button) return;
     const openDialog = document.querySelector<HTMLDialogElement>("dialog[open]");

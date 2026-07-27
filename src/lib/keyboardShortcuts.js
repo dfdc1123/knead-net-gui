@@ -4,6 +4,11 @@ export function isAuraActivationKey(key) {
 }
 
 /** @param {string} key */
+export function workflowStepIndex(key) {
+  return /^[1-4]$/.test(key) ? Number(key) - 1 : null;
+}
+
+/** @param {string} key */
 export function assemblyNavigationOffset(key) {
   if (["ArrowUp", "ArrowLeft", "k", "h"].includes(key)) return -1;
   if (["ArrowDown", "ArrowRight", "j", "l"].includes(key)) return 1;
