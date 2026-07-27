@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "infrared-transceiver-easyedapro") (type "KiCad") (uri "${KIPRJMOD}/infrared-transceiver-easyedapro.kicad_sym") (options "") (descr ""))
+)

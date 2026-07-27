@@ -89,8 +89,8 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
         // Kind = 库名 (如 "Resistor_THT", "Package_TO_SOT_THT", "Diode_THT")
         let kind = lib.to_string();
 
-        // 提取所有 thru_hole 焊盘; 遇到 SMD 直接 panic
-        let pads = extract_pads(fp_items, fp_ref, &ref_);
+        // 提取所有 thru_hole 焊盘；SMD 会作为不支持的输入返回错误。
+        let pads = extract_pads(fp_items, fp_ref, &ref_)?;
 
         if pads.is_empty() {
             continue; // 没有焊盘的元件 (机械层等), 跳过
@@ -217,8 +217,8 @@ fn find_property<'a>(items: &'a [Sexp], key: &str) -> Option<&'a str> {
 }
 
 /// 在 footprint block 里提取所有 thru_hole 焊盘。
-/// 遇到 SMD 焊盘会 panic。
-fn extract_pads(items: &[Sexp], fp_ref: &str, ref_: &str) -> Vec<PadInfo> {
+/// 遇到 SMD 焊盘会返回可展示给用户的解析错误。
+fn extract_pads(items: &[Sexp], fp_ref: &str, ref_: &str) -> Result<Vec<PadInfo>, ParseError> {
     let mut pads = Vec::new();
     for item in items {
         let sub = match item {
@@ -240,10 +240,12 @@ fn extract_pads(items: &[Sexp], fp_ref: &str, ref_: &str) -> Vec<PadInfo> {
         };
 
         if pad_type == "smd" {
-            panic!(
-                "footprint '{fp_ref}' (ref {ref_}) 包含 SMD 焊盘 (pad {num}), \
-                 面包板只能用直插 (through_hole) 元件"
-            );
+            return Err(ParseError {
+                message: format!(
+                    "footprint '{fp_ref}' (ref {ref_}) contains an SMD pad ({num}); \
+                     breadboards require through_hole components"
+                ),
+            });
         }
         if pad_type != "thru_hole" {
             // np_thru_hole / connect — 暂时跳过, 面包板上不常见
@@ -269,7 +271,7 @@ fn extract_pads(items: &[Sexp], fp_ref: &str, ref_: &str) -> Vec<PadInfo> {
             pinfunction,
         });
     }
-    pads
+    Ok(pads)
 }
 
 /// 在一个列表里找 `(at X Y)`, 返回 (x, y)。
@@ -350,5 +352,35 @@ mod tests {
     #[test]
     fn split_ref_no_colon() {
         assert_eq!(split_footprint_ref("nocolon"), ("nocolon", "nocolon"));
+    }
+
+    #[test]
+    fn smd_footprint_returns_a_parse_error_instead_of_panicking() {
+        let text = r#"
+            (kicad_pcb
+              (footprint "Package_SO:SOIC-8"
+                (property "Reference" "U1")
+                (pad "1" smd rect (at 0 0))))
+        "#;
+
+        let error = parse_pcb(text).expect_err("SMD input must be rejected");
+
+        assert!(
+            error.message.contains("SMD") && error.message.contains("through_hole"),
+            "unexpected error: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn infrared_transceiver_fixture_is_rejected_as_smd_input() {
+        let text =
+            std::fs::read_to_string("examples/infrared-transceiver/infrared-transceiver.kicad_pcb")
+                .unwrap();
+
+        let error = parse_pcb(&text).expect_err("fixture contains SMD footprints");
+
+        assert!(error.message.contains("ref C1"), "{}", error.message);
+        assert!(error.message.contains("SMD"), "{}", error.message);
     }
 }

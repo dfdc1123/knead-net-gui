@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::sch::ComponentMetadataMap;
-use crate::{AppState, UiLocale};
+use crate::{pcb_parse_error, AppState, UiLocale};
 
 const PROGRESS_EVENT: &str = "compute-progress";
 
@@ -354,13 +354,7 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
             locale.text("读取 PCB 失败", "Failed to read PCB")
         )
     })?;
-    let mut circuit = parse_pcb(&text).map_err(|e| {
-        format!(
-            "{}: {}",
-            locale.text("解析 PCB 失败", "Failed to parse PCB"),
-            e.message
-        )
-    })?;
+    let mut circuit = parse_pcb(&text).map_err(|error| pcb_parse_error(&error.message, locale))?;
     for (rail_zh, rail_en, selected) in [
         ("上方正极", "top positive", top_positive_net.as_deref()),
         ("上方负极", "top negative", top_negative_net.as_deref()),

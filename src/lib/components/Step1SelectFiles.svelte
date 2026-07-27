@@ -146,6 +146,9 @@
 
     try {
       await invoke("clear_project_source");
+      if (project.pcb) {
+        await invoke("set_pcb_path", { path: project.pcb.path, locale });
+      }
       if (project.sch) {
         svg = await invoke<string>("render_sch", {
           path: project.sch.path,
@@ -158,7 +161,6 @@
         error = ui.step1.matchingPcbMissing(project.name);
         return;
       }
-      await invoke("set_pcb_path", { path: project.pcb.path });
       onStatusChange(true);
     } catch (e) {
       error = String(e);

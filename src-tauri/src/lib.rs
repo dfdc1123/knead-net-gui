@@ -143,9 +143,37 @@ fn localize_schematic_error(error: sch::RenderError, locale: UiLocale) -> String
     }
 }
 
-/// 把选中的 .pcb 路径存到全局 state, 供 Step 3 布局用
+fn pcb_parse_error(detail: &str, locale: UiLocale) -> String {
+    if detail.contains("contains an SMD pad") {
+        return format!(
+            "{}: {detail}",
+            locale.text(
+                "PCB 包含贴片（SMD）封装；KneadNet 只支持直插（through_hole）元件。请在 KiCad 中更换封装并保存后重新导入",
+                "The PCB contains an SMD footprint. KneadNet only supports through-hole components. Replace the footprint in KiCad, save, and import the project again",
+            )
+        );
+    }
+    format!(
+        "{}: {detail}",
+        locale.text("解析 PCB 失败", "Failed to parse PCB")
+    )
+}
+
+/// 校验选中的 PCB 后把路径存到全局 state, 供 Step 3 布局用。
 #[tauri::command]
-fn set_pcb_path(state: tauri::State<AppState>, path: String) -> Result<(), String> {
+fn set_pcb_path(
+    state: tauri::State<AppState>,
+    path: String,
+    locale: UiLocale,
+) -> Result<(), String> {
+    let text = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "{}: {error}",
+            locale.text("读取 PCB 失败", "Failed to read PCB")
+        )
+    })?;
+    knead_net::input::pcb::parse_pcb(&text)
+        .map_err(|error| pcb_parse_error(&error.message, locale))?;
     let mut guard = state.pcb_path.lock().map_err(|e| e.to_string())?;
     *guard = Some(path);
     Ok(())
@@ -345,13 +373,8 @@ fn get_power_net_options(
             locale.text("读取 PCB 失败", "Failed to read PCB")
         )
     })?;
-    let circuit = knead_net::input::pcb::parse_pcb(&text).map_err(|error| {
-        format!(
-            "{}: {}",
-            locale.text("解析 PCB 失败", "Failed to parse PCB"),
-            error.message
-        )
-    })?;
+    let circuit = knead_net::input::pcb::parse_pcb(&text)
+        .map_err(|error| pcb_parse_error(&error.message, locale))?;
     let preset = preset_from_str(&preset)
         .map_err(|_| locale.text("未知面包板预设", "Unknown breadboard preset"))?;
     let board = make_breadboards(preset, 1, true, true)?;
@@ -635,6 +658,21 @@ mod tests {
     #[test]
     fn selecting_no_board_half_is_rejected() {
         assert!(make_breadboards(Preset::Hole400, 1, false, false).is_err());
+    }
+
+    #[test]
+    fn smd_pcb_error_explains_how_to_fix_the_input() {
+        let detail =
+            "footprint 'C0603' (ref C1) contains an SMD pad (1); breadboards require through_hole components";
+
+        let zh = pcb_parse_error(detail, UiLocale::ZhCn);
+        assert!(zh.contains("贴片（SMD）"));
+        assert!(zh.contains("KiCad"));
+        assert!(zh.contains("直插（through_hole）"));
+
+        let en = pcb_parse_error(detail, UiLocale::En);
+        assert!(en.contains("SMD footprint"));
+        assert!(en.contains("Replace the footprint in KiCad"));
     }
 
     #[test]
