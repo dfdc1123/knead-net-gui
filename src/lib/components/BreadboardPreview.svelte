@@ -10,6 +10,7 @@
   } from "$lib/layout";
   import { parseKiCadTextMarkup } from "$lib/layout";
   import {
+    componentBodyBounds,
     globalColumnX,
     interBoardGapColumns,
     physicalColumnNumber,
@@ -421,6 +422,17 @@
   }
 
   function partBounds(part: LayoutPart) {
+    if (part.body_bounds) {
+      return componentBodyBounds(
+        part.body_bounds,
+        safeBoardCols,
+        safeGapCols,
+        pitch,
+        xInset,
+        boardGap,
+        isMini ? 18.1 : 60,
+      );
+    }
     const points = part.pins.map((pin) => holePosition(pin.hole));
     if (points.length === 0) {
       return {

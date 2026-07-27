@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   boardIndexForColumn,
+  componentBodyBounds,
   globalColumnX,
   interBoardGapColumns,
   localColumnForColumn,
@@ -71,6 +72,28 @@ test("global columns map to consecutive physical breadboards", () => {
   const lastOnFirst = globalColumnX(29, 30, 3, 12, 18.2, boardGap);
   const firstOnSecond = globalColumnX(33, 30, 3, 12, 18.2, boardGap);
   assert.ok(Math.abs(firstOnSecond - lastOnFirst - (boardGap + 18.2 * 2)) < 1e-9);
+});
+
+test("component bodies use the backend footprint outline instead of pin extents", () => {
+  const bounds = componentBodyBounds(
+    { min_col: 3, max_col: 22, min_row: 2, max_row: 8 },
+    30,
+    3,
+    12,
+    18.2,
+    12,
+    60,
+  );
+
+  assert.deepEqual(bounds, {
+    x: 49.2,
+    y: 79,
+    width: 238,
+    height: 82,
+    cx: 168.2,
+    cy: 120,
+  });
+  assert.match(source, /if \(part\.body_bounds\) \{\s+return componentBodyBounds\(/);
 });
 
 test("breadboard presets expose their physical inter-board spacing", () => {

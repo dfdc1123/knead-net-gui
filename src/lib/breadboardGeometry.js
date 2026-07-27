@@ -55,6 +55,43 @@ export function globalColumnX(column, boardCols, gapCols, pitch, xInset, boardGa
 }
 
 /**
+ * Convert an on-board component body expressed in logical hole coordinates to
+ * the SVG rectangle used by the breadboard preview.
+ *
+ * @param {{ min_col: number, max_col: number, min_row: number, max_row: number }} bounds
+ * @param {number} boardCols
+ * @param {number} gapCols
+ * @param {number} pitch
+ * @param {number} xInset
+ * @param {number} boardGap
+ * @param {number} mainTopY
+ * @param {number} padding
+ */
+export function componentBodyBounds(
+  bounds,
+  boardCols,
+  gapCols,
+  pitch,
+  xInset,
+  boardGap,
+  mainTopY,
+  padding = 5,
+) {
+  const minX = globalColumnX(bounds.min_col, boardCols, gapCols, pitch, xInset, boardGap);
+  const maxX = globalColumnX(bounds.max_col, boardCols, gapCols, pitch, xInset, boardGap);
+  const minY = mainTopY + bounds.min_row * pitch;
+  const maxY = mainTopY + bounds.max_row * pitch;
+  return {
+    x: minX - padding,
+    y: minY - padding,
+    width: Math.max(2 * padding, maxX - minX + 2 * padding),
+    height: Math.max(2 * padding, maxY - minY + 2 * padding),
+    cx: (minX + maxX) / 2,
+    cy: (minY + maxY) / 2,
+  };
+}
+
+/**
  * Global power-rail columns for one physical board. Rail cadence always restarts locally.
  * @param {"hole170" | "hole400" | "hole830"} preset
  * @param {number} boardCols

@@ -7,8 +7,8 @@ use std::time::Instant;
 use knead_net::input::pcb::parse_pcb;
 use knead_net::{
     Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Circuit, HoleId, InitializerFamily,
-    Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, Polarity, PowerRailSide, Preset,
-    ProgressOptions, Region, SAConfig,
+    Layout, LayoutProgress, LayoutSnapshot, PathFinderRouter, Placement, Polarity, PowerRailSide,
+    Preset, ProgressOptions, Region, SAConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -120,6 +120,8 @@ struct LayoutPart {
     package: &'static str,
     device: &'static str,
     pins: Vec<LayoutPin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body_bounds: Option<LayoutBodyBounds>,
     properties: Vec<LayoutProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exclude_from_sim: Option<bool>,
@@ -131,6 +133,14 @@ struct LayoutPart {
     in_pos_files: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dnp: Option<bool>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct LayoutBodyBounds {
+    min_col: i32,
+    max_col: i32,
+    min_row: i32,
+    max_row: i32,
 }
 
 #[derive(Clone, Serialize)]
@@ -1344,6 +1354,15 @@ fn snapshot_frame(
         let package = classify_package(component.kind(), footprint.name(), component.pins().len());
         let device = classify_device(component.kind());
         let component_metadata = schematic_metadata.get(component.ref_());
+        let body_bounds = matches!(placement, Placement::OnBoard { .. })
+            .then_some(placed.bbox)
+            .flatten()
+            .map(|bbox| LayoutBodyBounds {
+                min_col: bbox.min_x,
+                max_col: bbox.max_x,
+                min_row: bbox.min_y,
+                max_row: bbox.max_y,
+            });
         let pins: Vec<_> = placed
             .pin_holes
             .into_iter()
@@ -1386,6 +1405,7 @@ fn snapshot_frame(
             package,
             device,
             pins,
+            body_bounds,
             properties: component_metadata
                 .map(|metadata| {
                     metadata
@@ -2072,6 +2092,61 @@ mod tests {
         assert!(rail_ties
             .iter()
             .any(|wire| wire.id == "rail-tie:preset:positive:top-bottom"));
+    }
+
+    #[test]
+    fn snapshot_frame_exposes_tm1637_display_body_bounds() {
+        use knead_net::{Placement, Position, Rotation};
+
+        let text = std::fs::read_to_string(
+            "../examples/tm1637-display-module/tm1637-display-module.kicad_pcb",
+        )
+        .unwrap();
+        let circuit = parse_pcb(&text).unwrap();
+        let display_index = circuit
+            .components()
+            .iter()
+            .position(|component| component.ref_() == "LED1")
+            .unwrap();
+        let mut placements = vec![None; circuit.components().len()];
+        placements[display_index] = Some(Placement::OnBoard {
+            position: Position { x: 15, y: 2 },
+            rotation: Rotation::R90,
+        });
+
+        let frame = snapshot_frame(
+            &LayoutSnapshot {
+                placements,
+                wires: Vec::new(),
+            },
+            &circuit,
+            &Breadboard::standard(),
+            &ComponentMetadataMap::new(),
+            BoardAllocation {
+                preset: Preset::Hole400,
+                board_cols: 30,
+                board_count: 1,
+            },
+            None,
+            None,
+        );
+        let json = serde_json::to_value(frame).unwrap();
+        let display = json["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|part| part["reference"] == "LED1")
+            .unwrap();
+
+        assert_eq!(
+            display["body_bounds"],
+            serde_json::json!({
+                "min_col": 3,
+                "max_col": 22,
+                "min_row": 2,
+                "max_row": 8,
+            })
+        );
     }
 
     #[test]

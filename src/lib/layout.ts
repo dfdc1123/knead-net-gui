@@ -41,6 +41,12 @@ export type LayoutPart = {
   package?: "generic" | "dip" | "axial";
   device?: "generic" | "diode" | "led";
   pins: LayoutPin[];
+  body_bounds?: {
+    min_col: number;
+    max_col: number;
+    min_row: number;
+    max_row: number;
+  };
   properties?: Array<{
     name: string;
     value: string;
