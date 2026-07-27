@@ -130,6 +130,15 @@ pub enum ColumnEndpoint {
     Wire { wire: WireId, net: NetId },
 }
 
+/// 封装几何无法安全映射到所选面包板的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FootprintGeometryIssue {
+    /// R0/R90 都存在列短路风险，而面包板没有中央沟槽可供封装跨越。
+    MissingCentralChannel,
+    /// 面包板有中央沟槽，但封装的引脚行数或间距无法完整跨越。
+    CannotSpanCentralChannel,
+}
+
 /// 布局错误。`apply` / `validate` / `from_layout` 都会返回这个。
 ///
 /// `apply` 产生 `OutOfBounds` / `NoFootprintPad` (Bridged 路径还会产生 `PinCollision`)。
@@ -142,6 +151,12 @@ pub enum LayoutError {
     NoFootprint { component: ComponentId },
     /// preprocess-aware 初始化器找不到任何合法姿态/孔位。
     NoLegalInitialPlacement { component: ComponentId },
+    /// R0/R90 都无法把封装安全映射到所选面包板。
+    UnsupportedFootprintGeometry {
+        component: ComponentId,
+        footprint: String,
+        issue: FootprintGeometryIssue,
+    },
     /// Bridged 只能完整表示恰好两脚的元件。
     InvalidBridgedPinCount {
         component: ComponentId,

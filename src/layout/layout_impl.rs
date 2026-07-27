@@ -185,7 +185,8 @@ impl<'c> super::Layout<'c> {
         // 并行: 每个 seed 互相独立 (输入全 &T 只读, 输出是新 SAState, 局部 RNG),
         // 用 rayon 的 `par_iter` 跨核跑。n_seeds = 100 一般远超核数, 池子喂得饱。
         let n_seeds = config.n_seeds.max(1);
-        let preprocess = super::preprocess::preprocess_for_breadboard(self.circuit, board);
+        let preprocess = super::preprocess::preprocess_for_breadboard(self.circuit, board)
+            .map_err(|error| vec![error])?;
         if !preprocess.r90_only.is_empty() {
             let names: Vec<&str> = preprocess
                 .r90_only

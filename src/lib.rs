@@ -17,12 +17,12 @@ pub use circuit::{
     Position,
 };
 pub use layout::{
-    AnnealMetrics, Breadboard, BridgeInitial, BridgePolicy, CancellationToken, Hole, HoleId,
-    INTER_BOARD_GAP_COLS, InitializerFamily, Layout, LayoutError, LayoutPreparation,
-    LayoutProgress, LayoutSnapshot, Occupancy, Occupant, PathFinderRouter, PinHole,
-    PlacedFootprint, Placement, Polarity, PowerRail, PowerRailBinding, PowerRailBindings,
-    PowerRailMatch, PowerRailSide, PowerRails, PowerStrip, Preset, ProgressOptions, Region,
-    Rotation, Router, SAConfig, Weights, Wire, WireId, prepare_for_layout,
+    AnnealMetrics, Breadboard, BridgeInitial, BridgePolicy, CancellationToken,
+    FootprintGeometryIssue, Hole, HoleId, INTER_BOARD_GAP_COLS, InitializerFamily, Layout,
+    LayoutError, LayoutPreparation, LayoutProgress, LayoutSnapshot, Occupancy, Occupant,
+    PathFinderRouter, PinHole, PlacedFootprint, Placement, Polarity, PowerRail, PowerRailBinding,
+    PowerRailBindings, PowerRailMatch, PowerRailSide, PowerRails, PowerStrip, Preset,
+    ProgressOptions, Region, Rotation, Router, SAConfig, Weights, Wire, WireId, prepare_for_layout,
     prepare_for_layout_with_individual_power_nets, prepare_for_layout_with_power_nets,
     spectral_debug_positions, standard_power_rails, wide_power_rails_830,
 };

@@ -569,12 +569,16 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                                 "Reliable routing still fails on four identical breadboards",
                             ),
                             &errors,
+                            &circuit,
+                            locale,
                         ));
                     }
                     Err(errors) => {
                         return Err(format_layout_errors(
                             locale.text("布线失败", "Routing failed"),
                             &errors,
+                            &circuit,
+                            locale,
                         ));
                     }
                 }
@@ -596,6 +600,8 @@ fn run_compute(job: ComputeJob) -> Result<(), String> {
                 return Err(format_layout_errors(
                     locale.text("布局失败", "Layout failed"),
                     &errors,
+                    &circuit,
+                    locale,
                 ));
             }
         }
@@ -1830,11 +1836,40 @@ fn wire_color(board: &Breadboard, net: knead_net::NetId) -> &'static str {
     net_color(net.raw())
 }
 
-fn format_layout_errors(context: &str, errors: &[knead_net::LayoutError]) -> String {
+fn format_layout_errors(
+    context: &str,
+    errors: &[knead_net::LayoutError],
+    circuit: &Circuit,
+    locale: UiLocale,
+) -> String {
     let details = errors
         .iter()
         .take(4)
-        .map(|error| format!("{error:?}"))
+        .map(|error| match error {
+            knead_net::LayoutError::UnsupportedFootprintGeometry {
+                component,
+                footprint,
+                issue,
+            } => {
+                let reference = circuit
+                    .components()
+                    .get(component.raw())
+                    .map(|component| component.ref_())
+                    .unwrap_or("?");
+                let reason = match issue {
+                    knead_net::FootprintGeometryIssue::MissingCentralChannel => locale.text(
+                        "R0/R90 都会造成列短路，且所选面包板没有中央沟槽",
+                        "R0 and R90 both short different nets, and the selected breadboard has no central channel",
+                    ),
+                    knead_net::FootprintGeometryIssue::CannotSpanCentralChannel => locale.text(
+                        "R0/R90 都会造成列短路，且引脚间距无法跨过中央沟槽",
+                        "R0 and R90 both short different nets, and the pin spacing cannot span the central channel",
+                    ),
+                };
+                format!("{reason} (ref {reference}, footprint {footprint})")
+            }
+            _ => format!("{error:?}"),
+        })
         .collect::<Vec<_>>()
         .join("; ");
     format!("{context}: {details}")
@@ -1966,6 +2001,32 @@ mod tests {
         }]));
         assert!(!is_board_capacity_error(&[]));
         assert!(!is_routing_capacity_error(&[]));
+    }
+
+    #[test]
+    fn unsupported_footprint_geometry_names_the_component_and_reason() {
+        use knead_net::{FootprintGeometryIssue, LayoutError};
+
+        let text = std::fs::read_to_string("../examples/SNx4HC00/SNx4HC00.kicad_pcb").unwrap();
+        let circuit = parse_pcb(&text).unwrap();
+        let component = &circuit.components()[0];
+        let footprint = circuit.footprints()[component.footprint().unwrap().raw()]
+            .name()
+            .to_string();
+        let message = format_layout_errors(
+            "布局失败",
+            &[LayoutError::UnsupportedFootprintGeometry {
+                component: component.id(),
+                footprint: footprint.clone(),
+                issue: FootprintGeometryIssue::CannotSpanCentralChannel,
+            }],
+            &circuit,
+            UiLocale::ZhCn,
+        );
+
+        assert!(message.contains(component.ref_()), "{message}");
+        assert!(message.contains(&footprint), "{message}");
+        assert!(message.contains("引脚间距无法跨过中央沟槽"), "{message}");
     }
 
     #[test]

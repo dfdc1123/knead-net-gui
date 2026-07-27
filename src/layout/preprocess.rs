@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::circuit::{Circuit, ComponentId, NetId};
 use crate::layout::breadboard::Breadboard;
+use crate::layout::{FootprintGeometryIssue, LayoutError};
 
 /// 预处理结果: 哪些元件需要特殊 SA 约束。
 #[derive(Debug, Clone)]
@@ -22,8 +23,11 @@ pub struct PreprocessResult {
 ///    a. R0 下能 y-lock 跨通道? → 保持 R0, y-lock (横着进来的宽元件)
 ///    b. R90 后无同列冲突? → r90_only (竖着进来转横)
 ///    c. R90 下能 y-lock? → r90_only + y_locked (DIP 类)
-///    d. 以上都不行 → panic
-pub fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> PreprocessResult {
+///    d. 以上都不行 → [`LayoutError::UnsupportedFootprintGeometry`]
+pub fn preprocess_for_breadboard(
+    circuit: &Circuit,
+    board: &Breadboard,
+) -> Result<PreprocessResult, LayoutError> {
     let mut r90_only = HashSet::new();
     let mut y_locked = HashMap::new();
 
@@ -68,11 +72,11 @@ pub fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> Prepr
 
         // Step 2c: R90 下能 y-lock 吗?
         if blocked_count == 0 {
-            panic!(
-                "{} (footprint {}) R90 后仍有列冲突, 且板子没有中央通道可以跨",
-                comp.ref_(),
-                fp.name(),
-            );
+            return Err(LayoutError::UnsupportedFootprintGeometry {
+                component: comp.id(),
+                footprint: fp.name().to_string(),
+                issue: FootprintGeometryIssue::MissingCentralChannel,
+            });
         }
         if let Some(locked_y) = try_y_lock(comp.pins(), fp, circuit, board, blocked_count, true) {
             r90_only.insert(comp.id());
@@ -80,15 +84,15 @@ pub fn preprocess_for_breadboard(circuit: &Circuit, board: &Breadboard) -> Prepr
             continue;
         }
 
-        // Step 2d: 没办法 → panic
-        panic!(
-            "{} (footprint {}) R0/R90 后仍有列冲突, 且引脚分布无法跨通道解决",
-            comp.ref_(),
-            fp.name(),
-        );
+        // Step 2d: 没办法。
+        return Err(LayoutError::UnsupportedFootprintGeometry {
+            component: comp.id(),
+            footprint: fp.name().to_string(),
+            issue: FootprintGeometryIssue::CannotSpanCentralChannel,
+        });
     }
 
-    PreprocessResult { r90_only, y_locked }
+    Ok(PreprocessResult { r90_only, y_locked })
 }
 
 /// 检查元件在给定旋转下是否有「同列不同 net」的冲突。
@@ -290,9 +294,43 @@ mod tests {
         let circuit = dip(4, 8);
         let board = Breadboard::standard();
 
-        let result = preprocess_for_breadboard(&circuit, &board);
+        let result = preprocess_for_breadboard(&circuit, &board).unwrap();
 
         assert_eq!(result.y_locked.get(&ComponentId(0)), Some(&4));
         assert!(result.r90_only.contains(&ComponentId(0)));
+    }
+
+    #[test]
+    fn unresolvable_column_conflict_without_a_channel_does_not_panic() {
+        let circuit = dip(1, 2);
+        let board = Breadboard::new(5, 5);
+
+        let error = preprocess_for_breadboard(&circuit, &board).unwrap_err();
+
+        assert_eq!(
+            error,
+            LayoutError::UnsupportedFootprintGeometry {
+                component: ComponentId(0),
+                footprint: "DIP_W1".into(),
+                issue: FootprintGeometryIssue::MissingCentralChannel,
+            }
+        );
+    }
+
+    #[test]
+    fn unresolvable_column_conflict_across_a_channel_does_not_panic() {
+        let circuit = dip(1, 2);
+        let board = Breadboard::standard();
+
+        let error = preprocess_for_breadboard(&circuit, &board).unwrap_err();
+
+        assert_eq!(
+            error,
+            LayoutError::UnsupportedFootprintGeometry {
+                component: ComponentId(0),
+                footprint: "DIP_W1".into(),
+                issue: FootprintGeometryIssue::CannotSpanCentralChannel,
+            }
+        );
     }
 }
