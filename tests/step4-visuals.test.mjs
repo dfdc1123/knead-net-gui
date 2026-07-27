@@ -71,6 +71,12 @@ test("a net clicked directly in the schematic does not move the schematic viewpo
   );
 });
 
+test("a schematic net highlights its sole matching assembly wire", () => {
+  assert.match(step4Source, /let selectedAssemblyWire = \$derived\.by/);
+  assert.match(step4Source, /uniqueAssemblyWireForNet\(wires, selected\.id\)/);
+  assert.match(step4Source, /selectedAssemblyWire\?\.id === wire\.id \? 'selection-ring' : ''/);
+});
+
 test("power symbols select and highlight their network instead of their virtual component", () => {
   assert.match(step4Source, /selectable\.dataset\.powerSymbol === "yes"/);
   assert.match(step4Source, /querySelectorAll<SVGElement>\("\[data-net\]"\)/);

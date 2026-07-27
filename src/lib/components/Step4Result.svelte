@@ -16,6 +16,7 @@
     isAssemblyCompletionKey,
     isTextEditingTarget,
   } from "$lib/keyboardShortcuts.js";
+  import { uniqueAssemblyWireForNet } from "$lib/selectionMappings.js";
   import BreadboardPreview from "./BreadboardPreview.svelte";
   import Panel from "./Panel.svelte";
   import ZoomControls from "./ZoomControls.svelte";
@@ -191,6 +192,16 @@
   );
   let parts = $derived([...frame.parts].sort(compareParts));
   let wires = $derived(allWires.filter((wire) => wire.kind !== "air").sort(compareWires));
+  let selectedAssemblyWire = $derived.by(() => {
+    if (selected?.type === "wire") {
+      const wireId = selected.id;
+      return wires.find((wire) => wire.id === wireId);
+    }
+    if (selected?.type === "net") {
+      return uniqueAssemblyWireForNet(wires, selected.id);
+    }
+    return undefined;
+  });
   let assemblyParts = $derived([
     ...parts.filter((part) => !completedPartIds.includes(part.id)),
     ...parts.filter((part) => completedPartIds.includes(part.id)),
@@ -868,7 +879,16 @@
   });
 
   $effect(() => {
-    const assemblySelection = selected?.type === "component" || selected?.type === "wire" ? selected : null;
+    const assemblySelection = selected?.type === "component"
+      ? selected
+      : selectedAssemblyWire
+        ? {
+            type: "wire" as const,
+            id: selectedAssemblyWire.id,
+            label: selectedAssemblyWire.net_name || selectedAssemblyWire.net_id || selectedAssemblyWire.id,
+            netId: selectedAssemblyWire.net_id,
+          }
+        : null;
     if (!assemblySelection || !assemblyListHost) return;
     if (assemblySelection.type === "component") partListOpen = true;
     else wireListOpen = true;
@@ -1281,7 +1301,7 @@
                     {@const completed = completedWireIds.includes(wire.id)}
                     {@const wireNumber = wireNumbers.get(wire.id)}
                     <li
-                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selected?.type === 'wire' && selected.id === wire.id ? 'selection-ring' : ''}"
+                      class="assembly-row relative grid grid-cols-[auto_1fr] items-center gap-2 border-b border-base-300 px-3 py-2 transition-colors first:rounded-t-box last:rounded-b-box last:border-b-0 hover:bg-base-200 {completed ? 'bg-success/10' : ''} {selectedAssemblyWire?.id === wire.id ? 'selection-ring' : ''}"
                       data-wire-id={wire.id}
                     >
                       <button
