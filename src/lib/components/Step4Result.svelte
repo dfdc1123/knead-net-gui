@@ -849,13 +849,20 @@
   $effect(() => {
     selected;
     const source = selectionSource;
+    const directlySelectedSchematicNet = source === "schematic" && selected?.type === "net";
     const request = ++selectionRevealRequest;
     void tick().then(async () => {
       if (request !== selectionRevealRequest) return;
-      if (source === "schematic") await fitDiagramSelection("breadboard");
-      if (source === "breadboard") await fitDiagramSelection("schematic");
+      if (
+        source === "schematic" ||
+        (source === "assembly" && selected?.type === "component")
+      ) await fitDiagramSelection("breadboard");
+      if (
+        source === "breadboard" ||
+        (source === "assembly" && (selected?.type === "component" || selected?.type === "wire"))
+      ) await fitDiagramSelection("schematic");
       if (request !== selectionRevealRequest) return;
-      revealSelectionInDiagram("schematic");
+      if (!directlySelectedSchematicNet) revealSelectionInDiagram("schematic");
       revealSelectionInDiagram("breadboard");
     });
   });

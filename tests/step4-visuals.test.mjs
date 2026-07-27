@@ -50,8 +50,25 @@ test("assembly rows preserve the list radius when highlighted", () => {
 
 test("linked selections shrink either diagram when their bounds exceed the viewport", () => {
   assert.match(step4Source, /async function fitDiagramSelection\(target: DiagramTarget\)/);
-  assert.match(step4Source, /if \(source === "schematic"\) await fitDiagramSelection\("breadboard"\)/);
-  assert.match(step4Source, /if \(source === "breadboard"\) await fitDiagramSelection\("schematic"\)/);
+  assert.match(
+    step4Source,
+    /source === "schematic" \|\|\s+\(source === "assembly" && selected\?\.type === "component"\)[\s\S]{0,80}await fitDiagramSelection\("breadboard"\)/,
+  );
+  assert.match(
+    step4Source,
+    /source === "breadboard" \|\|\s+\(source === "assembly" && \(selected\?\.type === "component" \|\| selected\?\.type === "wire"\)\)[\s\S]{0,80}await fitDiagramSelection\("schematic"\)/,
+  );
+});
+
+test("a net clicked directly in the schematic does not move the schematic viewport", () => {
+  assert.match(
+    step4Source,
+    /const directlySelectedSchematicNet = source === "schematic" && selected\?\.type === "net"/,
+  );
+  assert.match(
+    step4Source,
+    /if \(!directlySelectedSchematicNet\) revealSelectionInDiagram\("schematic"\)/,
+  );
 });
 
 test("power symbols select and highlight their network instead of their virtual component", () => {
