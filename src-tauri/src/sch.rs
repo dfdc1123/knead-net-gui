@@ -1364,9 +1364,11 @@ fn wire_net_names(
             for (index, wire) in wires.iter().enumerate() {
                 if point_on_wire(connection, wire) {
                     let group = root(&mut parents, index);
-                    component_nets
-                        .entry(group)
-                        .or_insert_with(|| net_name.clone());
+                    // The PCB name is the canonical identifier used by Step 2
+                    // and Step 4. KiCad prefixes root-sheet local labels (for
+                    // example `TX`) in the PCB net list (for example `/TX`),
+                    // so a schematic label must not mask the pin-derived name.
+                    component_nets.insert(group, net_name.clone());
                 }
             }
         }
@@ -2458,6 +2460,27 @@ mod tests {
             svg.matches(r#"class="sch-net-line" data-net="SIG""#)
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn pcb_net_name_overrides_local_label_for_cross_selection() {
+        let example_dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../examples/infrared-transceiver/"
+        );
+        let schematic = format!("{example_dir}infrared-transceiver.kicad_sch");
+        let pcb = format!("{example_dir}infrared-transceiver.kicad_pcb");
+
+        let svg = render_with_pcb(&schematic, Some(&pcb)).unwrap();
+
+        assert!(
+            svg.contains(r#"class="sch-net-line" data-net="/TX""#),
+            "schematic wires must use the canonical PCB net name"
+        );
+        assert!(
+            !svg.contains(r#"class="sch-net-line" data-net="TX""#),
+            "the local label must not hide the canonical PCB net name"
         );
     }
 

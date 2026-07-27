@@ -451,14 +451,14 @@ mod tests {
     }
 
     #[test]
-    fn infrared_transceiver_fixture_is_rejected_as_smd_input() {
+    fn infrared_transceiver_fixture_parses_after_tht_conversion() {
         let text =
             std::fs::read_to_string("examples/infrared-transceiver/infrared-transceiver.kicad_pcb")
                 .unwrap();
 
-        let error = parse_pcb(&text).expect_err("fixture contains SMD footprints");
+        let circuit = parse_pcb(&text).expect("converted fixture contains only THT footprints");
 
-        assert!(error.message.contains("ref C1"), "{}", error.message);
-        assert!(error.message.contains("SMD"), "{}", error.message);
+        assert_eq!(circuit.components().len(), 10);
+        assert!(circuit.nets().iter().any(|net| net.name() == "/TX"));
     }
 }

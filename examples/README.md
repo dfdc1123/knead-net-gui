@@ -9,7 +9,7 @@ These KiCad projects are provided for learning the KneadNet workflow and for man
 | `h-bridge/` | H-bridge KiCad project | Yes |
 | `lm741/` | LM741 KiCad project | Yes |
 | `h-bridge_different_order/` | Developer fixture for component-order regression tests | No |
-| `infrared-transceiver/` | Upstream GPL-3.0 project and unsupported-SMD-input regression fixture | No |
+| `infrared-transceiver/` | Upstream GPL-3.0 infrared transceiver converted to THT footprints | No |
 
 Each public project includes `.kicad_pro`, `.kicad_sch`, and `.kicad_pcb` files. KneadNet requires the PCB file; the same-name schematic provides the preview and cross-selection.
 
@@ -22,8 +22,8 @@ Generated layouts are suggestions. Verify component orientation, pin numbering, 
 `NE555+CD4017`、`SNx4HC00`、`h-bridge` 和 `lm741` 会进入 Release 示例包。`h-bridge_different_order` 用于验证改变元件迭代顺序不会改变布局成本，是开发测试夹具，不作为面向用户的示例发布。
 
 `infrared-transceiver` 来自芯鼎盛-硬件吴工（`xindingsheng`）发布的 GPL 3.0
-[红外发射接收模块](https://oshwhub.com/xindingsheng/project_xbshrerd)。该工程当前使用贴片封装，
-用于验证 KneadNet 会明确拒绝不支持的输入而不会闪退；它不能直接用于面包板布局。请参阅
+[红外发射接收模块](https://oshwhub.com/xindingsheng/project_xbshrerd)。仓库中的版本已将 PCB
+封装转换为直插封装，可用于 KneadNet 的完整流程和标签网络交叉选择回归测试。请参阅
 [`infrared-transceiver/README.md`](infrared-transceiver/README.md)。
 
 通电前必须人工检查元件方向、引脚编号、电源轨和每一条连接。
