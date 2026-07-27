@@ -13,6 +13,10 @@ area than the display body drawn on `F.Fab`. KneadNet must use the footprint
 body outline for rendering and collision checks, with the pin extent only as a
 fallback when no usable footprint graphics exist.
 
+`H1` and `U4` use KiCad's standard vertical 1×4 through-hole pin-header
+footprint. This supersedes the earlier imported copy that incorrectly used fan
+header footprints for those connectors.
+
 ## 中文说明
 
 该工程来自 `zhbaa` 在立创开源硬件平台以 GPL 3.0 发布的
@@ -24,6 +28,9 @@ PCB 中的元件焊盘均为直插。该工程既用于手动测试，也用于�
 `LED1` 使用 `Display_7Segment:CA56-12CGKWA`：引脚覆盖范围远小于 `F.Fab`
 层描述的数码管本体。KneadNet 应使用封装本体外形进行渲染和碰撞检测，只有在找不到可用
 封装图形时才回退到引脚范围。
+
+`H1` 和 `U4` 现使用 KiCad 标准的 1×4、2.54 mm 直插排针封装，取代了早期导入版本中
+不正确的风扇排针封装。
 
 ## License / 许可证
 

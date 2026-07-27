@@ -2467,19 +2467,19 @@ mod tests {
     fn pcb_net_name_overrides_local_label_for_cross_selection() {
         let example_dir = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../examples/infrared-transceiver/"
+            "/../examples/tm1637-display-module/"
         );
-        let schematic = format!("{example_dir}infrared-transceiver.kicad_sch");
-        let pcb = format!("{example_dir}infrared-transceiver.kicad_pcb");
+        let schematic = format!("{example_dir}tm1637-display-module.kicad_sch");
+        let pcb = format!("{example_dir}tm1637-display-module.kicad_pcb");
 
         let svg = render_with_pcb(&schematic, Some(&pcb)).unwrap();
 
         assert!(
-            svg.contains(r#"class="sch-net-line" data-net="/TX""#),
+            svg.contains(r#"class="sch-net-line" data-net="/DIO""#),
             "schematic wires must use the canonical PCB net name"
         );
         assert!(
-            !svg.contains(r#"class="sch-net-line" data-net="TX""#),
+            !svg.contains(r#"class="sch-net-line" data-net="DIO""#),
             "the local label must not hide the canonical PCB net name"
         );
     }

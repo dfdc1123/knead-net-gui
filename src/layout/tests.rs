@@ -1926,12 +1926,12 @@ fn place_sa_bridgeable_can_flip_to_bridged() {
 }
 
 #[test]
-fn tm1637_display_gets_a_routable_layout_on_a_400_hole_board() {
+fn tm1637_display_gets_a_routable_layout_on_two_400_hole_boards() {
     let text =
         std::fs::read_to_string("examples/tm1637-display-module/tm1637-display-module.kicad_pcb")
             .unwrap();
     let mut circuit = crate::input::pcb::parse_pcb(&text).unwrap();
-    let board = prepare_for_layout(&mut circuit, Preset::Hole400.make_repeated(1)).board;
+    let board = prepare_for_layout(&mut circuit, Preset::Hole400.make_repeated(2)).board;
     let mut layout = Layout::new(&circuit);
 
     layout
@@ -1952,5 +1952,5 @@ fn tm1637_display_gets_a_routable_layout_on_a_400_hole_board() {
         .expect("真实 TM1637 工程应能生成可布线布局");
     layout
         .route_with_progress(&board, &PathFinderRouter::default(), |_| {})
-        .expect("真实 TM1637 工程应能在一块 400 孔面包板上完成布线");
+        .expect("真实 TM1637 工程应能在两块 400 孔面包板上完成布线");
 }

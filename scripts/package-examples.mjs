@@ -33,7 +33,6 @@ try {
       "--add-file=examples/README.md",
       "HEAD",
       "LICENSE",
-      "examples/NE555+CD4017",
       "examples/SNx4HC00",
       "examples/h-bridge",
       "examples/lm741",

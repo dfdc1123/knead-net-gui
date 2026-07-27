@@ -3895,7 +3895,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Connector:FanPinHeader_1x04_P2.54mm_Vertical"
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
 			(at 46.99 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -4773,7 +4773,7 @@
 				)
 			)
 		)
-		(property "Footprint" "Connector:FanPinHeader_1x04_P2.54mm_Vertical"
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
 			(at 11.43 66.04 0)
 			(hide yes)
 			(show_name no)

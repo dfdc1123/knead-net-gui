@@ -665,14 +665,15 @@ mod tests {
     }
 
     #[test]
-    fn infrared_transceiver_fixture_parses_after_tht_conversion() {
-        let text =
-            std::fs::read_to_string("examples/infrared-transceiver/infrared-transceiver.kicad_pcb")
-                .unwrap();
+    fn tm1637_fixture_parses_with_canonical_labeled_nets() {
+        let text = std::fs::read_to_string(
+            "examples/tm1637-display-module/tm1637-display-module.kicad_pcb",
+        )
+        .unwrap();
 
-        let circuit = parse_pcb(&text).expect("converted fixture contains only THT footprints");
+        let circuit = parse_pcb(&text).expect("TM1637 fixture contains only THT footprints");
 
-        assert_eq!(circuit.components().len(), 10);
-        assert!(circuit.nets().iter().any(|net| net.name() == "/TX"));
+        assert_eq!(circuit.components().len(), 8);
+        assert!(circuit.nets().iter().any(|net| net.name() == "/DIO"));
     }
 }
