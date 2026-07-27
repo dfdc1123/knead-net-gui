@@ -30,6 +30,12 @@ struct PadInfo {
     pinfunction: Option<String>,
 }
 
+struct FootprintRecord {
+    id: FootprintId,
+    pad_signature: Vec<(String, Position)>,
+    first_component_ref: String,
+}
+
 /// 解析 `.kicad_pcb` 文本, 直接构造 [`Circuit`]。
 ///
 /// 解析过程:
@@ -59,8 +65,9 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
     let mut pins: Vec<Pin> = Vec::new();
     // net_name → Vec<PinId>
     let mut net_pins: BTreeMap<String, Vec<PinId>> = BTreeMap::new();
-    // footprint name → FootprintId (去重: 同名封装共享同一个 FootprintId)
-    let mut fp_by_name: BTreeMap<String, FootprintId> = BTreeMap::new();
+    // 完整 footprint ref → (FootprintId, 有序 pad 签名, 首个元件引用)。
+    // 短名称不足以区分不同库；重复实例只有在 pad 编号、顺序和位置完全一致时才能共享。
+    let mut fp_by_ref: BTreeMap<String, FootprintRecord> = BTreeMap::new();
 
     for item in &top[1..] {
         let fp_items = match item {
@@ -96,8 +103,23 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
             continue; // 没有焊盘的元件 (机械层等), 跳过
         }
 
-        // 构造 Footprint (同名封装去重, 共享同一个 FootprintId)
-        let fid = *fp_by_name.entry(name.to_string()).or_insert_with(|| {
+        let pad_signature: Vec<(String, Position)> = pads
+            .iter()
+            .map(|pad| (pad.num.clone(), pad.offset))
+            .collect();
+        // 构造 Footprint。完整 ref 相同的实例必须具有相同的有序 pad 签名。
+        let fid = if let Some(record) = fp_by_ref.get(fp_ref) {
+            if record.pad_signature != pad_signature {
+                return Err(ParseError {
+                    message: format!(
+                        "footprint '{fp_ref}' has inconsistent pad geometry between refs \
+                         {} and {ref_}",
+                        record.first_component_ref
+                    ),
+                });
+            }
+            record.id
+        } else {
             let id = FootprintId(footprints.len());
             let physical_pins: Vec<PhysicalPin> = pads
                 .iter()
@@ -111,8 +133,16 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
                 name: name.to_string(),
                 pins: physical_pins,
             });
+            fp_by_ref.insert(
+                fp_ref.to_string(),
+                FootprintRecord {
+                    id,
+                    pad_signature,
+                    first_component_ref: ref_.to_string(),
+                },
+            );
             id
-        });
+        };
 
         // 构造 Component 和 Pin
         let cid = ComponentId(components.len());
@@ -370,6 +400,54 @@ mod tests {
             "unexpected error: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn same_short_footprint_name_from_different_libraries_stays_distinct() {
+        let text = r#"
+            (kicad_pcb
+              (footprint "Library_A:Shared"
+                (property "Reference" "R1")
+                (pad "1" thru_hole circle (at 0 0)))
+              (footprint "Library_B:Shared"
+                (property "Reference" "R2")
+                (pad "1" thru_hole circle (at 2.54 0))))
+        "#;
+
+        let circuit = parse_pcb(text).expect("both through-hole footprints are valid");
+
+        assert_eq!(circuit.footprints().len(), 2);
+        let first = circuit.components()[0].footprint().unwrap();
+        let second = circuit.components()[1].footprint().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(circuit.footprints()[first.raw()].pins()[0].offset().x, 0);
+        assert_eq!(circuit.footprints()[second.raw()].pins()[0].offset().x, 1);
+    }
+
+    #[test]
+    fn inconsistent_instances_of_the_same_footprint_return_a_parse_error() {
+        let text = r#"
+            (kicad_pcb
+              (footprint "Library_A:Shared"
+                (property "Reference" "R1")
+                (pad "1" thru_hole circle (at 0 0))
+                (pad "2" thru_hole circle (at 2.54 0)))
+              (footprint "Library_A:Shared"
+                (property "Reference" "R2")
+                (pad "1" thru_hole circle (at 0 0))
+                (pad "2" thru_hole circle (at 5.08 0))))
+        "#;
+
+        let error = parse_pcb(text).expect_err("the same footprint must have one pad signature");
+
+        assert!(
+            error.message.contains("Library_A:Shared"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("R1"), "{}", error.message);
+        assert!(error.message.contains("R2"), "{}", error.message);
+        assert!(error.message.contains("inconsistent"), "{}", error.message);
     }
 
     #[test]
