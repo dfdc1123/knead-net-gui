@@ -7,7 +7,7 @@
 use super::state::SAState;
 use crate::circuit::{Circuit, ComponentId, NetId, Position};
 use crate::layout::breadboard::Breadboard;
-use crate::layout::placement::{BBox, Rotation};
+use crate::layout::placement::{BBox, Rotation, footprint_bbox};
 use crate::layout::problem::AnnealProblem;
 
 /// Rotation → 预计算偏移数组的下标。
@@ -45,33 +45,7 @@ pub struct CompInfo {
 
 impl CompInfo {
     pub(crate) fn world_bbox(&self, x: i32, y: i32, rotation: Rotation) -> BBox {
-        let bbox = &self.bbox_r0;
-        match rotation {
-            Rotation::R0 => BBox {
-                min_x: bbox.min_x + x,
-                max_x: bbox.max_x + x,
-                min_y: bbox.min_y + y,
-                max_y: bbox.max_y + y,
-            },
-            Rotation::R180 => BBox {
-                min_x: -bbox.max_x + x,
-                max_x: -bbox.min_x + x,
-                min_y: -bbox.max_y + y,
-                max_y: -bbox.min_y + y,
-            },
-            Rotation::R90 => BBox {
-                min_x: -bbox.max_y + x,
-                max_x: -bbox.min_y + x,
-                min_y: bbox.min_x + y,
-                max_y: bbox.max_x + y,
-            },
-            Rotation::R270 => BBox {
-                min_x: bbox.min_y + x,
-                max_x: bbox.max_y + x,
-                min_y: -bbox.max_x + y,
-                max_y: -bbox.min_x + y,
-            },
-        }
+        self.bbox_r0.transformed(Position { x, y }, rotation)
     }
 }
 
@@ -154,13 +128,12 @@ impl SAContext {
                 ));
             }
 
-            let bbox_r0 =
-                BBox::from_points(footprint.pins.iter().map(|pin| pin.offset)).unwrap_or(BBox {
-                    min_x: 0,
-                    max_x: 0,
-                    min_y: 0,
-                    max_y: 0,
-                });
+            let bbox_r0 = footprint_bbox(footprint).unwrap_or(BBox {
+                min_x: 0,
+                max_x: 0,
+                min_y: 0,
+                max_y: 0,
+            });
 
             comp_infos.push(CompInfo {
                 pins,

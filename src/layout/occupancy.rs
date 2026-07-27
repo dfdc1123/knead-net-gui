@@ -418,6 +418,7 @@ mod rail_tie_tests {
                 vec![Footprint {
                     id: FootprintId(0),
                     name: "1p".into(),
+                    bounds: None,
                     pins: vec![PhysicalPin {
                         name: "1".into(),
                         offset: Position { x: 0, y: 0 },
@@ -487,6 +488,7 @@ mod rail_tie_tests {
             footprints: vec![Footprint {
                 id: FootprintId(0),
                 name: "2p".into(),
+                bounds: None,
                 pins: vec![
                     PhysicalPin {
                         name: "1".into(),
@@ -601,6 +603,7 @@ mod bbox_tests {
         Footprint {
             id: FootprintId(0),
             name: "axial".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),
@@ -789,6 +792,7 @@ mod bbox_tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "axial_wide".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),
@@ -961,6 +965,7 @@ mod tests {
             footprints: vec![Footprint {
                 id: FootprintId(0),
                 name: "TO92".to_string(),
+                bounds: None,
                 pins: vec![
                     PhysicalPin {
                         name: "1".to_string(),
@@ -1017,6 +1022,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "single".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1109,6 +1115,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "single".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1171,6 +1178,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "single".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1391,6 +1399,7 @@ mod tests {
             footprints: vec![Footprint {
                 id: FootprintId(0),
                 name: "RES2".to_string(),
+                bounds: None,
                 pins: vec![
                     PhysicalPin {
                         name: "1".to_string(),
@@ -1535,6 +1544,7 @@ mod tests {
                 Footprint {
                     id: FootprintId(0),
                     name: "TO92".to_string(),
+                    bounds: None,
                     pins: vec![
                         PhysicalPin {
                             name: "1".to_string(),
@@ -1553,6 +1563,7 @@ mod tests {
                 Footprint {
                     id: FootprintId(1),
                     name: "RES2".to_string(),
+                    bounds: None,
                     pins: vec![
                         PhysicalPin {
                             name: "1".to_string(),
@@ -1601,6 +1612,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "single".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1689,6 +1701,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "single".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },

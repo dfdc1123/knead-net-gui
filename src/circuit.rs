@@ -187,10 +187,21 @@ impl PhysicalPin {
 ///
 /// 例如 "TO92" 是一种封装, 上面有 B / C / E 三个引脚,
 /// 在封装局部坐标里分别位于 (1, 0) / (0, 0) / (2, 0)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FootprintBounds {
+    pub min_x: i32,
+    pub max_x: i32,
+    pub min_y: i32,
+    pub max_y: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Footprint {
     pub(crate) id: FootprintId,
     pub(crate) name: String,
+    /// KiCad `F.Fab`/`B.Fab`（缺失时为 `F.CrtYd`/`B.CrtYd`）换算到孔距后的边界。
+    /// `None` 表示输入没有可用的封装图形，此时布局逻辑回退到引脚范围。
+    pub(crate) bounds: Option<FootprintBounds>,
     pub(crate) pins: Vec<PhysicalPin>,
 }
 
@@ -205,6 +216,37 @@ impl Footprint {
 
     pub fn pins(&self) -> &[PhysicalPin] {
         &self.pins
+    }
+
+    /// 元件本体占位范围。解析到封装图形时使用图形边界，并始终与引脚范围取并集；
+    /// 没有图形时仅使用引脚范围。
+    pub fn bounds(&self) -> Option<FootprintBounds> {
+        let pin_bounds: Option<FootprintBounds> = self.pins.iter().fold(None, |bounds, pin| {
+            Some(match bounds {
+                Some(bounds) => FootprintBounds {
+                    min_x: bounds.min_x.min(pin.offset.x),
+                    max_x: bounds.max_x.max(pin.offset.x),
+                    min_y: bounds.min_y.min(pin.offset.y),
+                    max_y: bounds.max_y.max(pin.offset.y),
+                },
+                None => FootprintBounds {
+                    min_x: pin.offset.x,
+                    max_x: pin.offset.x,
+                    min_y: pin.offset.y,
+                    max_y: pin.offset.y,
+                },
+            })
+        });
+        match (self.bounds, pin_bounds) {
+            (Some(body), Some(pins)) => Some(FootprintBounds {
+                min_x: body.min_x.min(pins.min_x),
+                max_x: body.max_x.max(pins.max_x),
+                min_y: body.min_y.min(pins.min_y),
+                max_y: body.max_y.max(pins.max_y),
+            }),
+            (Some(body), None) => Some(body),
+            (None, pins) => pins,
+        }
     }
 
     /// 通过 Pin 里记录的 [`Pin::physical_pin_index`] 拿到对应的物理引脚。

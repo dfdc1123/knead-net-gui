@@ -1433,6 +1433,7 @@ mod tests {
         let footprint = Footprint {
             id: FootprintId(0),
             name: "two".into(),
+            bounds: None,
             pins: (1..=2)
                 .map(|n| PhysicalPin {
                     name: n.to_string(),
@@ -1478,6 +1479,7 @@ mod tests {
         let footprint = Footprint {
             id: FootprintId(0),
             name: "single".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1837,6 +1839,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "R".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),

@@ -44,6 +44,7 @@ fn fixture() -> &'static Circuit {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "TO92".to_string(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".to_string(),
@@ -211,6 +212,7 @@ fn validate_collects_multiple_errors() {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "TO92".to_string(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".to_string(),
@@ -330,6 +332,7 @@ pub(crate) fn two_component_fixture() -> &'static Circuit {
             Footprint {
                 id: FootprintId(0),
                 name: "TO92".to_string(),
+                bounds: None,
                 pins: vec![
                     PhysicalPin {
                         name: "1".to_string(),
@@ -348,6 +351,7 @@ pub(crate) fn two_component_fixture() -> &'static Circuit {
             Footprint {
                 id: FootprintId(1),
                 name: "R2".to_string(),
+                bounds: None,
                 pins: vec![
                     PhysicalPin {
                         name: "1".to_string(),
@@ -486,6 +490,7 @@ fn place_row_skips_components_without_footprint() {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "X".to_string(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "p".to_string(),
                 offset: Position { x: 0, y: 0 },
@@ -593,6 +598,7 @@ fn place_sa_validation_failure_is_transactional_and_emits_no_completion() {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "1p".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -667,6 +673,7 @@ fn place_sa_initialization_avoids_fixed_onboard_geometry() {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "1p".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -731,6 +738,7 @@ fn spectral_initialization_with_more_than_two_components_avoids_fixed_geometry()
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "1p".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -815,6 +823,7 @@ fn greedy_initialization_applies_preprocessed_rotation_before_searching() {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "vertical-2p".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),
@@ -886,6 +895,7 @@ fn initialization_returns_error_instead_of_panicking_when_board_is_full() {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "2p".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),
@@ -976,6 +986,7 @@ fn place_sa_initialization_avoids_fixed_bridged_body() {
             Footprint {
                 id: FootprintId(0),
                 name: "2p".into(),
+                bounds: None,
                 pins: vec![
                     PhysicalPin {
                         name: "1".into(),
@@ -990,6 +1001,7 @@ fn place_sa_initialization_avoids_fixed_bridged_body() {
             Footprint {
                 id: FootprintId(1),
                 name: "1p".into(),
+                bounds: None,
                 pins: vec![PhysicalPin {
                     name: "1".into(),
                     offset: Position { x: 0, y: 0 },
@@ -1059,6 +1071,7 @@ fn place_sa_initialization_avoids_existing_wire_endpoints() {
         footprints: vec![Footprint {
             id: FootprintId(0),
             name: "1p".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1390,6 +1403,7 @@ fn bridged_cross_rail_to_main_routes_correctly() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R_BR".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1490,6 +1504,7 @@ fn bridged_body_cells_are_marked_blocked() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R_BR".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1585,6 +1600,7 @@ fn place_sa_no_oob_for_oversized_circuit() {
     let mut fp_wide = Footprint {
         id: FootprintId(0),
         name: "wide".into(),
+        bounds: None,
         pins: (0..11)
             .map(|i| PhysicalPin {
                 name: i.to_string(),
@@ -1596,6 +1612,7 @@ fn place_sa_no_oob_for_oversized_circuit() {
     let fp_3 = Footprint {
         id: FootprintId(1),
         name: "to92".into(),
+        bounds: None,
         pins: (0..3)
             .map(|i| PhysicalPin {
                 name: i.to_string(),
@@ -1606,6 +1623,7 @@ fn place_sa_no_oob_for_oversized_circuit() {
     let fp_4 = Footprint {
         id: FootprintId(2),
         name: "axial".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "0".into(),
@@ -1728,6 +1746,7 @@ fn place_sa_can_emit_bridged_placement_for_bridgeable_resistor() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1818,6 +1837,7 @@ fn place_sa_bridgeable_can_flip_to_bridged() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1903,4 +1923,34 @@ fn place_sa_bridgeable_can_flip_to_bridged() {
         any_bridged,
         "20 个 seed × p_toggle=0.5 × 2000 iters 至少应出现 1 次 Bridged, 全是 OnBoard"
     );
+}
+
+#[test]
+fn tm1637_display_gets_a_routable_layout_on_a_400_hole_board() {
+    let text =
+        std::fs::read_to_string("examples/tm1637-display-module/tm1637-display-module.kicad_pcb")
+            .unwrap();
+    let mut circuit = crate::input::pcb::parse_pcb(&text).unwrap();
+    let board = prepare_for_layout(&mut circuit, Preset::Hole400.make_repeated(1)).board;
+    let mut layout = Layout::new(&circuit);
+
+    layout
+        .place_sa(
+            &board,
+            &SAConfig {
+                max_iters: 5_000,
+                n_seeds: 8,
+                use_spectral: true,
+                bridge_policy: BridgePolicy::Explore {
+                    initial: BridgeInitial::BestOfBoth,
+                },
+                t_start: 40.0,
+                t_end: 0.1,
+                ..SAConfig::default()
+            },
+        )
+        .expect("真实 TM1637 工程应能生成可布线布局");
+    layout
+        .route_with_progress(&board, &PathFinderRouter::default(), |_| {})
+        .expect("真实 TM1637 工程应能在一块 400 孔面包板上完成布线");
 }

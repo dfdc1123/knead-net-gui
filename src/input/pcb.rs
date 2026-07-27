@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use super::sexp::{ParseError, Sexp, parse};
 use crate::circuit::{
-    Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin, PinId,
-    Position,
+    Circuit, Component, ComponentId, Footprint, FootprintBounds, FootprintId, Net, NetId,
+    PhysicalPin, Pin, PinId, Position,
 };
 
 /// 面包板一个孔的间距 (mm)
@@ -33,7 +33,54 @@ struct PadInfo {
 struct FootprintRecord {
     id: FootprintId,
     pad_signature: Vec<(String, Position)>,
+    bounds: Option<FootprintBounds>,
     first_component_ref: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BoundsMm {
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+}
+
+impl BoundsMm {
+    fn from_point((x, y): (f64, f64)) -> Self {
+        Self {
+            min_x: x,
+            max_x: x,
+            min_y: y,
+            max_y: y,
+        }
+    }
+
+    fn include(&mut self, (x, y): (f64, f64)) {
+        self.min_x = self.min_x.min(x);
+        self.max_x = self.max_x.max(x);
+        self.min_y = self.min_y.min(y);
+        self.max_y = self.max_y.max(y);
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.include((other.min_x, other.min_y));
+        self.include((other.max_x, other.max_y));
+    }
+
+    fn into_hole_bounds(self) -> Option<FootprintBounds> {
+        // 布局的整数格表示孔中心，而不是 2.54 mm 方格的完整面积。因此只纳入
+        // 落在封装边界内的孔中心；引脚范围随后由 `Footprint::bounds` 取并集。
+        let min_x = (self.min_x / HOLE_SPACING_MM).ceil() as i32;
+        let max_x = (self.max_x / HOLE_SPACING_MM).floor() as i32;
+        let min_y = (self.min_y / HOLE_SPACING_MM).ceil() as i32;
+        let max_y = (self.max_y / HOLE_SPACING_MM).floor() as i32;
+        (min_x <= max_x && min_y <= max_y).then_some(FootprintBounds {
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+        })
+    }
 }
 
 /// 解析 `.kicad_pcb` 文本, 直接构造 [`Circuit`]。
@@ -98,6 +145,7 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
 
         // 提取所有 thru_hole 焊盘；SMD 会作为不支持的输入返回错误。
         let pads = extract_pads(fp_items, fp_ref, &ref_)?;
+        let bounds = extract_footprint_bounds(fp_items);
 
         if pads.is_empty() {
             continue; // 没有焊盘的元件 (机械层等), 跳过
@@ -109,10 +157,10 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
             .collect();
         // 构造 Footprint。完整 ref 相同的实例必须具有相同的有序 pad 签名。
         let fid = if let Some(record) = fp_by_ref.get(fp_ref) {
-            if record.pad_signature != pad_signature {
+            if record.pad_signature != pad_signature || record.bounds != bounds {
                 return Err(ParseError {
                     message: format!(
-                        "footprint '{fp_ref}' has inconsistent pad geometry between refs \
+                        "footprint '{fp_ref}' has inconsistent pad/body geometry between refs \
                          {} and {ref_}",
                         record.first_component_ref
                     ),
@@ -131,6 +179,7 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
             footprints.push(Footprint {
                 id,
                 name: name.to_string(),
+                bounds,
                 pins: physical_pins,
             });
             fp_by_ref.insert(
@@ -138,6 +187,7 @@ pub fn parse_pcb(text: &str) -> Result<Circuit, ParseError> {
                 FootprintRecord {
                     id,
                     pad_signature,
+                    bounds,
                     first_component_ref: ref_.to_string(),
                 },
             );
@@ -331,6 +381,170 @@ fn find_atom_value(items: &[Sexp], key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// 优先使用 KiCad Fab 物理外形作为元件占位范围；缺失时回退 courtyard。
+///
+/// Courtyard 还包含装配间隙，若优先使用会把普通电阻、TO-92 等元件虚增一圈，
+/// 不适合作为面包板上的实际遮挡范围。
+fn extract_footprint_bounds(items: &[Sexp]) -> Option<FootprintBounds> {
+    graphic_layer_bounds(items, &["F.Fab", "B.Fab"])
+        .or_else(|| graphic_layer_bounds(items, &["F.CrtYd", "B.CrtYd"]))
+        .and_then(BoundsMm::into_hole_bounds)
+}
+
+fn graphic_layer_bounds(items: &[Sexp], layers: &[&str]) -> Option<BoundsMm> {
+    let mut total: Option<BoundsMm> = None;
+    for item in items {
+        let Sexp::List(graphic) = item else {
+            continue;
+        };
+        let Some(Sexp::Atom(kind)) = graphic.first() else {
+            continue;
+        };
+        if !kind.starts_with("fp_")
+            || !find_atom_value(graphic, "layer")
+                .is_some_and(|layer| layers.contains(&layer.as_str()))
+        {
+            continue;
+        }
+        let Some(bounds) = graphic_bounds(kind, graphic) else {
+            continue;
+        };
+        if let Some(total) = &mut total {
+            total.merge(bounds);
+        } else {
+            total = Some(bounds);
+        }
+    }
+    total
+}
+
+fn graphic_bounds(kind: &str, items: &[Sexp]) -> Option<BoundsMm> {
+    match kind {
+        "fp_line" | "fp_rect" => {
+            let start = find_point(items, "start")?;
+            let end = find_point(items, "end")?;
+            let mut bounds = BoundsMm::from_point(start);
+            bounds.include(end);
+            Some(bounds)
+        }
+        "fp_poly" => {
+            let points = collect_xy_points(items);
+            let mut points = points.into_iter();
+            let mut bounds = BoundsMm::from_point(points.next()?);
+            for point in points {
+                bounds.include(point);
+            }
+            Some(bounds)
+        }
+        "fp_circle" => {
+            let center = find_point(items, "center")?;
+            let end = find_point(items, "end")?;
+            let radius = (end.0 - center.0).hypot(end.1 - center.1);
+            Some(BoundsMm {
+                min_x: center.0 - radius,
+                max_x: center.0 + radius,
+                min_y: center.1 - radius,
+                max_y: center.1 + radius,
+            })
+        }
+        "fp_arc" => arc_bounds(
+            find_point(items, "start")?,
+            find_point(items, "mid")?,
+            find_point(items, "end")?,
+        ),
+        _ => None,
+    }
+}
+
+fn find_point(items: &[Sexp], key: &str) -> Option<(f64, f64)> {
+    for item in items {
+        if let Sexp::List(point) = item
+            && point.len() >= 3
+            && matches!(point.first(), Some(Sexp::Atom(name)) if name == key)
+        {
+            return Some((parse_f64(&point[1])?, parse_f64(&point[2])?));
+        }
+    }
+    None
+}
+
+fn collect_xy_points(items: &[Sexp]) -> Vec<(f64, f64)> {
+    fn visit(item: &Sexp, points: &mut Vec<(f64, f64)>) {
+        let Sexp::List(items) = item else {
+            return;
+        };
+        if items.len() >= 3
+            && matches!(items.first(), Some(Sexp::Atom(name)) if name == "xy")
+            && let (Some(x), Some(y)) = (parse_f64(&items[1]), parse_f64(&items[2]))
+        {
+            points.push((x, y));
+            return;
+        }
+        for child in items {
+            visit(child, points);
+        }
+    }
+
+    let mut points = Vec::new();
+    for item in items {
+        visit(item, &mut points);
+    }
+    points
+}
+
+fn arc_bounds(start: (f64, f64), mid: (f64, f64), end: (f64, f64)) -> Option<BoundsMm> {
+    let determinant =
+        2.0 * (start.0 * (mid.1 - end.1) + mid.0 * (end.1 - start.1) + end.0 * (start.1 - mid.1));
+    if determinant.abs() < 1e-12 {
+        let mut bounds = BoundsMm::from_point(start);
+        bounds.include(mid);
+        bounds.include(end);
+        return Some(bounds);
+    }
+
+    let start_sq = start.0 * start.0 + start.1 * start.1;
+    let mid_sq = mid.0 * mid.0 + mid.1 * mid.1;
+    let end_sq = end.0 * end.0 + end.1 * end.1;
+    let center = (
+        (start_sq * (mid.1 - end.1) + mid_sq * (end.1 - start.1) + end_sq * (start.1 - mid.1))
+            / determinant,
+        (start_sq * (end.0 - mid.0) + mid_sq * (start.0 - end.0) + end_sq * (mid.0 - start.0))
+            / determinant,
+    );
+    let radius = (start.0 - center.0).hypot(start.1 - center.1);
+    let angle = |point: (f64, f64)| (point.1 - center.1).atan2(point.0 - center.0);
+    let ccw_delta = |from: f64, to: f64| (to - from).rem_euclid(std::f64::consts::TAU);
+    let start_angle = angle(start);
+    let mid_angle = angle(mid);
+    let end_angle = angle(end);
+    let ccw = ccw_delta(start_angle, mid_angle) <= ccw_delta(start_angle, end_angle) + 1e-12;
+    let contains_angle = |candidate: f64| {
+        if ccw {
+            ccw_delta(start_angle, candidate) <= ccw_delta(start_angle, end_angle) + 1e-12
+        } else {
+            ccw_delta(candidate, start_angle) <= ccw_delta(end_angle, start_angle) + 1e-12
+        }
+    };
+
+    let mut bounds = BoundsMm::from_point(start);
+    bounds.include(mid);
+    bounds.include(end);
+    for candidate in [
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+        3.0 * std::f64::consts::FRAC_PI_2,
+    ] {
+        if contains_angle(candidate) {
+            bounds.include((
+                center.0 + radius * candidate.cos(),
+                center.1 + radius * candidate.sin(),
+            ));
+        }
+    }
+    Some(bounds)
 }
 
 fn parse_f64(sexp: &Sexp) -> Option<f64> {

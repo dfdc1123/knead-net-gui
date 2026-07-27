@@ -8,7 +8,7 @@ use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
 
 use super::state::{InitialGeometry, InitialOccupancy, SAState};
-use super::{Weights, cost_with_problem};
+use super::{CostBuf, SAContext, Weights, cost_fast_if_legal};
 
 const BEAM_WIDTH: usize = 12;
 const CANDIDATES_PER_BRANCH: usize = 6;
@@ -127,18 +127,32 @@ pub(super) fn legalize(
         beam = next;
     }
 
-    beam.into_iter()
+    let states: Vec<SAState> = beam
+        .into_iter()
         .map(|candidate| {
-            let state = assemble_state(
+            assemble_state(
                 placeable.clone(),
                 candidate.x,
                 candidate.y,
                 rotation.clone(),
                 r90_only.clone(),
                 y_locked.clone(),
-            );
-            let cost = cost_with_problem(&state, circuit, board, problem, weights);
-            (cost, state)
+            )
+        })
+        .collect();
+    let mut context = SAContext::new(circuit, &placeable);
+    context.fill_problem(problem);
+    context.fill_bridged_bboxes(&states[0], circuit, board, &[]);
+    let mut buffer = CostBuf::new(circuit.nets().len(), board.num_rails(), board.main_rows());
+
+    // Geometry-legal candidates can still consume every free hole on a rail that
+    // must connect to another rail. Select only a fully hard-legal candidate so
+    // simulate() never starts from a state that annealing is forbidden to enter.
+    states
+        .into_iter()
+        .filter_map(|state| {
+            cost_fast_if_legal(&state, circuit, board, &[], weights, &context, &mut buffer)
+                .map(|cost| (cost, state))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, state)| state)

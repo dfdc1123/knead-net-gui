@@ -509,10 +509,7 @@ fn snapshot_from_state(
 ///
 /// 空 footprint 当作 1 列, 防止减法下溢。
 pub(crate) fn footprint_horizontal_width(footprint: &Footprint) -> i32 {
-    if footprint.pins.is_empty() {
-        return 1;
-    }
-    let min_x = footprint.pins.iter().map(|p| p.offset.x).min().unwrap();
-    let max_x = footprint.pins.iter().map(|p| p.offset.x).max().unwrap();
-    max_x - min_x + 1
+    footprint
+        .bounds()
+        .map_or(1, |bounds| bounds.max_x - bounds.min_x + 1)
 }

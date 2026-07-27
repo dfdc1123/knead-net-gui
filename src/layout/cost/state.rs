@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::circuit::{Circuit, ComponentId, PinId};
 use crate::layout::breadboard::{Breadboard, HoleId};
-use crate::layout::placement::{BBox, PlacedFootprint, Rotation, rotate};
+use crate::layout::placement::{BBox, PlacedFootprint, Rotation, footprint_bbox, rotate};
 use crate::layout::preprocess::PreprocessResult;
 use crate::layout::problem::AnnealProblem;
 
@@ -30,11 +30,6 @@ impl InitialGeometry {
         let footprint =
             &circuit.footprints[component.footprint.expect("placeable 必有 footprint").raw()];
         let mut pins = Vec::with_capacity(component.pins.len());
-        let points: Vec<crate::circuit::Position> = footprint
-            .pins()
-            .iter()
-            .map(|pin| rotate(pin.offset, rotation))
-            .collect();
         for &pin_id in &component.pins {
             let pin = &circuit.pins[pin_id.raw()];
             let physical = footprint
@@ -45,12 +40,14 @@ impl InitialGeometry {
         }
         Self {
             pins,
-            bbox: BBox::from_points(points).unwrap_or(BBox {
-                min_x: 0,
-                max_x: 0,
-                min_y: 0,
-                max_y: 0,
-            }),
+            bbox: footprint_bbox(footprint)
+                .map(|bbox| bbox.transformed(crate::circuit::Position { x: 0, y: 0 }, rotation))
+                .unwrap_or(BBox {
+                    min_x: 0,
+                    max_x: 0,
+                    min_y: 0,
+                    max_y: 0,
+                }),
         }
     }
 }
@@ -488,5 +485,36 @@ impl SAState {
         legalize(
             placeable, circuit, board, preprocess, problem, weights, hints,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tm1637_initial_geometry_reserves_the_rotated_display_body() {
+        let text = std::fs::read_to_string(
+            "examples/tm1637-display-module/tm1637-display-module.kicad_pcb",
+        )
+        .unwrap();
+        let circuit = crate::input::pcb::parse_pcb(&text).unwrap();
+        let display = circuit
+            .components()
+            .iter()
+            .find(|component| component.ref_() == "LED1")
+            .unwrap();
+
+        let geometry = InitialGeometry::new(display, &circuit, Rotation::R90);
+
+        assert_eq!(
+            geometry.bbox,
+            BBox {
+                min_x: -12,
+                max_x: 7,
+                min_y: 0,
+                max_y: 6,
+            }
+        );
     }
 }

@@ -13,8 +13,8 @@ pub mod render;
 
 // 把最常用的领域类型提到 crate 根, 用 `knead_net::Circuit` 就能拿到
 pub use circuit::{
-    Circuit, Component, ComponentId, Footprint, FootprintId, Net, NetId, PhysicalPin, Pin, PinId,
-    Position,
+    Circuit, Component, ComponentId, Footprint, FootprintBounds, FootprintId, Net, NetId,
+    PhysicalPin, Pin, PinId, Position,
 };
 pub use layout::{
     AnnealMetrics, Breadboard, BridgeInitial, BridgePolicy, CancellationToken,

@@ -576,6 +576,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "R_BR".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),

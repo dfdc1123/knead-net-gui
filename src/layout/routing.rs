@@ -1059,6 +1059,7 @@ mod tests {
         Footprint {
             id: FootprintId(0),
             name: "RES2".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),
@@ -1287,6 +1288,7 @@ mod tests {
         let axial = Footprint {
             id: FootprintId(0),
             name: "axial".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),
@@ -1378,6 +1380,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "single".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1461,6 +1464,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "1p".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -1556,6 +1560,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(0),
             name: "1p".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },

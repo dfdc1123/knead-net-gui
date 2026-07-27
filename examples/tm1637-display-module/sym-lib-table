@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "tm1637-display-module-easyedapro") (type "KiCad") (uri "${KIPRJMOD}/tm1637-display-module-easyedapro.kicad_sym") (options "") (descr ""))
+)

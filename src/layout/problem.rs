@@ -246,6 +246,7 @@ mod tests {
             footprints: vec![Footprint {
                 id: FootprintId(0),
                 name: "1p".into(),
+                bounds: None,
                 pins: vec![PhysicalPin {
                     name: "1".into(),
                     offset: Position { x: 0, y: 0 },

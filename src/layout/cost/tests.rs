@@ -16,6 +16,7 @@ fn one_pin_fp() -> Footprint {
     Footprint {
         id: FootprintId(0),
         name: "single".into(),
+        bounds: None,
         pins: vec![PhysicalPin {
             name: "1".into(),
             offset: Position { x: 0, y: 0 },
@@ -28,6 +29,7 @@ fn two_pin_fp() -> Footprint {
     Footprint {
         id: FootprintId(0),
         name: "two".into(),
+        bounds: None,
         pins: (1..=2)
             .map(|n| PhysicalPin {
                 name: n.to_string(),
@@ -655,6 +657,7 @@ fn from_greedy_uses_cost_to_spread_rows() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "wide".into(),
+        bounds: None,
         pins: (0..11)
             .map(|i| PhysicalPin {
                 name: i.to_string(),
@@ -849,6 +852,7 @@ fn cost_with_binding_reflects_rail_jumper() {
     let footprint = crate::circuit::Footprint {
         id: FootprintId(0),
         name: "1p".into(),
+        bounds: None,
         pins: vec![crate::circuit::PhysicalPin {
             name: "1".into(),
             offset: crate::circuit::Position { x: 0, y: 0 },
@@ -917,6 +921,7 @@ fn cost_no_binding_no_rail_pins() {
     let footprint = crate::circuit::Footprint {
         id: FootprintId(0),
         name: "2p".into(),
+        bounds: None,
         pins: vec![
             crate::circuit::PhysicalPin {
                 name: "1".into(),
@@ -1471,6 +1476,7 @@ fn propose_bridged_pair_uses_r90_for_horizontal_resistor() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1575,6 +1581,7 @@ fn propose_bridged_pair_returns_none_without_power_rail_binding() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1647,6 +1654,7 @@ fn cost_bridged_uses_heuristic_pair_and_skips_bbox() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1752,6 +1760,7 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
     let fp_r = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1767,6 +1776,7 @@ fn cost_bridged_body_bbox_blocks_on_board_components() {
     let fp_x = Footprint {
         id: FootprintId(1),
         name: "X".into(),
+        bounds: None,
         pins: vec![PhysicalPin {
             name: "1".into(),
             offset: Position { x: 0, y: 0 },
@@ -1924,6 +1934,7 @@ fn populate_bridgeable_info_top_rail_tiebreaker() {
     let fp = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -1994,6 +2005,7 @@ fn populate_bridgeable_info_top_rail_tiebreaker() {
         fps.push(Footprint {
             id: FootprintId(i),
             name: "X".into(),
+            bounds: None,
             pins: vec![PhysicalPin {
                 name: "1".into(),
                 offset: Position { x: 0, y: 0 },
@@ -2214,6 +2226,7 @@ fn bridgeable_two_pin_circuit() -> (Circuit, Breadboard) {
     let fp_r = Footprint {
         id: FootprintId(0),
         name: "R".into(),
+        bounds: None,
         pins: vec![
             PhysicalPin {
                 name: "1".into(),
@@ -2228,6 +2241,7 @@ fn bridgeable_two_pin_circuit() -> (Circuit, Breadboard) {
     let fp_x = Footprint {
         id: FootprintId(1),
         name: "X".into(),
+        bounds: None,
         pins: vec![PhysicalPin {
             name: "1".into(),
             offset: Position { x: 0, y: 0 },

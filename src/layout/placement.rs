@@ -76,6 +76,45 @@ impl BBox {
         let max_y = self.max_y;
         (min_y..=max_y).flat_map(move |y| (min_x..=max_x).map(move |x| Position { x, y }))
     }
+
+    /// 旋转局部 bbox 后平移到板坐标。
+    pub(crate) fn transformed(&self, position: Position, rotation: Rotation) -> Self {
+        match rotation {
+            Rotation::R0 => Self {
+                min_x: self.min_x + position.x,
+                max_x: self.max_x + position.x,
+                min_y: self.min_y + position.y,
+                max_y: self.max_y + position.y,
+            },
+            Rotation::R180 => Self {
+                min_x: -self.max_x + position.x,
+                max_x: -self.min_x + position.x,
+                min_y: -self.max_y + position.y,
+                max_y: -self.min_y + position.y,
+            },
+            Rotation::R90 => Self {
+                min_x: -self.max_y + position.x,
+                max_x: -self.min_y + position.x,
+                min_y: self.min_x + position.y,
+                max_y: self.max_x + position.y,
+            },
+            Rotation::R270 => Self {
+                min_x: self.min_y + position.x,
+                max_x: self.max_y + position.x,
+                min_y: -self.max_x + position.y,
+                max_y: -self.min_x + position.y,
+            },
+        }
+    }
+}
+
+pub(crate) fn footprint_bbox(footprint: &Footprint) -> Option<BBox> {
+    footprint.bounds().map(|bounds| BBox {
+        min_x: bounds.min_x,
+        max_x: bounds.max_x,
+        min_y: bounds.min_y,
+        max_y: bounds.max_y,
+    })
 }
 
 /// 元件的摆放方式。
@@ -117,8 +156,8 @@ pub struct PinHole {
 #[derive(Debug)]
 pub struct PlacedFootprint {
     pub pin_holes: Vec<PinHole>,
-    /// 元件本体在板上的轴对齐包围盒 (旋转 + 平移后)。没有 pin 时为 None
-    /// (例如纯 silk 元件) — 这种元件不算占据任何网格。
+    /// 元件本体在板上的轴对齐包围盒 (旋转 + 平移后)。优先来自 KiCad
+    /// 封装图形，缺失时来自 pin；两者都没有时为 None。
     pub bbox: Option<BBox>,
 }
 
@@ -158,7 +197,6 @@ impl Placement {
         match self {
             Placement::OnBoard { position, rotation } => {
                 let mut pin_holes = Vec::with_capacity(component.pins.len());
-                let mut world_positions: Vec<Position> = Vec::with_capacity(component.pins.len());
 
                 for pin_id in &component.pins {
                     let pin = &pins[pin_id.0];
@@ -183,13 +221,12 @@ impl Placement {
                                 hole: absolute,
                             })?;
                     pin_holes.push(PinHole { pin: *pin_id, hole });
-                    world_positions.push(absolute);
                 }
 
-                // 用所有 pin 的世界坐标构 bbox。footprint 暂时没有 "body extent" 字段,
-                // 这里就跟渲染里一样, 用 pin 的范围代表元件占据的网格范围。
-                // 后续如果从 KiCad 解析了 body silk, 可以替换这个 bbox。
-                let bbox = BBox::from_points(world_positions);
+                // 优先使用 KiCad Fab/courtyard 图形定义的元件本体范围；旧输入没有
+                // 图形边界时，`Footprint::bounds` 会回退到所有 pin 的范围。
+                let bbox =
+                    footprint_bbox(footprint).map(|bbox| bbox.transformed(*position, *rotation));
                 Ok(PlacedFootprint { pin_holes, bbox })
             }
             Placement::Bridged { pin_holes } => {
@@ -294,6 +331,7 @@ mod tests {
         Footprint {
             id: FootprintId(0),
             name: "TO92".to_string(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".to_string(),
@@ -339,6 +377,40 @@ mod tests {
 
     fn board() -> Breadboard {
         Breadboard::new(30, 5)
+    }
+
+    #[test]
+    fn seven_segment_display_bbox_uses_kicad_body_outline_beyond_its_pads() {
+        let text = std::fs::read_to_string(
+            "examples/tm1637-display-module/tm1637-display-module.kicad_pcb",
+        )
+        .unwrap();
+        let circuit = crate::input::pcb::parse_pcb(&text).unwrap();
+        let component = circuit
+            .components()
+            .iter()
+            .find(|component| component.ref_() == "LED1")
+            .unwrap();
+        let footprint = &circuit.footprints()[component.footprint().unwrap().raw()];
+        let board = Breadboard::standard();
+
+        let placed = Placement::OnBoard {
+            position: Position { x: 15, y: 2 },
+            rotation: Rotation::R90,
+        }
+        .apply(component, footprint, &board, circuit.pins())
+        .unwrap();
+
+        assert_eq!(
+            placed.bbox,
+            Some(BBox {
+                min_x: 3,
+                max_x: 22,
+                min_y: 2,
+                max_y: 8,
+            }),
+            "the CA56-12CGKWA body outline, not only its pad rows, defines occupied space"
+        );
     }
 
     #[test]
@@ -567,6 +639,7 @@ mod tests {
         let fp = Footprint {
             id: FootprintId(1),
             name: "RES2".into(),
+            bounds: None,
             pins: vec![
                 PhysicalPin {
                     name: "1".into(),

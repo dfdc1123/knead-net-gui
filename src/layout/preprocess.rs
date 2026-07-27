@@ -123,23 +123,13 @@ fn has_column_conflict(
 
 /// 计算 footprint 在 R90 旋转后的 bbox 尺寸 (宽, 高)。
 fn r90_bbox_size(fp: &crate::circuit::Footprint) -> (usize, usize) {
-    let pins = fp.pins();
-    if pins.is_empty() {
+    let Some(bounds) = fp.bounds() else {
         return (0, 0);
-    }
-    let mut min_x = i32::MAX;
-    let mut max_x = i32::MIN;
-    let mut min_y = i32::MAX;
-    let mut max_y = i32::MIN;
-    for p in pins {
-        let rx = -p.offset().y;
-        let ry = p.offset().x;
-        min_x = min_x.min(rx);
-        max_x = max_x.max(rx);
-        min_y = min_y.min(ry);
-        max_y = max_y.max(ry);
-    }
-    ((max_x - min_x + 1) as usize, (max_y - min_y + 1) as usize)
+    };
+    (
+        (bounds.max_y - bounds.min_y + 1) as usize,
+        (bounds.max_x - bounds.min_x + 1) as usize,
+    )
 }
 
 /// 尝试为元件计算 y-lock 位置。
@@ -275,6 +265,7 @@ mod tests {
             footprints: vec![Footprint {
                 id: FootprintId(0),
                 name: format!("DIP_W{pin_row_spacing}"),
+                bounds: None,
                 pins: pin_positions
                     .iter()
                     .enumerate()

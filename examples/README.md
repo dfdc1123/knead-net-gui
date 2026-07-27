@@ -10,6 +10,7 @@ These KiCad projects are provided for learning the KneadNet workflow and for man
 | `lm741/` | LM741 KiCad project | Yes |
 | `h-bridge_different_order/` | Developer fixture for component-order regression tests | No |
 | `infrared-transceiver/` | Upstream GPL-3.0 infrared transceiver converted to THT footprints | No |
+| `tm1637-display-module/` | THT TM1637 display fixture with an oversized seven-segment body | No |
 
 Each public project includes `.kicad_pro`, `.kicad_sch`, and `.kicad_pcb` files. KneadNet requires the PCB file; the same-name schematic provides the preview and cross-selection.
 
@@ -26,10 +27,17 @@ Generated layouts are suggestions. Verify component orientation, pin numbering, 
 封装转换为直插封装，可用于 KneadNet 的完整流程和标签网络交叉选择回归测试。请参阅
 [`infrared-transceiver/README.md`](infrared-transceiver/README.md)。
 
+`tm1637-display-module` 是一个直插 TM1637 数码管工程，同时用于验证元件占位框来自 KiCad
+封装的物理外形，而不只是最外圈引脚。它来自 `zhbaa` 以 GPL 3.0 发布的
+[TM1637 数码管模块](https://oshwhub.com/zhbaa/tm1637-shu-ma-guan-mo-kuai)。请参阅
+[`tm1637-display-module/README.md`](tm1637-display-module/README.md)。
+
 通电前必须人工检查元件方向、引脚编号、电源轨和每一条连接。
 
 ## License
 
 KneadNet-authored examples are distributed under [`GPL-3.0-only`](../LICENSE).
 The imported `infrared-transceiver` example remains attributed to its upstream
-author under the upstream project's stated GPL 3.0 license.
+author under the upstream project's stated GPL 3.0 license. The imported
+`tm1637-display-module` example likewise remains attributed to `zhbaa` under
+its upstream GPL 3.0 license.
